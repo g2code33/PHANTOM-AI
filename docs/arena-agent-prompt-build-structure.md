@@ -49,6 +49,10 @@ Android + GitHub Actions release-on-push), so that:
   and have the user apply it locally
   (`cp docs/workflow-build-desktop.yml .github/workflows/build-desktop.yml && git commit && git push`),
   or get Workflows permission granted.
+  - **Status (this repo):** `.github/workflows/build-desktop.yml` is NOT in the committed tree —
+    it is delivered as `docs/workflow-build-desktop.yml` (identical content). To activate CI,
+    either grant the GitHub App **Workflows** permission (then the workflow can be committed and
+    pushed), or apply it locally with the `cp` command above.
 - Sandbox resets: start with `git fetch origin main && git fetch --unshallow origin`, then
   `git checkout -f origin/main -B <arena-branch>`. Push to main with
   `git push origin HEAD:main`; no PRs unless asked.
