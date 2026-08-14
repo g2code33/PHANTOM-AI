@@ -815,14 +815,21 @@ function renderUpdater() {
   const installBtn = $("updateInstallBtn"); const stateEl = $("updateState");
   if (!updater) { if (stateEl) stateEl.textContent = "packaged app only"; return; }
   const s = updaterState;
-  if (stateEl) stateEl.textContent = s.state === "checking" ? "checking…"
-    : s.state === "up-to-date" ? `up to date (v${s.version})`
-    : s.state === "available" ? `update available: v${s.version}`
-    : s.state === "ready" ? `update ready: v${s.version}`
-    : s.state === "downloading" ? `downloading… ${s.percent || 0}%`
-    : s.state === "error" ? `update error: ${s.message || ""}`
-    : s.state === "dev" ? "dev mode"
-    : "not checked";
+  let text = "not checked";
+  if (s.state === "checking") text = "checking…";
+  else if (s.state === "up-to-date") text = `up to date (v${s.version})`;
+  else if (s.state === "available") text = `update available: v${s.version} — downloading…`;
+  else if (s.state === "ready") text = `update ready: v${s.version} — restart to install`;
+  else if (s.state === "downloading") text = `downloading… ${s.percent || 0}%`;
+  else if (s.state === "error") {
+    text = `update error: ${s.message || ""}`;
+    // deb installs live in root-owned /opt — electron-updater can't write there.
+    const msg = String(s.message || "").toLowerCase();
+    if (msg.includes("eacces") || msg.includes("permission") || msg.includes("denied")) {
+      text += " — .deb installs need sudo: use the AppImage, or run the update script from Settings.";
+    }
+  } else if (s.state === "dev") text = "dev mode";
+  if (stateEl) stateEl.textContent = text;
   if (installBtn) installBtn.classList.toggle("hidden", s.state !== "ready");
 }
 async function checkForUpdates() {
@@ -830,7 +837,12 @@ async function checkForUpdates() {
   updaterState = { state: "checking" }; renderUpdater();
   const res = await updater.check().catch((e) => ({ state: "error", message: String(e) }));
   updaterState = res || {}; renderUpdater();
-  if (updaterState.state === "available") updater.download();
+  if (updaterState.state === "available") {
+    toast(`⬆ Update v${updaterState.version} found — downloading…`);
+    updater.download();
+  } else if (updaterState.state === "ready") {
+    toast(`⬆ Update v${updaterState.version} ready — restart to install`);
+  }
 }
 window.checkForUpdates = checkForUpdates;
 
