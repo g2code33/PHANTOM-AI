@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PHANTOM + CODED — Personal AI Operator</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👻</text></svg>">
+</head>
+<body>
+<div id="app" class="app">
+  <!-- ======================= TOP BAR ======================= -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-logo">👻</span>
+      <div class="brand-text">
+        <strong>PHANTOM + CODED</strong>
+        <span class="brand-sub">Personal AI Computer Operator</span>
+      </div>
+    </div>
+    <nav class="agent-switch" id="agentSwitch">
+      <button class="agent-tab active" data-agent="phantom"><span>👻</span> Phantom</button>
+      <button class="agent-tab" data-agent="coded"><span>💻</span> Coded</button>
+    </nav>
+    <div class="topbar-right">
+      <button id="voiceToggle" class="icon-btn" title="Speak replies (browser TTS)">🔊</button>
+      <button id="notifBtn" class="icon-btn" title="Notifications">🔔<span id="notifBadge" class="badge hidden">0</span></button>
+      <div class="provider-status" id="providerStatus" title="Provider status">
+        <span class="dot" id="statusDot"></span><span id="statusText">connecting…</span>
+      </div>
+      <button id="killSwitch" class="kill-btn" title="Emergency kill switch — stops all background activity">
+        <span class="kill-icon">⏻</span> KILL
+      </button>
+    </div>
+  </header>
+
+  <!-- ======================= KILL SWITCH BANNER ======================= -->
+  <div id="killBanner" class="kill-banner hidden">
+    <div>
+      <strong>⛔ KILL SWITCH ENGAGED</strong>
+      <div class="kill-reason" id="killReason"></div>
+    </div>
+    <button id="disengageBtn" class="btn btn-danger-outline">Disarm</button>
+  </div>
+
+  <div class="layout">
+    <!-- ======================= LEFT SIDEBAR ======================= -->
+    <aside class="sidebar">
+      <nav class="views">
+        <button class="view-btn active" data-view="chats">💬 Chats</button>
+        <button class="view-btn" data-view="memory">🧠 Memory</button>
+        <button class="view-btn" data-view="tasks">📋 Tasks <span id="taskCount" class="count-pill"></span></button>
+        <button class="view-btn" data-view="audit">🕵️ Audit</button>
+        <button class="view-btn" data-view="permissions">🔐 Permissions</button>
+        <button class="view-btn" data-view="settings">⚙️ Settings</button>
+      </nav>
+      <div class="conv-header">
+        <span>CONVERSATIONS</span>
+        <button id="newConv" class="mini-btn" title="New conversation">＋</button>
+      </div>
+      <div id="convList" class="conv-list"></div>
+    </aside>
+
+    <!-- ======================= MAIN ======================= -->
+    <main class="main">
+      <!-- chats view -->
+      <section id="view-chats" class="view active">
+        <div class="chat-header">
+          <span class="agent-face" id="chatAgentFace">👻</span>
+          <div>
+            <h2 id="chatAgentName">Phantom</h2>
+            <span class="chat-title" id="chatTitle">New conversation</span>
+          </div>
+          <div class="chat-header-right">
+            <span id="runIndicator" class="run-indicator hidden"><span class="spin"></span> working…</span>
+            <button id="stopRun" class="mini-btn hidden" title="Stop current run">■ Stop</button>
+          </div>
+        </div>
+        <div id="messages" class="messages"></div>
+        <div class="composer">
+          <textarea id="input" rows="1" placeholder="Message Phantom… (Enter to send, Shift+Enter for newline)"></textarea>
+          <button id="pttBtn" class="ptt-btn" title="Push to talk (browser STT)">🎙️</button>
+          <button id="sendBtn" class="send-btn" title="Send">➤</button>
+        </div>
+        <div class="composer-hint" id="sttStatus"></div>
+      </section>
+
+      <!-- memory view -->
+      <section id="view-memory" class="view">
+        <div class="panel-head">
+          <h2>🧠 Memory Center</h2>
+          <p class="muted">Durable facts, preferences and decisions — separate for Phantom, Coded, and Shared.</p>
+        </div>
+        <div class="memory-controls">
+          <select id="memAgent">
+            <option value="phantom">👻 Phantom</option>
+            <option value="coded">💻 Coded</option>
+            <option value="shared">🤝 Shared</option>
+          </select>
+          <select id="memKind">
+            <option value="">All kinds</option>
+            <option value="fact">fact</option>
+            <option value="preference">preference</option>
+            <option value="project">project</option>
+            <option value="decision">decision</option>
+            <option value="technical">technical</option>
+          </select>
+          <input id="memSearch" placeholder="Search memories…">
+          <button id="memSearchBtn" class="btn">Search</button>
+        </div>
+        <div class="memory-add">
+          <input id="memNewContent" placeholder="New memory content…">
+          <button id="memAddBtn" class="btn btn-primary">Remember</button>
+        </div>
+        <div id="memoryList" class="card-list"></div>
+      </section>
+
+      <!-- tasks view -->
+      <section id="view-tasks" class="view">
+        <div class="panel-head">
+          <h2>📋 Task Manager</h2>
+          <p class="muted">Background and proactive work with limits and cancellation.</p>
+        </div>
+        <div class="memory-controls">
+          <select id="taskAgent">
+            <option value="">All agents</option>
+            <option value="phantom">👻 Phantom</option>
+            <option value="coded">💻 Coded</option>
+          </select>
+          <select id="taskStatus">
+            <option value="">Any status</option>
+            <option value="queued">queued</option>
+            <option value="running">running</option>
+            <option value="completed">completed</option>
+            <option value="failed">failed</option>
+            <option value="cancelled">cancelled</option>
+          </select>
+        </div>
+        <div id="taskList" class="card-list"></div>
+      </section>
+
+      <!-- audit view -->
+      <section id="view-audit" class="view">
+        <div class="panel-head">
+          <h2>🕵️ Audit Log</h2>
+          <p class="muted">Everything the agents did: tool calls, confirmations, delegations, errors, API latency.</p>
+        </div>
+        <div class="memory-controls">
+          <select id="auditAgent">
+            <option value="">All agents</option>
+            <option value="phantom">👻 Phantom</option>
+            <option value="coded">💻 Coded</option>
+          </select>
+          <select id="auditEvent"><option value="">All events</option></select>
+          <button id="auditRefresh" class="btn">Refresh</button>
+        </div>
+        <div id="auditList" class="card-list"></div>
+      </section>
+
+      <!-- permissions view -->
+      <section id="view-permissions" class="view">
+        <div class="panel-head">
+          <h2>🔐 Permissions</h2>
+          <p class="muted">Permission levels sit between the AI's decision and actual execution.</p>
+        </div>
+        <div class="memory-controls">
+          <select id="permAgent">
+            <option value="phantom">👻 Phantom</option>
+            <option value="coded">💻 Coded</option>
+          </select>
+          <span class="muted">Levels: read_only → safe_action → confirm_required → high_risk → blocked</span>
+        </div>
+        <div id="permTable" class="card-list"></div>
+      </section>
+
+      <!-- settings view -->
+      <section id="view-settings" class="view">
+        <div class="panel-head">
+          <h2>⚙️ Settings</h2>
+          <p class="muted">Keys are stored locally (chmod 600) or via environment variables; never shown in full.</p>
+        </div>
+        <div id="settingsBody" class="settings-body"></div>
+      </section>
+    </main>
+
+    <!-- ======================= RIGHT PANEL ======================= -->
+    <aside class="rightpanel">
+      <div class="rp-tabs">
+        <button class="rp-tab active" data-rp="activity">Activity</button>
+        <button class="rp-tab" data-rp="lab">Tool Lab</button>
+      </div>
+      <div id="rp-activity" class="rp-body active">
+        <div id="activityFeed" class="activity-feed"></div>
+      </div>
+      <div id="rp-lab" class="rp-body">
+        <p class="muted small">Execute any registered tool manually. Real execution, permission-checked.</p>
+        <select id="labTool" class="w100"></select>
+        <p class="muted small" id="labToolDesc"></p>
+        <textarea id="labArgs" rows="5" placeholder='{"path": "~/notes.txt"}' class="w100 mono"></textarea>
+        <button id="labRun" class="btn btn-primary w100">Run tool</button>
+        <pre id="labOutput" class="lab-output mono hidden"></pre>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- ======================= CONFIRMATION MODAL ======================= -->
+<div id="confirmModal" class="modal-overlay hidden">
+  <div class="modal confirm-modal">
+    <h3 id="confirmTitle">Confirmation required</h3>
+    <div class="confirm-agent" id="confirmAgent"></div>
+    <div class="confirm-section"><label>What</label><div id="confirmWhat"></div></div>
+    <div class="confirm-section"><label>Why</label><div id="confirmWhy"></div></div>
+    <div class="confirm-section"><label>Affects</label><div id="confirmAffected"></div></div>
+    <div class="confirm-section"><label>Exact action</label><pre id="confirmAction" class="mono"></pre></div>
+    <div class="confirm-section"><label>Risk</label><div id="confirmRisk"></div></div>
+    <p class="muted small">Approval applies to this exact action only — nothing is permanently approved.</p>
+    <div class="confirm-actions">
+      <button id="confirmDeny" class="btn btn-danger">Deny</button>
+      <button id="confirmApprove" class="btn btn-primary">Approve</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= NOTIFICATIONS ======================= -->
+<div id="notifPanel" class="notif-panel hidden">
+  <div class="notif-head"><strong>Notifications</strong><button id="notifClose" class="mini-btn">✕</button></div>
+  <div id="notifList"></div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
