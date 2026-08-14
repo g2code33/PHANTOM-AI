@@ -19,7 +19,7 @@ from phantom_ai.tools.base import PermissionLevel
 async def test_seeded_brains_registered(app):
     instance, _state, _wd = app
     ids = await instance.brains.ids()
-    assert set(ids) == {"phantom", "coded", "evolution"}
+    assert {"phantom", "coded", "evolution", "health"} <= set(ids)
     evolution = await instance.brains.get("evolution")
     assert evolution["role"] == "evolution"
     assert evolution["name"] == "Evolution"

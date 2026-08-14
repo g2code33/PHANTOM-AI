@@ -23,10 +23,10 @@ async def test_status_and_agents(app):
         res = await client.get("/api/status")
         assert res.status_code == 200
         data = res.json()
-        assert len(data["agents"]) == 3  # phantom, coded, evolution
+        assert len(data["agents"]) == 4  # phantom, coded, evolution, health
         assert data["killswitch"]["engaged"] is False
         ids = {a["id"] for a in data["agents"]}
-        assert ids == {"phantom", "coded", "evolution"}
+        assert ids == {"phantom", "coded", "evolution", "health"}
         assert data["providers"]["phantom"]["ok"] is True
 
         res2 = await client.get("/api/agents")
@@ -34,6 +34,7 @@ async def test_status_and_agents(app):
         assert agents["phantom"]["display_name"] == "Phantom"
         assert agents["coded"]["display_name"] == "Coded"
         assert agents["evolution"]["display_name"] == "Evolution"
+        assert agents["health"]["display_name"] == "Health"
 
 
 async def test_chat_over_http(app):
@@ -120,6 +121,43 @@ async def test_manual_tool_run_endpoint(app, workdir):
                                  json={"agent": "phantom",
                                        "arguments": {"command": "rm -rf /"}})
         assert res2.status_code in (403, 422)
+
+
+async def test_health_endpoints(app):
+    instance, _state, _wd = app
+    async with await _client(instance) as client:
+        status = (await client.get("/api/health/status")).json()
+        assert status["enabled"] is True
+        assert "encryption" in status["privacy"]
+
+        # log a measurement via the vault API
+        rec = (await client.post("/api/health/memories", json={
+            "category": "measurement", "title": "weight 70kg",
+            "data": {"metric": "weight", "value": 70, "unit": "kg"}})).json()
+        assert rec["id"]
+        rows = (await client.get("/api/health/memories?category=measurement")).json()
+        assert rows["records"] and rows["records"][0]["data"]["value"] == 70
+
+        # red-flag endpoint returns emergency for serious symptoms
+        flag = (await client.post("/api/health/redflag", json={
+            "symptom": "chest pain", "severity": 9})).json()
+        assert flag["red_flag"]["level"] == "emergency"
+        assert "URGENT" in flag["text"]
+
+        # trends + briefing
+        trends = (await client.get("/api/health/trends?metric=weight")).json()
+        assert trends["count"] >= 1
+        briefing = (await client.get("/api/health/briefing")).json()
+        assert "Today's Health" in briefing["section"]
+
+        # disable/enable
+        await client.post("/api/health/enable", json={"enabled": False})
+        assert (await client.get("/api/health/status")).json()["enabled"] is False
+        await client.post("/api/health/enable", json={"enabled": True})
+
+        # export
+        exported = (await client.get("/api/health/export")).json()
+        assert exported["count"] >= 1
 
 
 async def test_offline_mode_is_honest(tmp_path):

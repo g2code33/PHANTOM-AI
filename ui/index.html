@@ -21,6 +21,7 @@
     <nav class="agent-switch" id="agentSwitch">
       <button class="agent-tab active" data-agent="phantom"><span>👻</span> Phantom</button>
       <button class="agent-tab" data-agent="coded"><span>💻</span> Coded</button>
+      <button class="agent-tab" data-agent="health"><span>🩺</span> Health</button>
     </nav>
     <div class="topbar-right">
       <button id="updateBtn" class="icon-btn hidden" title="Check for updates">⬆</button>
@@ -51,6 +52,7 @@
         <button class="view-btn active" data-view="chats">💬 Chats</button>
         <button class="view-btn" data-view="memory">🧠 Memory</button>
         <button class="view-btn" data-view="health">🧬 Health</button>
+        <button class="view-btn" data-view="wellness">🩺 Wellness</button>
         <button class="view-btn" data-view="tasks">📋 Tasks <span id="taskCount" class="count-pill"></span></button>
         <button class="view-btn" data-view="audit">🕵️ Audit</button>
         <button class="view-btn" data-view="permissions">🔐 Permissions</button>
@@ -97,6 +99,7 @@
           <select id="memAgent">
             <option value="phantom">👻 Phantom</option>
             <option value="coded">💻 Coded</option>
+            <option value="health">🩺 Health</option>
             <option value="shared">🤝 Shared</option>
           </select>
           <select id="memKind">
@@ -199,6 +202,80 @@
         <div id="loopResult" class="card hidden"></div>
       </section>
 
+      <!-- wellness (Health Brain) view -->
+      <section id="view-wellness" class="view">
+        <div class="panel-head">
+          <h2>🩺 Health Center</h2>
+          <p class="muted" id="wellnessSub">Private personal health &amp; wellness assistant — encrypted Health Memory Vault.</p>
+        </div>
+        <div id="wellnessBanner" class="card hidden"></div>
+        <div class="memory-controls">
+          <button id="wellnessRefresh" class="btn">Refresh</button>
+          <button id="wellnessEnable" class="btn btn-primary hidden">Enable Health Brain</button>
+          <button id="wellnessDisable" class="btn hidden">Disable Health Brain</button>
+          <button id="wellnessExport" class="btn">Export health data</button>
+          <span class="muted small" id="wellnessPrivacy"></span>
+        </div>
+
+        <h3 class="muted">TODAY</h3>
+        <div id="wellnessToday" class="card-list"></div>
+
+        <h3 class="muted" style="margin-top:18px">Quick log</h3>
+        <div class="memory-controls" style="align-items:flex-start">
+          <select id="wellnessLogType">
+            <option value="measurement">Measurement</option>
+            <option value="symptom">Symptom</option>
+            <option value="habit">Habit</option>
+            <option value="medication">Medication</option>
+            <option value="goal">Health goal</option>
+            <option value="appointment">Appointment</option>
+          </select>
+          <input id="wellnessLogA" placeholder="metric or symptom or name…" style="width:170px">
+          <input id="wellnessLogB" placeholder="value / severity / dose / when…" style="width:120px">
+          <input id="wellnessLogC" placeholder="unit / duration / schedule / provider…" style="width:140px">
+          <button class="btn btn-primary" onclick="wellnessLog()">Log</button>
+          <span class="muted small" id="wellnessLogMsg"></span>
+        </div>
+        <div id="wellnessRedFlag" class="card hidden" style="border-color:var(--red)"></div>
+
+        <h3 class="muted" style="margin-top:18px">Trends</h3>
+        <div class="memory-controls">
+          <select id="wellnessTrendMetric">
+            <option value="weight">weight</option><option value="blood_pressure">blood pressure</option>
+            <option value="heart_rate">heart rate</option><option value="temperature">temperature</option>
+            <option value="blood_glucose">blood glucose</option><option value="spo2">SpO2</option>
+            <option value="sleep">sleep</option><option value="steps">steps</option>
+          </select>
+          <button class="btn" onclick="wellnessTrends()">Show trends</button>
+        </div>
+        <div id="wellnessTrends" class="card mono small"></div>
+
+        <h3 class="muted" style="margin-top:18px">Health Memory Vault <span class="muted small">(encrypted)</span></h3>
+        <div class="memory-controls">
+          <select id="wellnessMemCategory">
+            <option value="">All categories</option>
+            <option value="measurement">Measurements</option>
+            <option value="symptom">Symptoms</option>
+            <option value="medication">Medications</option>
+            <option value="appointment">Appointments</option>
+            <option value="goal">Goals</option>
+            <option value="habit">Habits</option>
+            <option value="routine">Routines</option>
+            <option value="note">Notes</option>
+          </select>
+          <input id="wellnessMemSearch" placeholder="search health records…" style="width:220px">
+          <button class="btn" onclick="wellnessMemories()">Search</button>
+          <button class="btn btn-danger" onclick="wellnessClear()">Clear category / all</button>
+        </div>
+        <div id="wellnessMemories" class="card-list"></div>
+
+        <h3 class="muted" style="margin-top:18px">Routines</h3>
+        <div class="card" id="wellnessRoutines"></div>
+
+        <h3 class="muted" style="margin-top:18px">Daily Briefing contribution</h3>
+        <div class="card mono small" id="wellnessBriefing"></div>
+      </section>
+
       <!-- permissions view -->
       <section id="view-permissions" class="view">
         <div class="panel-head">
@@ -209,6 +286,7 @@
           <select id="permAgent">
             <option value="phantom">👻 Phantom</option>
             <option value="coded">💻 Coded</option>
+            <option value="health">🩺 Health</option>
           </select>
           <span class="muted">Levels: read_only → safe_action → confirm_required → high_risk → blocked</span>
         </div>

@@ -294,11 +294,13 @@ def create_app(app: App) -> FastAPI:
             "settings": all_settings,
             "keys": {
                 agent_id: {
-                    "env": KEY_ENV[agent_id],
-                    "configured": bool(app.secrets.get(KEY_ENV[agent_id])),
-                    "masked": mask_key(app.secrets.get(KEY_ENV[agent_id])),
+                    "env": KEY_ENV.get(agent_id, f"{agent_id.upper()}_NVIDIA_API_KEY"),
+                    "configured": bool(app.secrets.get(KEY_ENV.get(agent_id, "")) or
+                                       app.secrets.get(KEY_ENV["phantom"])),
+                    "masked": mask_key(app.secrets.get(KEY_ENV.get(agent_id, "")) or
+                                       app.secrets.get(KEY_ENV["phantom"])),
                 }
-                for agent_id in AGENTS
+                for agent_id in await app.brain_ids()
             },
         }
 
@@ -693,6 +695,128 @@ def create_app(app: App) -> FastAPI:
         task = await app.tasks.launch(agent, f"Loop: {objective[:60]}", "loop", factory)
         return task
 
+    # ---------------------------------------------------------------- health
+    @fastapi.get("/api/health/status")
+    async def health_status():
+        return await app.health.status()
+
+    @fastapi.get("/api/health/today")
+    async def health_today():
+        return await app.health.today()
+
+    @fastapi.get("/api/health/morning")
+    async def health_morning():
+        return {"text": await app.health.morning()}
+
+    @fastapi.get("/api/health/evening")
+    async def health_evening():
+        return {"text": await app.health.evening()}
+
+    @fastapi.get("/api/health/trends")
+    async def health_trends(metric: str, limit: int = 14):
+        return await app.health.trends(metric, limit)
+
+    @fastapi.get("/api/health/memories")
+    async def health_memories(category: str = "", q: str = "", limit: int = 100):
+        if q:
+            return {"records": await app.health.vault.search(q, limit)}
+        return {"records": await app.health.vault.list(category or None, limit)}
+
+    @fastapi.post("/api/health/memories")
+    async def health_add_memory(body: dict):
+        category = body.get("category", "note")
+        data = body.get("data") or {}
+        title = body.get("title", "")
+        try:
+            record = await app.health.vault.add(category, data, title=title)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        await app.audit.record("health", "health.record_added",
+                               {"category": category, "id": record["id"]})
+        return record
+
+    @fastapi.put("/api/health/memories/{rid}")
+    async def health_update_memory(rid: str, body: dict):
+        record = await app.health.vault.update(
+            rid, body.get("data") or {}, title=body.get("title"))
+        if not record:
+            raise HTTPException(404, "record not found")
+        return record
+
+    @fastapi.post("/api/health/memories/{rid}/delete")
+    async def health_delete_memory(rid: str):
+        ok = await app.health.vault.delete(rid)
+        if not ok:
+            raise HTTPException(404, "record not found")
+        await app.audit.record("health", "health.record_deleted", {"id": rid})
+        return {"ok": True}
+
+    @fastapi.post("/api/health/clear")
+    async def health_clear(body: dict | None = None):
+        category = (body or {}).get("category", "")
+        count = await app.health.vault.clear(category)
+        await app.audit.record("health", "health.records_cleared",
+                               {"category": category or "ALL", "count": count})
+        return {"ok": True, "cleared": count}
+
+    @fastapi.get("/api/health/export")
+    async def health_export():
+        data = await app.health.vault.export()
+        await app.audit.record("health", "health.exported", {"count": data["count"]})
+        return JSONResponse(content=data)
+
+    @fastapi.get("/api/health/privacy")
+    async def health_privacy():
+        return await app.health.privacy()
+
+    @fastapi.put("/api/health/privacy")
+    async def health_privacy_set(body: dict):
+        return await app.health.set_privacy(**body)
+
+    @fastapi.get("/api/health/routines")
+    async def health_routines():
+        return {"routines": await app.health.routines()}
+
+    @fastapi.put("/api/health/routines")
+    async def health_routines_set(body: dict):
+        block = body.get("block", "")
+        if block not in ("morning", "afternoon", "evening"):
+            raise HTTPException(400, "block must be morning|afternoon|evening")
+        return await app.health.set_routine(block, body.get("items") or [])
+
+    @fastapi.post("/api/health/routines/schedule")
+    async def health_routine_schedule(body: dict):
+        block = body.get("block", "")
+        hour = int(body.get("hour", 7))
+        minute = int(body.get("minute", 0))
+        try:
+            sched = await app.health.schedule_routine(block, hour, minute)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return sched
+
+    @fastapi.post("/api/health/redflag")
+    async def health_redflag(body: dict):
+        from ..health.redflags import RedFlag, check_measurement, check_symptom
+
+        flag = None
+        if body.get("symptom"):
+            flag = check_symptom(body["symptom"], int(body.get("severity", 0)))
+        elif body.get("metric"):
+            flag = check_measurement(body["metric"], float(body.get("value", 0)),
+                                     body.get("unit", ""))
+        return {"red_flag": flag.to_dict() if flag else None,
+                "text": _flag_text(flag) if flag else ""}
+
+    @fastapi.post("/api/health/enable")
+    async def health_enable(body: dict | None = None):
+        value = bool((body or {}).get("enabled", True))
+        return await app.health.set_enabled(value, by="user")
+
+    @fastapi.get("/api/health/briefing")
+    async def health_briefing():
+        return {"section": await app.health.briefing_section()}
+
     # ------------------------------------------------------------- artifacts
     @fastapi.get("/api/artifacts/{fname}")
     async def artifact(fname: str):
@@ -756,6 +880,12 @@ def create_app(app: App) -> FastAPI:
             return FileResponse(UI_DIR / "styles.css", media_type="text/css")
 
     return fastapi
+
+
+def _flag_text(flag) -> str:
+    from ..health.redflags import explain_red_flag
+
+    return explain_red_flag(flag)
 
 
 async def _apply_proposal_changes(app: Any, proposal: dict) -> bool:

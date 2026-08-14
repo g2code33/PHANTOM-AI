@@ -231,6 +231,18 @@ CREATE TABLE IF NOT EXISTS snapshots (
     created_at  TEXT,
     restored_at TEXT
 );
+
+-- ---- Health Brain (encrypted vault) ---------------------------------------
+
+CREATE TABLE IF NOT EXISTS health_records (
+    id         TEXT PRIMARY KEY,
+    category   TEXT NOT NULL,
+    title      TEXT,
+    payload    TEXT NOT NULL,      -- Fernet-encrypted JSON
+    created_at TEXT,
+    updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_health_category ON health_records(category, created_at);
 """
 
 

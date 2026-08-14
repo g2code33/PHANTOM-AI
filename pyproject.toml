@@ -17,6 +17,7 @@ dependencies = [
     "jsonschema>=4.21",
     "psutil>=5.9",
     "websockets>=12",
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]

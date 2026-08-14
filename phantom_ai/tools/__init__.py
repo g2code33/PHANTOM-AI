@@ -13,6 +13,7 @@ from .delegation_tools import register_delegation_tools
 from .evolution_tools import register_evolution_tools
 from .files import register_file_tools
 from .gui import register_gui_tools
+from .health_tools import register_health_tools
 from .memory_tools import register_memory_tools
 from .notify import register_notify_tools
 from .processes import register_process_tools
@@ -35,6 +36,7 @@ def build_registry() -> ToolRegistry:
     register_delegation_tools(registry)
     register_notify_tools(registry)
     register_evolution_tools(registry)
+    register_health_tools(registry)
     return registry
 
 

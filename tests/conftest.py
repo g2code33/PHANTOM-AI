@@ -47,8 +47,12 @@ async def app(mock_server, workdir):
     state, base_url = mock_server
     os.environ["PHANTOM_NVIDIA_API_KEY"] = "nvapi-test-phantom-key-0000000000"
     os.environ["CODED_NVIDIA_API_KEY"] = "nvapi-test-coded-key-0000000000"
+    os.environ["EVOLUTION_NVIDIA_API_KEY"] = "nvapi-test-evolution-key-0000000000"
+    os.environ["HEALTH_NVIDIA_API_KEY"] = "nvapi-test-health-key-0000000000"
     os.environ["PHANTOM_NVIDIA_BASE_URL"] = base_url
     os.environ["CODED_NVIDIA_BASE_URL"] = base_url
+    os.environ["EVOLUTION_NVIDIA_BASE_URL"] = base_url
+    os.environ["HEALTH_NVIDIA_BASE_URL"] = base_url
 
     from phantom_ai.api.app import App
 
@@ -59,7 +63,9 @@ async def app(mock_server, workdir):
     yield instance, state, workdir
     await instance.shutdown()
     for var in ("PHANTOM_NVIDIA_API_KEY", "CODED_NVIDIA_API_KEY",
-                "PHANTOM_NVIDIA_BASE_URL", "CODED_NVIDIA_BASE_URL"):
+                "EVOLUTION_NVIDIA_API_KEY", "HEALTH_NVIDIA_API_KEY",
+                "PHANTOM_NVIDIA_BASE_URL", "CODED_NVIDIA_BASE_URL",
+                "EVOLUTION_NVIDIA_BASE_URL", "HEALTH_NVIDIA_BASE_URL"):
         os.environ.pop(var, None)
 
 
@@ -97,6 +103,7 @@ async def tool_ctx(app):
             proposals=instance.proposals, snapshots=instance.snapshots,
             loop_engine=instance.loops, verifier=instance.verifier,
             analyst=instance.analyst, agent_ids=("phantom", "coded", "evolution"),
+            health=instance.health,
         ))
 
     yield factory

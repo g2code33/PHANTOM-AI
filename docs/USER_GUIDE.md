@@ -75,6 +75,33 @@ Try: "Evolution, run a self-audit and propose improvements." Or register a new s
 from the API/UI: id, role, system prompt, tools — it becomes a live agent (privileged brains
 require approval).
 
+## 🩺 Health Center (Health Brain)
+
+The **🩺 Wellness** view is the Health Brain — a private personal health & wellness assistant
+(a separate entity with its own identity, tools, memory and permissions):
+
+- **TODAY** — hydration, meals, activity/steps, sleep, medications, appointments at a glance
+  (only what you record).
+- **Quick log** — record a measurement (weight, blood pressure, heart rate, temperature,
+  glucose, SpO2, sleep, steps), a symptom (severity 0–10, duration, triggers), a habit
+  (water/meal/exercise/break), a medication (schedule only), a health goal, or an appointment.
+- **Red-flag safety** — if you record something potentially serious (e.g. chest pain, SpO2 <
+  92%), the Health brain clearly says it may be concerning and urges appropriate
+  urgent/emergency care. It never diagnoses, never reassures falsely, never delays care, and
+  never changes medication doses.
+- **Health Memory Vault** — every health record is stored **encrypted** (Fernet, key kept in
+  the chmod-600 secrets file) and strictly separate from general Phantom memory; other brains
+  cannot read it. You can search, delete individual records, clear categories or everything,
+  and **export** your data as JSON.
+- **Privacy** — settings control sharing with other brains (default OFF), inclusion in the
+  Daily Briefing (default ON, non-sensitive) and sensitive briefing details (default OFF).
+- **Routines** — morning/afternoon/evening wellness routines that become real scheduled
+  notifications (quiet-hours aware); a "Daily health briefing" runs each morning at 07:30.
+- **Disable** — turn the Health Brain off anytime; records stay encrypted and untouched.
+
+Health Brain is not a doctor: it organizes, tracks, educates and reminds — and points you to
+real professionals whenever that's the right move.
+
 ## ⬆ App updates
 
 The packaged desktop app self-updates from GitHub Releases. When the version in `package.json`

@@ -135,6 +135,14 @@ class HeartbeatScheduler:
         for sched in schedules:
             if not sched["enabled"]:
                 continue
+            # disabled Health brain → its schedules stay quiet (records untouched)
+            if sched["agent"] == "health":
+                try:
+                    health_enabled = await self.settings.get("health.enabled", "health", True)
+                    if not health_enabled:
+                        continue
+                except Exception:  # noqa: BLE001
+                    continue
             nxt = sched["next_run_at"]
             if nxt is None:
                 nxt = next_run_at(sched["expression"])

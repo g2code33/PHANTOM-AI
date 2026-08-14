@@ -80,6 +80,7 @@ Python via PyInstaller is a documented follow-up.
 | **Tasks** | Tracked background work: ids, status, logs, cancellation, concurrency/runtime limits. |
 | **Observability** | Full audit log (tool calls, latency, tokens, confirmations, delegations, API errors) with a UI. |
 | **Evolution & System Intelligence** | Capability registry + dynamic brain creation; 🧬 Evolution brain (analysis, self-audit, proposals); graph engine with relationship discovery; improvement loop engine (bounded, strategy-switching, escalation, rollback); critic/verification; model routing; config snapshots & rollback; Health & Intelligence dashboard; in-app Update button (electron-updater, works when the version is bumped). |
+| **Health Brain** | 🩺 Independent specialist: encrypted Health Memory Vault (Fernet), daily health management & today overview, medication/appointment/goal tracking, measurement trends (never diagnoses), symptom tracking, red-flag safety layer (emergency/warning, safety over conversation), privacy controls (no sharing by default, non-sensitive briefing, audit), personalized routines → schedules, study cooperation, Health Center UI, disable anytime. |
 | **UI** | Local web app: agent switcher, conversations, live streaming chat, tool cards, confirmation dialogs, memory center, task manager, audit viewer, permissions editor, settings, tool lab, notifications, kill switch, provider status. |
 
 ## Layout

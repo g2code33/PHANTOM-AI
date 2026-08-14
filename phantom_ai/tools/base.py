@@ -89,6 +89,8 @@ class ToolContext:
     verifier: Any = None
     analyst: Any = None
     agent_ids: tuple = ("phantom", "coded")
+    # --- Health Brain services ---
+    health: Any = None
 
 
 async def _run_with_timeout(coro: Awaitable, timeout: float, ctx: ToolContext) -> Any:

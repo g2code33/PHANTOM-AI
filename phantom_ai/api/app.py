@@ -21,6 +21,8 @@ from ..core.killswitch import KillSwitch
 from ..evolution.analyst import EvolutionAnalyst
 from ..evolution.snapshots import ConfigSnapshots
 from ..graph.engine import GraphEngine
+from ..health.manager import HealthManager
+from ..health.vault import HealthVault
 from ..heartbeat.scheduler import HeartbeatScheduler
 from ..loops.engine import LoopEngine
 from ..memory.retriever import MemoryRetriever
@@ -42,6 +44,7 @@ from ..storage.ops import (
 )
 from ..tasks.manager import TaskManager
 from ..tools import build_registry
+from ..tools.health_tools import HEALTH_TOOLS
 
 
 class App:
@@ -85,6 +88,9 @@ class App:
         self.router: ModelRouter | None = None
         self.loops: LoopEngine | None = None
         self.verifier: Any = None
+        # Health Brain
+        self.health: HealthManager | None = None
+        self.health_vault: HealthVault | None = None
 
     # ------------------------------------------------------------------
     async def startup(self) -> None:
@@ -116,6 +122,14 @@ class App:
         self.brain_health = BrainHealth(self.audit, TaskStore(self.db),
                                         DelegationStore(self.db))
 
+        # ---- Health Brain services -----------------------------------------
+        self.health_vault = HealthVault(self.db, self.secrets)
+        self.health = HealthManager(
+            vault=self.health_vault, settings=self.settings,
+            schedules=ScheduleStore(self.db), notifications=self.notifications,
+            audit=self.audit, events=self.events, killswitch=self.killswitch,
+        )
+
         # ---- capability registry -------------------------------------------
         self.brains = BrainRegistry(
             store=BrainStore(self.db), settings=self.settings, audit=self.audit,
@@ -125,17 +139,20 @@ class App:
         self.snapshots = ConfigSnapshots(snapshot_store, self.settings, self.brains,
                                          self.audit, self.events)
 
-        # seed builtin brains (phantom, coded, evolution) — plus any persisted
-        # dynamically-registered brains from previous runs
-        for agent_id in (*AGENTS, "evolution"):
+        # seed builtin brains (phantom, coded, evolution, health) — plus any
+        # persisted dynamically-registered brains from previous runs
+        for agent_id in (*AGENTS, "evolution", "health"):
             meta = identity(agent_id)
+            role = ("evolution" if agent_id == "evolution" else
+                    "health" if agent_id == "health" else
+                    ("general" if agent_id == "phantom" else "technical"))
             definition = BrainDefinition(
                 brain_id=agent_id, name=meta["display_name"],
-                role="evolution" if agent_id == "evolution" else
-                     ("general" if agent_id == "phantom" else "technical"),
+                role=role,
                 description=meta["tagline"], system_prompt=meta["system_prompt"],
                 model=meta["default_model"], key_env=meta["key_env"],
                 memory_scope=agent_id,
+                tools=HEALTH_TOOLS if agent_id == "health" else None,
             )
             try:
                 await self.brains.register(definition, created_by="system",
@@ -177,6 +194,7 @@ class App:
             killswitch=self.killswitch, notification_store=self.notifications,
         )
         await self._seed_self_audit_schedules()
+        await self._seed_health_schedules()
 
     async def shutdown(self) -> None:
         if self.scheduler:
@@ -220,6 +238,7 @@ class App:
         agent.snapshots = self.snapshots
         agent.loop_engine = self.loops
         agent.analyst = self.analyst
+        agent.health = self.health
 
         self.providers[agent_id] = provider
         self.agents[agent_id] = agent
@@ -252,6 +271,24 @@ class App:
                 from ..heartbeat.scheduler import next_run_at
 
                 await schedules.update(sched["id"], next_run_at=next_run_at(expression))
+
+    async def _seed_health_schedules(self) -> None:
+        """Daily health briefing for the Health brain (idempotent, quiet-hours
+        aware, non-sensitive by default)."""
+        schedules = ScheduleStore(self.db)
+        existing = await schedules.list("health")
+        names = {s["name"] for s in existing}
+        if "Daily health briefing" not in names:
+            prompt = ("Run health_daily_overview with part=morning to prepare the day's health "
+                      "context. Then send a concise, NON-SENSITIVE notification summary to the "
+                      "user (medication names/appointment details only if the user opted in via "
+                      "health privacy settings). Follow all health safety and privacy rules.")
+            sched = await schedules.create(
+                "health", "Daily health briefing", "daily at 07:30", prompt,
+                quiet_start="22:00", quiet_end="07:00")
+            from ..heartbeat.scheduler import next_run_at
+
+            await schedules.update(sched["id"], next_run_at=next_run_at("daily at 07:30"))
 
     # ------------------------------------------------------------------
     async def _run_agent(self, agent_id: str, conversation_id: str, user_text: str,

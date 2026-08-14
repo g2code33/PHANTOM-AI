@@ -140,6 +140,50 @@ additive modules on top of the existing architecture:
   when `package.json` version is increased and a new GitHub Release is published, the app
   detects it via `latest.yml`/`latest-linux.yml`, downloads and restarts to install.
 
+## 9. Health Brain (Tier 12, additive)
+
+A fourth, independent specialist brain — **Health 🩺** — a private personal health & wellness
+assistant with strict medical-safety and privacy boundaries:
+
+- **Separate entity** — own brain ID, system prompt, model/API config
+  (`HEALTH_NVIDIA_API_KEY`, falls back to Phantom's key), memory namespace, tool allowlist
+  (health tools only + notifications + delegation to Phantom), permissions, and conversation
+  namespace. Registered in the Capability Registry; chat tab + agent switcher in the UI.
+- **Health Memory Vault** (`health/vault.py`) — health data NEVER becomes general memory. It
+  lives in its own table, **encrypted at rest with Fernet** (key in the chmod-600 secrets
+  store). Strict separation from the general MemoryStore; other brains have no path to it
+  (health tools are not registered for phantom/coded). View / correct / delete records /
+  delete category / export / clear all / disable — all user-controlled. Nothing is invented.
+- **Daily health management** (`health/manager.py`) — deterministic, local (no LLM needed)
+  morning / during-day / evening overviews: sleep, hydration, planned activity, medications,
+  appointments, meals, exercise, wellness recommendations; customizable tracked categories.
+- **Medication support** — schedules/reminders/missed-dose/refill tracking only; never
+  prescribe or change doses.
+- **Measurements & trends** — manual entry (weight, blood pressure, heart rate, temperature,
+  blood glucose, SpO2, sleep, steps); displays trends ("higher than your previous readings"),
+  never diagnoses.
+- **Symptom tracking** — voluntary records (severity, duration, triggers, observations) with
+  organization, summaries, and consultation-prep questions.
+- **Safety / red-flag layer** (`health/redflags.py`) — emergency symptom markers (chest pain,
+  difficulty breathing, stroke signs, severe bleeding, suicidal thoughts, anaphylaxis…),
+  measurement thresholds (SpO2<92, BP>180/110, glucose extremes…), and severity escalation.
+  Emergency findings produce a 🚨 URGENT response that urges immediate professional/emergency
+  care — safety always outranks conversational completeness, and the red-flag output is a
+  structured tool result the model cannot override.
+- **Privacy** — encryption at rest, health tools restricted to the Health brain, health memory
+  never auto-injected into prompts, settings: share with other brains (default off), include
+  in daily briefing (default on, non-sensitive), include sensitive briefing details (default
+  off). Audit log records all health access. No external transmission beyond the configured
+  model for the requested task.
+- **Personalized routines** — morning/afternoon/evening routines become real heartbeat
+  schedules (quiet-hours aware) with notifications; a seeded "Daily health briefing" runs at
+  07:30 and posts a non-sensitive summary.
+- **Health + Study** — `health_study_advice` suggests breaks/hydration/movement/sleep for long
+  study sessions without interfering academically.
+- **Health Center UI** — Wellness view: today overview cards, quick-log forms (measurement /
+  symptom / habit / medication / goal / appointment), trends, encrypted vault browser with
+  search/delete/clear/export, privacy display, routine list, disable/enable.
+
 ## 8. Verification strategy (how "done" is proven per tier)
 
 - **Tier 1–3** (providers/agents/delegation): unit + integration tests against a **local

@@ -34,6 +34,7 @@ KEY_ENV = {
     "phantom": "PHANTOM_NVIDIA_API_KEY",
     "coded": "CODED_NVIDIA_API_KEY",
     "evolution": "EVOLUTION_NVIDIA_API_KEY",
+    "health": "HEALTH_NVIDIA_API_KEY",
 }
 
 # Default NVIDIA NIM (OpenAI-compatible) endpoint
@@ -43,12 +44,14 @@ BASE_URL_ENV = {
     "phantom": "PHANTOM_NVIDIA_BASE_URL",
     "coded": "CODED_NVIDIA_BASE_URL",
     "evolution": "EVOLUTION_NVIDIA_BASE_URL",
+    "health": "HEALTH_NVIDIA_BASE_URL",
 }
 
 DEFAULT_MODELS = {
     "phantom": os.environ.get("PHANTOM_DEFAULT_MODEL", "nvidia/llama-3.3-70b-instruct"),
     "coded": os.environ.get("CODED_DEFAULT_MODEL", "nvidia/llama-3.3-70b-instruct"),
     "evolution": os.environ.get("EVOLUTION_DEFAULT_MODEL", "nvidia/llama-3.3-70b-instruct"),
+    "health": os.environ.get("HEALTH_DEFAULT_MODEL", "nvidia/llama-3.3-70b-instruct"),
 }
 
 AGENTS = ("phantom", "coded")

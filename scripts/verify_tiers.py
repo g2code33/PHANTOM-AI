@@ -54,6 +54,9 @@ TIERS = [
     ("Tier 11 · Evolution & System Intelligence (brains, graph, loops, "
      "model routing, proposals, snapshots, analyst)",
      ["tests/test_evolution.py"]),
+    ("Tier 12 · Health Brain (encrypted vault, red-flag safety, tools, "
+     "privacy, routines)",
+     ["tests/test_health.py"]),
 ]
 
 
@@ -115,9 +118,9 @@ async def live_smoke() -> bool:
         async with httpx.AsyncClient(base_url=base, timeout=30) as client:
             # status
             status = (await client.get("/api/status")).json()
-            await check("status: phantom/coded/evolution brains + kill switch off",
+            await check("status: 4 brains + kill switch off",
                         {a["id"] for a in status["agents"]} ==
-                        {"phantom", "coded", "evolution"} and
+                        { "phantom", "coded", "evolution", "health" } and
                         not status["killswitch"]["engaged"])
             await check("status: providers connected to mock",
                         status["providers"]["phantom"]["ok"])

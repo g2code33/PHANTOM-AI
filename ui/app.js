@@ -7,8 +7,9 @@
 const API_BASE = (localStorage.getItem("phai.apiBase") || "").replace(/\/+$/, "");
 const WS_BASE = API_BASE ? API_BASE.replace(/^http/, "ws") : "";
 
-const AGENTS = { phantom: { name: "Phantom", emoji: "👻", color: "var(--phantom)" },
-                 coded:   { name: "Coded",   emoji: "💻", color: "var(--coded)" } };
+const AGENTS = { phantom:  { name: "Phantom",  emoji: "👻", color: "var(--phantom)" },
+                 coded:    { name: "Coded",    emoji: "💻", color: "var(--coded)" },
+                 health:   { name: "Health",   emoji: "🩺", color: "var(--green)" } };
 
 const state = {
   agent: "phantom",
@@ -561,6 +562,158 @@ async function runSelfAudit() {
   toast("Self-audit generated");
 }
 
+/* ============================== WELLNESS (HEALTH BRAIN) ============================== */
+async function loadWellness() {
+  const status = await api("/api/health/status").catch(() => null);
+  if (!status) { $("wellnessSub").textContent = "Health Brain unavailable."; return; }
+  const banner = $("wellnessBanner");
+  if (!status.enabled) {
+    banner.classList.remove("hidden");
+    banner.innerHTML = `<div class="card-title">🩺 Health Brain is <b>disabled</b></div>
+      <div class="card-body small">Your health records remain encrypted and untouched in the vault. Re-enable anytime.</div>`;
+    $("wellnessEnable").classList.remove("hidden");
+    $("wellnessDisable").classList.add("hidden");
+    $("wellnessToday").innerHTML = `<div class="card muted">Health Brain disabled.</div>`;
+    return;
+  }
+  banner.classList.add("hidden");
+  $("wellnessEnable").classList.add("hidden");
+  $("wellnessDisable").classList.remove("hidden");
+  $("wellnessPrivacy").textContent = `🔒 ${status.privacy.encryption.split(";")[0]} · vault: ${status.vault_records} record(s) · ${(status.tracked_categories || []).join(", ")}`;
+
+  const [today, memories, routines, briefing, privacy] = await Promise.all([
+    api("/api/health/today"), api("/api/health/memories?limit=50"),
+    api("/api/health/routines"), api("/api/health/briefing"),
+    api("/api/health/privacy"),
+  ]);
+  renderWellnessToday(today);
+  renderWellnessMemories(memories.records || []);
+  renderWellnessRoutines(routines.routines || {});
+  $("wellnessBriefing").textContent = briefing.section || "(nothing yet)";
+  if (privacy.share_with_other_brains) $("wellnessPrivacy").textContent += " · ⚠️ sharing with other brains ON";
+}
+function renderWellnessToday(t) {
+  const el = $("wellnessToday");
+  el.innerHTML = "";
+  const card = (title, body, cls = "") => {
+    const d = document.createElement("div");
+    d.className = "card " + cls;
+    d.innerHTML = `<div class="card-title">${title}</div><div class="card-body">${body}</div>`;
+    el.appendChild(d);
+  };
+  card("💧 Hydration", `${t.hydration.liters}L / ${t.hydration.goal_liters}L goal (${t.hydration.pct}%)`);
+  card("🍎 Nutrition", `${t.nutrition.meals_logged} of ${t.nutrition.goal_meals} meals logged`);
+  card("🏃 Activity", `${t.activity.sessions} session(s) · ${t.activity.steps} / ${t.activity.goal_steps} steps`);
+  card("😴 Sleep", t.sleep.value != null ? `${t.sleep.value}h (goal ${t.sleep.goal_hours}h)` : "not recorded");
+  card("💊 Medications", t.medications.length ? t.medications.map(m => m.title || m.name || "?").join(", ") : "none scheduled");
+  card("📅 Appointments", t.appointments.length ? t.appointments.map(a => `${a.title || a.name || "?"} (${a.when || ""})`).join(", ") : "none");
+}
+function renderWellnessMemories(records) {
+  const el = $("wellnessMemories");
+  el.innerHTML = "";
+  if (!records.length) { el.innerHTML = `<div class="card muted">No health records yet.</div>`; return; }
+  for (const r of records) {
+    const d = document.createElement("div");
+    d.className = "card";
+    const body = typeof r.data === "object" ? JSON.stringify(r.data) : String(r.data);
+    d.innerHTML = `
+      <div class="card-title">🩺 ${esc(r.category)} <span class="pill info">${esc(r.title || "")}</span>
+        <span class="muted small">${esc((r.recorded_at || "").slice(0, 16))}</span></div>
+      <div class="card-body small">${esc(body)}</div>
+      <div class="card-actions">
+        <button class="mini-btn" onclick="wellnessDelete('${r.id}')">Delete</button>
+      </div>`;
+    el.appendChild(d);
+  }
+}
+function renderWellnessRoutines(routines) {
+  const el = $("wellnessRoutines");
+  let html = "";
+  for (const [block, items] of Object.entries(routines)) {
+    html += `<div class="card-title" style="margin-top:8px">${block.charAt(0).toUpperCase() + block.slice(1)}</div>
+      <div class="card-body small">${esc((items || []).join(" · ") || "(empty)")}</div>`;
+  }
+  el.innerHTML = html || `<div class="card muted">No routines set.</div>`;
+}
+async function wellnessLog() {
+  const type = $("wellnessLogType").value;
+  const a = $("wellnessLogA").value.trim();
+  const b = $("wellnessLogB").value.trim();
+  const c = $("wellnessLogC").value.trim();
+  let body = {};
+  if (type === "measurement") {
+    body = { category: "measurement", title: `${a} ${b}${c}`, data: { metric: a, value: parseFloat(b) || 0, unit: c } };
+  } else if (type === "symptom") {
+    body = { category: "symptom", title: a, data: { symptom: a, severity: parseInt(b, 10) || 5, duration: c } };
+  } else if (type === "habit") {
+    body = { category: "habit", title: `${a} ${b}${c}`, data: { kind: a, amount: parseFloat(b) || 0, unit: c } };
+  } else if (type === "medication") {
+    body = { category: "medication", title: a, data: { name: a, dose: b, schedule: c } };
+  } else if (type === "goal") {
+    body = { category: "goal", title: a, data: { goal: a, target: b } };
+  } else {
+    body = { category: "appointment", title: a, data: { when: b, provider: c } };
+  }
+  const rec = await api("/api/health/memories", { body });
+  $("wellnessLogMsg").textContent = `saved (${rec.id.slice(0, 8)})`;
+  const flagEl = $("wellnessRedFlag");
+  if (type === "symptom" || type === "measurement") {
+    const check = await api("/api/health/redflag", { body: type === "symptom"
+      ? { symptom: a, severity: parseInt(b, 10) || 0 }
+      : { metric: a, value: parseFloat(b) || 0, unit: c } });
+    if (check.red_flag) {
+      flagEl.classList.remove("hidden");
+      flagEl.innerHTML = `<div class="card-title">${check.red_flag.level === "emergency" ? "🚨 URGENT" : "⚠️ Note"}</div>
+        <div class="card-body">${esc(check.text)}</div>`;
+    } else flagEl.classList.add("hidden");
+  } else flagEl.classList.add("hidden");
+  $("wellnessLogA").value = ""; $("wellnessLogB").value = ""; $("wellnessLogC").value = "";
+  loadWellness();
+}
+async function wellnessTrends() {
+  const metric = $("wellnessTrendMetric").value;
+  const t = await api(`/api/health/trends?metric=${metric}&limit=14`);
+  const el = $("wellnessTrends");
+  if (!t.points || !t.points.length) { el.textContent = `No ${metric} records yet.`; return; }
+  const lines = t.points.slice(-10).map(p => `${p.value} ${p.unit}  (${p.when.slice(0, 16)})`);
+  if (t.trend_vs_previous != null) lines.push(`trend vs previous: ${t.trend_vs_previous > 0 ? "up" : "down"} ${Math.abs(t.trend_vs_previous)} ${t.points[t.points.length - 1].unit} (trends only — not a diagnosis)`);
+  el.textContent = `${metric}: ` + lines.join("\n");
+}
+async function wellnessMemories() {
+  const category = $("wellnessMemCategory").value;
+  const q = $("wellnessMemSearch").value.trim();
+  const res = await api(`/api/health/memories?category=${encodeURIComponent(category)}&q=${encodeURIComponent(q)}&limit=100`);
+  renderWellnessMemories(res.records || []);
+}
+async function wellnessDelete(id) {
+  if (!confirm("Delete this health record? Permanent.")) return;
+  await api(`/api/health/memories/${id}/delete`);
+  wellnessMemories();
+}
+async function wellnessClear() {
+  const category = $("wellnessMemCategory").value;
+  if (!confirm(category ? `Clear ALL ${category} records? Permanent.` : "Clear the ENTIRE Health Memory? Permanent.")) return;
+  const res = await api("/api/health/clear", { body: { category } });
+  toast(`Cleared ${res.cleared} record(s)`);
+  wellnessMemories();
+  loadWellness();
+}
+async function wellnessExport() {
+  const data = await api("/api/health/export");
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `phantom-health-export-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast("Health data exported");
+}
+async function wellnessToggle(enable) {
+  await api("/api/health/enable", { body: { enabled: enable } });
+  toast(enable ? "Health Brain enabled" : "Health Brain disabled (records untouched)");
+  loadWellness();
+}
+
 /* ============================== AUDIT ============================== */
 async function loadAuditEvents() {
   const res = await api("/api/audit/events");
@@ -644,9 +797,9 @@ async function loadSettings() {
   const body = $("settingsBody");
   const sections = [];
 
-  for (const agentId of ["phantom", "coded"]) {
+  for (const agentId of ["phantom", "coded", "health"]) {
     const k = keys[agentId] || {};
-    const meta = AGENTS[agentId];
+    const meta = AGENTS[agentId] || { emoji: "🧬", name: agentId };
     sections.push(`
       <div class="settings-section">
         <h3>${meta.emoji} ${meta.name} — API & Model</h3>
@@ -727,7 +880,7 @@ async function loadSettings() {
   body.innerHTML = sections.join("");
 
   // populate values
-  for (const agentId of ["phantom", "coded"]) {
+  for (const agentId of ["phantom", "coded", "health"]) {
     const s = (res.settings && res.settings[agentId]) || {};
     $("model-" + agentId).value = s.model || "";
     $("temp-" + agentId).value = s["model.temperature"] ?? 0.4;
@@ -1001,6 +1154,7 @@ function switchView(view) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
   if (view === "memory") loadMemories();
   if (view === "health") loadHealth();
+  if (view === "wellness") loadWellness();
   if (view === "tasks") loadTasks();
   if (view === "audit") { loadAuditEvents(); loadAudit(); }
   if (view === "permissions") loadPermissions();
@@ -1078,6 +1232,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   // health / evolution
   $("healthRefresh").onclick = loadHealth;
   $("auditRunBtn").onclick = runSelfAudit;
+
+  // wellness (Health Brain)
+  $("wellnessRefresh").onclick = loadWellness;
+  $("wellnessEnable").onclick = () => wellnessToggle(true);
+  $("wellnessDisable").onclick = () => wellnessToggle(false);
+  $("wellnessExport").onclick = wellnessExport;
+  $("wellnessMemSearch").addEventListener("keydown", (ev) => { if (ev.key === "Enter") wellnessMemories(); });
 
   // updater wiring
   if (updater) {
