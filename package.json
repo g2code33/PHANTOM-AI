@@ -84,7 +84,9 @@
       ],
       "category": "Utility",
       "maintainer": "g2code33",
-      "synopsis": "PHANTOM + CODED personal AI computer operator"
+      "synopsis": "Phantom personal AI companion",
+      "executableName": "phantom",
+      "description": "A personal AI computer companion \u2014 voice-first."
     },
     "deb": {
       "afterInstall": "build/after_install.sh",
