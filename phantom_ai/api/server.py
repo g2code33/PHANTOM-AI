@@ -141,6 +141,7 @@ def create_app(app: App) -> FastAPI:
             "active_runs": {a: app.agents[a].active_runs() for a in brain_ids},
             "pending_confirmations": {a: len(await app.confirmations.pending_for_agent(a))
                                       for a in brain_ids},
+            "voice": await voice_config(),
         }
 
     @fastapi.get("/api/agents")
@@ -292,6 +293,7 @@ def create_app(app: App) -> FastAPI:
         all_settings = await app.settings.all()
         return {
             "settings": all_settings,
+            "voice": await voice_config(),
             "keys": {
                 agent_id: {
                     "env": KEY_ENV.get(agent_id, f"{agent_id.upper()}_NVIDIA_API_KEY"),
@@ -505,6 +507,8 @@ def create_app(app: App) -> FastAPI:
         for agent_id in await app.brain_ids():
             for run_id in list(app.agents[agent_id].active_runs()):
                 app.agents[agent_id].cancel(run_id)
+        # stop voice output + microphone capture immediately (UI listens)
+        await app.events.publish("voice.stop", {"reason": "kill switch"})
         await app.events.publish("killswitch.state", app.killswitch.to_dict())
         return {"ok": True, "cancelled_tasks": cancelled}
 
@@ -519,9 +523,80 @@ def create_app(app: App) -> FastAPI:
     async def voice_config():
         stt = await app.settings.get("voice.stt", "*", {"provider": "browser"})
         tts = await app.settings.get("voice.tts", "*", {"provider": "browser"})
-        return {"stt": {"provider": stt.get("provider", "browser")},
-                "tts": {"provider": tts.get("provider", "browser"),
-                        "voice": tts.get("voice", "")}}
+        mode = await app.settings.get("voice.mode", "*", "conversation")
+        proactive = await app.settings.get("voice.proactive_speech", "*", False)
+        dg = app.secrets.get("DEEPGRAM_API_KEY") or ""
+        return {
+            "stt": {"provider": stt.get("provider", "browser"),
+                    "model": stt.get("model", "")},
+            "tts": {"provider": tts.get("provider", "browser"),
+                    "voice": tts.get("voice", "")},
+            "mode": mode,
+            "proactive_speech": bool(proactive),
+            "deepgram_configured": bool(dg),
+            "deepgram_masked": mask_key(dg),
+        }
+
+    @fastapi.put("/api/voice/config")
+    async def voice_config_set(body: dict):
+        if body.get("stt"):
+            await app.settings.set("voice.stt", body["stt"], "*")
+        if body.get("tts"):
+            await app.settings.set("voice.tts", body["tts"], "*")
+        if body.get("mode") in ("private", "push", "conversation"):
+            await app.settings.set("voice.mode", body["mode"], "*")
+        if body.get("proactive_speech") is not None:
+            await app.settings.set("voice.proactive_speech",
+                                   bool(body["proactive_speech"]), "*")
+        if body.get("deepgram_api_key"):
+            # never echoed back; stored server-side only
+            app.secrets.set("DEEPGRAM_API_KEY", str(body["deepgram_api_key"]).strip())
+        if body.get("delete_deepgram_key"):
+            app.secrets.delete("DEEPGRAM_API_KEY")
+        await app.audit.record("user", "voice.config_changed",
+                               {"keys": [k for k in ("stt", "tts", "mode",
+                                                     "proactive_speech") if k in body]})
+        return await voice_config()
+
+    @fastapi.post("/api/voice/deepgram-token")
+    async def deepgram_token():
+        """Server-minted ephemeral Deepgram token (10 min) so the frontend never
+        sees the real API key."""
+        import httpx as _httpx
+
+        key = app.secrets.get("DEEPGRAM_API_KEY")
+        if not key:
+            raise HTTPException(400, "DEEPGRAM_API_KEY not configured")
+        try:
+            async with _httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    "https://api.deepgram.com/v1/keys",
+                    headers={"Authorization": f"Token {key}"},
+                    params={"comment": "phantom-voice", "lifetime": "10",
+                            "scopes": "member", "tags": "phantom"},
+                )
+                resp.raise_for_status()
+                token = (resp.json() or {}).get("key") or \
+                    ((resp.json() or {}).get("data") or {}).get("key")
+                if not token:
+                    raise HTTPException(502, "Deepgram did not return a key")
+                return {"token": token, "expires_in": 600}
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"Deepgram token failed: {exc}") from None
+
+    @fastapi.post("/api/voice/speak")
+    async def voice_speak(body: dict):
+        """Proactive speech trigger (heartbeat/testing): publishes a voice.speak
+        event over WebSocket. Respects mute/quiet rules via the UI."""
+        text = (body.get("text") or "").strip()
+        if not text:
+            raise HTTPException(400, "text required")
+        await app.events.publish("voice.speak", {"text": text[:2000],
+                                                 "priority": body.get("priority", "normal")})
+        await app.audit.record("system", "voice.proactive", {"text": text[:200]})
+        return {"ok": True}
 
     # -------------------------------------------------------------- evolution
     @fastapi.get("/api/brains")
@@ -878,6 +953,10 @@ def create_app(app: App) -> FastAPI:
         @fastapi.get("/styles.css")
         async def styles_css():
             return FileResponse(UI_DIR / "styles.css", media_type="text/css")
+
+        @fastapi.get("/voice.js")
+        async def voice_js():
+            return FileResponse(UI_DIR / "voice.js", media_type="text/javascript")
 
     return fastapi
 

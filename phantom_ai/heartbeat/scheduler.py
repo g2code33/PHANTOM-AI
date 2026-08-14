@@ -193,6 +193,23 @@ class HeartbeatScheduler:
             await self.events.publish("notification.new", {
                 "agent": agent,
                 "notification": {"title": f"Heartbeat · {sched['name']}", "body": summary[:300]}})
+            # proactive speech (Jarvis-style): speak the result if enabled,
+            # respecting cooldown and mute (UI enforces quiet hours/snooze).
+            if not self.killswitch.is_engaged():
+                try:
+                    proactive = await self.settings.get("voice.proactive_speech", "*", False)
+                    if proactive and status == "ok" and summary:
+                        last = await self.settings.get("voice.last_proactive_ts", "*", 0)
+                        import time as _time
+
+                        if _time.time() - float(last or 0) > 600:  # 10 min cooldown
+                            await self.settings.set("voice.last_proactive_ts",
+                                                    _time.time(), "*")
+                            await self.events.publish("voice.speak", {
+                                "text": summary[:1500], "priority": "normal",
+                                "source": f"heartbeat:{sched['name']}"})
+                except Exception:  # noqa: BLE001
+                    pass
             return result
 
         await self.task_manager.launch(agent, f"Heartbeat: {sched['name']}", "heartbeat", factory)

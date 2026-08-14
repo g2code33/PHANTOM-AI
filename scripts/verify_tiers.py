@@ -57,6 +57,9 @@ TIERS = [
     ("Tier 12 · Health Brain (encrypted vault, red-flag safety, tools, "
      "privacy, routines)",
      ["tests/test_health.py"]),
+    ("Tier 13 · Jarvis transformation (voice-first engine, voice endpoints, "
+     "proactive speech, specialist brains, app rename)",
+     ["tests/test_voice.py", "tests/test_config.py"]),
 ]
 
 

@@ -170,8 +170,8 @@ jobs:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           VER="$(node -p "require('./package.json').version")"
-          cp android/app/build/outputs/apk/release/app-release.apk "phantom-coded-${VER}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "phantom-${VER}.apk"
           # Release is created by electron-builder in one of the matrix legs;
           # ensure it exists (no-op if already created), then attach the APK.
           gh release create "v${VER}" --generate-notes --title "v${VER}" 2>/dev/null || true
-          gh release upload "v${VER}" "phantom-coded-${VER}.apk" --clobber
+          gh release upload "v${VER}" "phantom-${VER}.apk" --clobber

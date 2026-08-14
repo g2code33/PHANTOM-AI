@@ -269,7 +269,7 @@ function createWindow() {
     height: 900,
     minWidth: 960,
     minHeight: 640,
-    title: "PHANTOM + CODED",
+    title: "Phantom",
     backgroundColor: "#0b0e14",
     icon: process.platform === "linux"
       ? path.join(resourceRoot(), "build", "icon.png")
@@ -312,7 +312,7 @@ app.whenReady().then(async () => {
     backendPort = await startBackend();
   } catch (err) {
     dialog.showErrorBox(
-      "PHANTOM + CODED — backend failed to start",
+      "Phantom — backend failed to start",
       err instanceof Error ? err.message : String(err),
     );
     app.quit();

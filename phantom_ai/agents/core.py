@@ -39,7 +39,7 @@ from ..providers.base import (
     ToolCallChunk,
 )
 from ..tools.base import ToolContext, ToolError, ToolRegistry, ToolResult
-from .identities import identity
+from .identities import generic_identity, identity
 
 MAX_ITERATIONS = 12
 DEFAULT_WINDOW = 24
@@ -123,7 +123,10 @@ class Agent:
         delegation_manager: Any = None,
     ) -> None:
         self.agent_id = agent_id
-        self.meta = identity(agent_id)
+        if agent_id in ("phantom", "coded", "evolution", "health"):
+            self.meta = identity(agent_id)
+        else:
+            self.meta = generic_identity(agent_id)
         self.provider = provider
         self.registry = registry
         self.permissions = permission_manager

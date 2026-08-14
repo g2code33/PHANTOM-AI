@@ -219,6 +219,21 @@ def identity(agent_id: str) -> dict:
     }
 
 
+def generic_identity(agent_id: str) -> dict:
+    """Identity for dynamically-registered brains (specialists)."""
+    return {
+        "id": agent_id,
+        "display_name": agent_id.replace("_", " ").title(),
+        "emoji": "🧩",
+        "tagline": "Specialist capability",
+        "system_prompt": "",
+        "default_model": os.environ.get("PHANTOM_DEFAULT_MODEL", DEFAULT_MODELS["phantom"]),
+        "key_env": KEY_ENV.get(agent_id, KEY_ENV["phantom"]),
+        "memory_namespace": agent_id,
+        "conversation_namespace": agent_id,
+    }
+
+
 def identity_summary() -> list[dict]:
     return [
         {

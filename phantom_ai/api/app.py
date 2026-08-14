@@ -15,6 +15,7 @@ from ..agents.identities import identity
 from ..brains.definitions import BrainDefinition
 from ..brains.health import BrainHealth
 from ..brains.registry import BrainRegistry
+from ..brains.specialists import specialist_definitions
 from ..config import AGENTS, DB_PATH, DATA_DIR, KEY_ENV, SecretsStore, SettingsStore
 from ..core.events import EventBus
 from ..core.killswitch import KillSwitch
@@ -91,6 +92,8 @@ class App:
         # Health Brain
         self.health: HealthManager | None = None
         self.health_vault: HealthVault | None = None
+        # Voice
+        self._provider_cache: dict[str, tuple[float, dict]] = {}
 
     # ------------------------------------------------------------------
     async def startup(self) -> None:
@@ -159,6 +162,14 @@ class App:
                                            require_approval=False)
             except ValueError:
                 pass  # already registered (persisted brain)
+
+        # ---- specialist brains (full capability catalogue) ----------------
+        for definition in specialist_definitions():
+            try:
+                await self.brains.register(definition, created_by="system",
+                                           require_approval=False)
+            except ValueError:
+                pass  # already registered
 
         # ---- agents (providers built per identity) -------------------------
         for brain in await self.brains.list():
@@ -347,10 +358,24 @@ class App:
                     pass
         self.providers[agent_id] = provider
         self.agents[agent_id].provider = provider
+        self._provider_cache.pop(agent_id, None)
         return {"provider": provider.name, "model": provider.model}
 
     async def provider_status(self, agent_id: str, cached_ok: bool = True) -> dict:
-        return await self.providers[agent_id].check()
+        """Provider health with a short cache (status is polled frequently and
+        with many specialist brains we must not hit the API each time)."""
+        import time as _time
+
+        if cached_ok:
+            cached = self._provider_cache.get(agent_id)
+            if cached and (_time.monotonic() - cached[0]) < 15:
+                return cached[1]
+        try:
+            status = await self.providers[agent_id].check()
+        except Exception as exc:  # noqa: BLE001
+            status = {"ok": False, "detail": str(exc)[:200]}
+        self._provider_cache[agent_id] = (_time.monotonic(), status)
+        return status
 
     def uptime_seconds(self) -> float:
         return time.time() - self.started_at

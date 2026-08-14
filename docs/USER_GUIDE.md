@@ -75,6 +75,33 @@ Try: "Evolution, run a self-audit and propose improvements." Or register a new s
 from the API/UI: id, role, system prompt, tools — it becomes a live agent (privileged brains
 require approval).
 
+## Voice-first Phantom (the primary interface)
+
+Phantom launches into a **presence environment** — a calm, living core at the center of the
+screen that reflects Phantom's real state (idle / listening / thinking / speaking / executing /
+verifying / interrupted / error / disconnected). Text is secondary; the transcript sits below
+the presence.
+
+- **Speak naturally.** In *conversation* mode the mic is always listening (browser Web Speech
+  streaming, or Deepgram streaming when configured). Phantom replies out loud and you can
+  **interrupt** — the moment it hears you, it stops speaking and listens.
+- **Push-to-talk** — hold/tap the mic button to talk; release to end the turn.
+- **Private mode** — mic off, no external voice services; typed input only.
+- **Proactive speech** — when enabled (Settings → Voice), scheduled events can speak to you
+  ("your build finished", reminders), respecting quiet hours and a cooldown. Quiet by default.
+- **Kill switch** — the ⏻ button stops voice, the microphone, tasks and agent runs instantly.
+- **Deepgram** — configure `DEEPGRAM_API_KEY` in Settings → Voice for low-latency streaming
+  STT/TTS. The key stays server-side; the UI only ever receives a 10-minute ephemeral token.
+- **First run** — a short onboarding asks your name, voice, AI mode and permission level, then
+  Phantom greets you by voice.
+
+## Specialist brains
+
+The Capability Registry seeds the full specialist catalogue (planner, tutor, research, coding,
+security, critic, testing, execution, finance, goals, …). They share the platform provider by
+default; each can be given its own model/API later. Evolution (🧬 panel) shows every brain's
+health and lets you approve proposals and restore snapshots.
+
 ## 🩺 Health Center (Health Brain)
 
 The **🩺 Wellness** view is the Health Brain — a private personal health & wellness assistant
