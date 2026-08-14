@@ -45,6 +45,7 @@ function ensureLinuxSandbox() {
   const candidates = [
     path.join(path.dirname(process.execPath), "chrome-sandbox"),
     path.join(process.resourcesPath || "", "chrome-sandbox"),
+    "/opt/Phantom/chrome-sandbox",
     "/opt/PhantomCoded/chrome-sandbox",
   ];
   for (const candidate of candidates) {
@@ -58,7 +59,7 @@ function ensureLinuxSandbox() {
   console.warn(
     "[main] chrome-sandbox is not setuid root — Chromium sandbox unavailable; " +
     "falling back to --no-sandbox. Fix permanently with: " +
-    "sudo chown root:root /opt/PhantomCoded/chrome-sandbox && sudo chmod 4755 /opt/PhantomCoded/chrome-sandbox",
+    "sudo chown root:root /opt/Phantom/chrome-sandbox && sudo chmod 4755 /opt/Phantom/chrome-sandbox",
   );
   app.commandLine.appendSwitch("no-sandbox");
 }
