@@ -1,6 +1,6 @@
 {
   "name": "phantom",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "description": "Phantom \u2014 a personal AI computer companion (voice-first). Coded, Health and specialist brains live inside the same platform.",
   "author": "g2code33",
   "license": "MIT",
@@ -90,7 +90,8 @@
     },
     "deb": {
       "afterInstall": "build/after_install.sh",
-      "artifactName": "phantom_${version}_amd64.${ext}"
+      "artifactName": "phantom_${version}_amd64.${ext}",
+      "afterRemove": "build/after_remove.sh"
     },
     "appImage": {
       "artifactName": "Phantom-${version}.${ext}"
