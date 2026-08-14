@@ -1,7 +1,7 @@
 {
   "name": "phantom-coded",
   "version": "0.1.0",
-  "description": "PHANTOM + CODED — personal AI computer operator: two AI entities (Phantom, Coded) on one shared agent framework.",
+  "description": "PHANTOM + CODED \u2014 personal AI computer operator: two AI entities (Phantom, Coded) on one shared agent framework.",
   "author": "g2code33",
   "license": "MIT",
   "main": "dist-electron/main.js",
@@ -33,7 +33,7 @@
   "build": {
     "appId": "com.g2code33.phantomcoded",
     "productName": "PhantomCoded",
-    "copyright": "Copyright © 2026 g2code33",
+    "copyright": "Copyright \u00a9 2026 g2code33",
     "directories": {
       "output": "release"
     },
@@ -54,7 +54,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -68,11 +70,15 @@
       "target": [
         {
           "target": "deb",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "AppImage",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "category": "Utility",
@@ -84,6 +90,15 @@
     },
     "appImage": {
       "artifactName": "PhantomCoded-${version}.${ext}"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "g2code33",
+      "repo": "PHANTOM-AI",
+      "releaseType": "release"
     }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

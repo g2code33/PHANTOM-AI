@@ -141,6 +141,57 @@ class Agent:
         self.cancellations = CancellationRegistry()
         self._run_semaphore: Optional[asyncio.Semaphore] = None
         self._active_runs: dict[str, dict[str, Any]] = {}
+        # Evolution & System Intelligence hooks (optional; set by the container)
+        self.graph: Any = None
+        self.router: Any = None
+        self.verifier: Any = None
+        self.brain_registry: Any = None
+        self.proposals: Any = None
+        self.snapshots: Any = None
+        self.loop_engine: Any = None
+        self.analyst: Any = None
+        self.tool_allowlist: Optional[set] = None
+
+    async def ensure_model(self, task_text: str, mode: str = "chat") -> str:
+        """Intelligent model selection: pick a model for this task via the
+        router and rebuild the provider if the chosen model differs."""
+        if self.router is None:
+            return self.provider.model
+        chosen = await self.router.choose(self.agent_id, task_text,
+                                          has_tools=mode != "delegation")
+        if chosen and chosen != self.provider.model:
+            from ..providers import build_provider
+            from ..config import KEY_ENV
+
+            key = self.secrets.get(KEY_ENV.get(self.agent_id, "")) or \
+                self.secrets.get(KEY_ENV.get("phantom", ""))
+            provider = build_provider(self.agent_id, api_key=key or "", model=chosen)
+            if provider.has_key:
+                old = self.provider
+                self.provider = provider
+                close = getattr(old, "aclose", None)
+                if close:
+                    try:
+                        await close()
+                    except Exception:  # noqa: BLE001
+                        pass
+        return self.provider.model
+
+    async def verify(self, objective: str, produced: str) -> dict[str, Any]:
+        """Independent verification (critic-style) using this brain's provider."""
+        if self.verifier is not None:
+            return await self.verifier(objective, produced)
+        try:
+            result = await self.provider.complete(
+                [ChatMessage(role="system", content=CRITIC_SYSTEM_PROMPT),
+                 ChatMessage(role="user", content=f"OBJECTIVE:\n{objective}\n\n"
+                                                  f"PRODUCED RESULT:\n{produced[:6000]}")],
+                max_tokens=800,
+            )
+            return _parse_verdict(result.content)
+        except Exception as exc:  # noqa: BLE001
+            return {"verdict": "FAIL", "score": 0.0, "issues": [f"verification error: {exc}"],
+                    "notes": ""}
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -178,6 +229,10 @@ class Agent:
                 )
         finally:
             kill_task.cancel()
+            try:
+                await kill_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
             self.cancellations.clear(run_id)
 
     async def _semaphore(self) -> asyncio.Semaphore:
@@ -201,6 +256,26 @@ class Agent:
         user_row = await self.conversations.append_message(conversation_id, agent, "user",
                                                            user_text, session_id=session_id)
         await self._auto_title(conversation_id, user_text)
+
+        # graph auto-tracking (never breaks the run)
+        if self.graph is not None:
+            try:
+                await self.graph.track("user", "user", {"origin": "local"}, agent=agent)
+                await self.graph.track("conversation", conversation_id,
+                                       {"agent": agent}, agent=agent)
+                await self.graph.relate("user", conversation_id, "mentions",
+                                        properties={"agent": agent})
+                await self.graph.track("task", user_text[:120], {"agent": agent},
+                                       agent=agent, relation="occurred_in",
+                                       target=conversation_id)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # intelligent model selection for this task
+        try:
+            await self.ensure_model(user_text, mode)
+        except Exception:  # noqa: BLE001 — model switching failure must not block
+            pass
         await self.events.publish_run(run_id, "agent.run_started", {
             "agent": agent, "conversation_id": conversation_id, "mode": mode}, agent=agent)
 
@@ -223,6 +298,8 @@ class Agent:
 
         messages = [ChatMessage(role="system", content=system_prompt), *history]
         tools = self.registry.schemas(agent)
+        if self.tool_allowlist:
+            tools = [t for t in tools if t["function"]["name"] in self.tool_allowlist]
         if permissions_override:
             tools = [t for t in tools if t["function"]["name"] in permissions_override]
         tool_calls_made = 0
@@ -435,6 +512,15 @@ class Agent:
                                    "success": result.success}],
                     session_id=session_id,
                 )
+                if self.graph is not None:
+                    try:
+                        await self.graph.track(
+                            "tool", tc.name, {"success": result.success, "agent": agent},
+                            agent=agent, relation="produces",
+                            target=conversation_id,
+                            weight=1.0 if result.success else 0.2)
+                    except Exception:  # noqa: BLE001
+                        pass
         return executed
 
     async def _run_tool_group(self, ctx, group, agent, run_id, confirm_timeout,
@@ -531,6 +617,15 @@ class Agent:
             confirmations=self.confirmations,
             notifications=self.notifications,
             task_token=cancel_event,
+            brain_registry=self.brain_registry,
+            graph=self.graph,
+            proposals=self.proposals,
+            snapshots=self.snapshots,
+            loop_engine=self.loop_engine,
+            verifier=self.verifier,
+            analyst=self.analyst,
+            agent_ids=tuple(self.brain_registry.ids_sync()) if self.brain_registry
+            else ("phantom", "coded"),
         )
 
     # ------------------------------------------------------------------
@@ -668,3 +763,39 @@ def _text_tool_descriptions(tools: list[dict]) -> str:
         fn = t["function"]
         lines.append(f"- {fn['name']}: {fn['description']}")
     return "\n".join(lines)
+
+
+CRITIC_SYSTEM_PROMPT = """You are an independent CRITIC/VERIFICATION system.
+
+You review work produced by another system against its original objective.
+You do not trust the producer; you evaluate evidence.
+
+Respond with a JSON object exactly like this:
+{"verdict": "PASS" | "FAIL", "score": 0.0-1.0, "issues": ["..."], "notes": "..."}
+
+- PASS only when the objective is actually satisfied by the produced result.
+- List concrete issues when failing.
+- Be strict but fair; short outputs that fully satisfy the objective can PASS.
+"""
+
+
+def _parse_verdict(content: str) -> dict[str, Any]:
+    import json as _json
+
+    try:
+        match = re.search(r"\{.*\}", content or "", re.S)
+        if not match:
+            raise ValueError("no json")
+        data = _json.loads(match.group(0))
+        return {
+            "verdict": str(data.get("verdict", "FAIL")).upper(),
+            "score": float(data.get("score", 0.0)),
+            "issues": list(data.get("issues", []) or []),
+            "notes": str(data.get("notes", "") or ""),
+        }
+    except Exception:  # noqa: BLE001
+        upper = (content or "").upper()
+        return {"verdict": "PASS" if "VERDICT: PASS" in upper or '"PASS"' in upper else "FAIL",
+                "score": 1.0 if "PASS" in upper else 0.0,
+                "issues": ["unparseable verification output"] if "PASS" not in upper else [],
+                "notes": (content or "")[:500]}

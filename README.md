@@ -79,6 +79,7 @@ Python via PyInstaller is a documented follow-up.
 | **Heartbeat** | Schedules (`every 30m`, `hourly`, `daily at 09:00`, cron), quiet hours, catch-up after restart, dismissible notifications, kill-switch integration. |
 | **Tasks** | Tracked background work: ids, status, logs, cancellation, concurrency/runtime limits. |
 | **Observability** | Full audit log (tool calls, latency, tokens, confirmations, delegations, API errors) with a UI. |
+| **Evolution & System Intelligence** | Capability registry + dynamic brain creation; 🧬 Evolution brain (analysis, self-audit, proposals); graph engine with relationship discovery; improvement loop engine (bounded, strategy-switching, escalation, rollback); critic/verification; model routing; config snapshots & rollback; Health & Intelligence dashboard; in-app Update button (electron-updater, works when the version is bumped). |
 | **UI** | Local web app: agent switcher, conversations, live streaming chat, tool cards, confirmation dialogs, memory center, task manager, audit viewer, permissions editor, settings, tool lab, notifications, kill switch, provider status. |
 
 ## Layout

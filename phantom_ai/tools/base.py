@@ -80,6 +80,15 @@ class ToolContext:
     confirmations: Any = None
     notifications: Any = None
     task_token: Any = None  # asyncio.Event — cancelled when the run is stopped
+    # --- Evolution & System Intelligence services ---
+    brain_registry: Any = None
+    graph: Any = None
+    proposals: Any = None
+    snapshots: Any = None
+    loop_engine: Any = None
+    verifier: Any = None
+    analyst: Any = None
+    agent_ids: tuple = ("phantom", "coded")
 
 
 async def _run_with_timeout(coro: Awaitable, timeout: float, ctx: ToolContext) -> Any:

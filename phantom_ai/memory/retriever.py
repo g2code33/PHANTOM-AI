@@ -25,10 +25,12 @@ MAX_PACKAGE_CHARS = 6000
 
 
 class MemoryRetriever:
-    def __init__(self, store: Any, conversation_store: Any, settings: Any) -> None:
+    def __init__(self, store: Any, conversation_store: Any, settings: Any,
+                 graph: Any = None) -> None:
         self.store = store
         self.conversation_store = conversation_store
         self.settings = settings
+        self.graph = graph
 
     async def build_context_package(self, agent_id: str, user_text: str,
                                     conversation_id: str | None) -> str:
@@ -63,6 +65,20 @@ class MemoryRetriever:
                     f"· {r['conversation_title']} ({date}): {SecretRedactor.redact(r['snippet'])[:280]}"
                 )
             blocks.append("<history related past conversations>\n" + "\n".join(lines) + "\n</history>")
+
+        # graph-aware retrieval: related projects/tasks/tools/memories
+        if self.graph is not None:
+            try:
+                related_nodes = await self.graph.relevant_to(user_text, limit=6)
+                if related_nodes:
+                    lines = [
+                        f"· {n['type']}: {n['label']}"
+                        for n in related_nodes[:6]
+                    ]
+                    blocks.append("<graph related context>\n" + "\n".join(lines)
+                                  + "\n</graph>")
+            except Exception:  # noqa: BLE001 — graph failure must not break retrieval
+                pass
 
         package = "\n\n".join(blocks)
         if len(package) > package_chars:

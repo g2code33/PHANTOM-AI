@@ -151,6 +151,86 @@ CREATE TABLE IF NOT EXISTS confirmations (
     decided_at TEXT,
     decided_by TEXT
 );
+
+-- ---- Evolution & System Intelligence --------------------------------------
+
+CREATE TABLE IF NOT EXISTS brains (
+    id            TEXT PRIMARY KEY,
+    name          TEXT,
+    role          TEXT,
+    description   TEXT,
+    system_prompt TEXT,
+    model         TEXT,
+    provider      TEXT DEFAULT 'nvidia',
+    key_env       TEXT,
+    tools         TEXT,
+    memory_scope  TEXT DEFAULT 'own',
+    permissions   TEXT,
+    input_schema  TEXT,
+    output_schema TEXT,
+    routing_rules TEXT,
+    dependencies  TEXT,
+    verification  TEXT,
+    version       INTEGER DEFAULT 1,
+    status        TEXT DEFAULT 'active',
+    stats         TEXT,
+    health        TEXT,
+    created_at    TEXT,
+    updated_at    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS graph_nodes (
+    id         TEXT PRIMARY KEY,
+    type       TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    properties TEXT,
+    agent      TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_nodes_type ON graph_nodes(type);
+CREATE INDEX IF NOT EXISTS idx_nodes_label ON graph_nodes(label);
+
+CREATE TABLE IF NOT EXISTS graph_edges (
+    id         TEXT PRIMARY KEY,
+    source     TEXT NOT NULL,
+    target     TEXT NOT NULL,
+    relation   TEXT NOT NULL,
+    properties TEXT,
+    weight     REAL DEFAULT 1.0,
+    created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_edges_source ON graph_edges(source);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON graph_edges(target);
+CREATE INDEX IF NOT EXISTS idx_edges_relation ON graph_edges(relation);
+
+CREATE TABLE IF NOT EXISTS proposals (
+    id          TEXT PRIMARY KEY,
+    title       TEXT,
+    description TEXT,
+    kind        TEXT DEFAULT 'config',
+    changes     TEXT,
+    risk        TEXT DEFAULT 'low',
+    status      TEXT DEFAULT 'proposed',
+    created_by  TEXT,
+    snapshot_id TEXT,
+    tests       TEXT,
+    result      TEXT,
+    created_at  TEXT,
+    decided_at  TEXT,
+    deployed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+    id          TEXT PRIMARY KEY,
+    label       TEXT,
+    description TEXT,
+    kind        TEXT DEFAULT 'config',
+    data        TEXT,
+    previous_id TEXT,
+    created_at  TEXT,
+    restored_at TEXT
+);
 """
 
 

@@ -56,6 +56,32 @@ Per-agent (Phantom / Coded) and **Shared** namespaces. Add facts manually or ask
 remember. "Forget" marks a memory inactive; "Delete forever" removes it. Memories are data —
 stored text can never override safety rules or act as instructions.
 
+## 🧬 Evolution & Health dashboard
+
+The sidebar's **Health** view is the Evolution Brain's dashboard:
+- **Brains** — every registered brain (Phantom, Coded, Evolution, plus any you register) with
+  live status, model, tools, success rate, average latency, error rate, task count.
+- **Knowledge graph** — node/edge counts and manual tracking ("project → Code Rx").
+- **Proposals** — improvement suggestions (from Evolution's self-audit or the agents); approve
+  & deploy (wrapped in a pre-change snapshot) or reject.
+- **Snapshots** — configuration version control; restore any snapshot to roll back.
+- **Loop lab** — run an objective through the improvement loop
+  (observe/understand/plan/execute/test/verify/evaluate/learn/improve/repeat) with iteration,
+  timeout, cost and failure limits; results land in Tasks.
+- **Self-audit** — "Run daily self-audit" generates the internal report; Evolution also runs
+  daily/weekly audits on a schedule (quiet hours apply).
+
+Try: "Evolution, run a self-audit and propose improvements." Or register a new specialist brain
+from the API/UI: id, role, system prompt, tools — it becomes a live agent (privileged brains
+require approval).
+
+## ⬆ App updates
+
+The packaged desktop app self-updates from GitHub Releases. When the version in `package.json`
+is increased and a new release is published, the ⬆ button in the top bar offers the update
+(download → restart & install). Settings → App updates shows the current state and a manual
+check. Works in the packaged app only (dev mode/browser show status only).
+
 ## Heartbeat / schedules
 
 Settings → Schedules. Expressions: `every 30m`, `every 2h`, `hourly`, `daily at 09:00`,

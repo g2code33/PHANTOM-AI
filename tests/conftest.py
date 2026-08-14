@@ -93,6 +93,10 @@ async def tool_ctx(app):
             conversation_store=instance.conversations,
             delegation_manager=instance.delegations, secrets=instance.secrets,
             confirmations=instance.confirmations, notifications=instance.notifications,
+            brain_registry=instance.brains, graph=instance.graph,
+            proposals=instance.proposals, snapshots=instance.snapshots,
+            loop_engine=instance.loops, verifier=instance.verifier,
+            analyst=instance.analyst, agent_ids=("phantom", "coded", "evolution"),
         ))
 
     yield factory

@@ -22,12 +22,16 @@ from .nvidia import NVIDIAProvider
 
 def create_provider(agent_id: str, secrets: Optional[SecretsStore] = None) -> ModelProvider:
     secrets = secrets or SecretsStore()
-    api_key = secrets.get(KEY_ENV[agent_id])
-    model = DEFAULT_MODELS[agent_id]
+    # Evolution (and any dynamically registered brain) falls back to Phantom's
+    # key when it has no key of its own; models default to Phantom's defaults.
+    api_key = secrets.get(KEY_ENV.get(agent_id, "")) or secrets.get(KEY_ENV["phantom"])
+    model = DEFAULT_MODELS.get(agent_id, DEFAULT_MODELS["phantom"])
     base_url = _base_url_for(agent_id)
 
     if not api_key:
-        return OfflineProvider(model="offline", agent_label="Phantom" if agent_id == "phantom" else "Coded")
+        label = {"phantom": "Phantom", "coded": "Coded", "evolution": "Evolution"}.get(
+            agent_id, agent_id.capitalize())
+        return OfflineProvider(model="offline", agent_label=label)
 
     return NVIDIAProvider(api_key=api_key, model=model, base_url=base_url)
 
@@ -35,9 +39,11 @@ def create_provider(agent_id: str, secrets: Optional[SecretsStore] = None) -> Mo
 def _base_url_for(agent_id: str) -> str:
     from ..config import NVIDIA_BASE_URL
 
-    env_name = BASE_URL_ENV[agent_id]
     import os
 
+    env_name = BASE_URL_ENV.get(agent_id)
+    if not env_name:
+        return NVIDIA_BASE_URL
     return os.environ.get(env_name, NVIDIA_BASE_URL)
 
 

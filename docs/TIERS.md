@@ -17,6 +17,7 @@ Built in the specified order, each tier implemented → run → tested → verif
 | **8 · Voice** | `STTProvider`/`TTSProvider` abstractions; browser push-to-talk + speech synthesis; server providers pluggable; same agent core for typed/voice/proactive input | abstraction tests; documented in `docs/USER_GUIDE.md` (needs browser STT support; server providers require config) |
 | **9 · Heartbeat** | Scheduler (interval/daily/cron expressions), quiet hours, catch-up after restart, notifications, duplicate prevention, kill-switch stop | `tests/test_heartbeat.py` (5) |
 | **10 · Advanced** | Task manager (ids/status/logs/cancel/limits), delegation limits, parallel-safe tool execution, observability (audit UI + API), full API surface | `tests/test_api.py` (8), `tests/test_delegation.py`, live smoke |
+| **11 · Evolution & System Intelligence** | Capability Registry + dynamic brain creation (persisted); Evolution brain (🧬) with introspection/proposals/self-audit; Graph Engine with auto-tracking + graph-aware retrieval; Loop Engine (bounded, strategy switch, escalation, rollback); critic/verification; model routing; config snapshots + rollback; Health & Intelligence dashboard; in-app Update button (electron-updater) | `tests/test_evolution.py` (16), `tests/test_api.py`, live smoke (3 brains) |
 
 ## Honesty notes (nothing faked)
 

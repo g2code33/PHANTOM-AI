@@ -23,6 +23,7 @@
       <button class="agent-tab" data-agent="coded"><span>💻</span> Coded</button>
     </nav>
     <div class="topbar-right">
+      <button id="updateBtn" class="icon-btn hidden" title="Check for updates">⬆</button>
       <button id="voiceToggle" class="icon-btn" title="Speak replies (browser TTS)">🔊</button>
       <button id="notifBtn" class="icon-btn" title="Notifications">🔔<span id="notifBadge" class="badge hidden">0</span></button>
       <div class="provider-status" id="providerStatus" title="Provider status">
@@ -49,6 +50,7 @@
       <nav class="views">
         <button class="view-btn active" data-view="chats">💬 Chats</button>
         <button class="view-btn" data-view="memory">🧠 Memory</button>
+        <button class="view-btn" data-view="health">🧬 Health</button>
         <button class="view-btn" data-view="tasks">📋 Tasks <span id="taskCount" class="count-pill"></span></button>
         <button class="view-btn" data-view="audit">🕵️ Audit</button>
         <button class="view-btn" data-view="permissions">🔐 Permissions</button>
@@ -155,6 +157,46 @@
           <button id="auditRefresh" class="btn">Refresh</button>
         </div>
         <div id="auditList" class="card-list"></div>
+      </section>
+
+      <!-- health view -->
+      <section id="view-health" class="view">
+        <div class="panel-head">
+          <h2>🧬 Health &amp; Intelligence Dashboard</h2>
+          <p class="muted">Evolution Brain view: every brain, its health, performance, graph, improvement proposals, snapshots, and loop lab.</p>
+        </div>
+        <div class="memory-controls">
+          <button id="healthRefresh" class="btn">Refresh</button>
+          <button id="auditRunBtn" class="btn">Run daily self-audit</button>
+          <span class="muted small" id="healthSummary"></span>
+        </div>
+        <h3 class="muted">Brains</h3>
+        <div id="brainList" class="card-list"></div>
+        <h3 class="muted" style="margin-top:18px">Knowledge graph</h3>
+        <div id="graphStats" class="card muted small"></div>
+        <div class="memory-controls" style="margin-top:10px">
+          <input id="graphNodeType" placeholder="node type (project/task/memory/tool…)" style="width:200px">
+          <input id="graphNodeLabel" placeholder="label" style="flex:1">
+          <button class="btn" onclick="trackGraphNode()">Track node</button>
+        </div>
+        <h3 class="muted" style="margin-top:18px">Evolution proposals</h3>
+        <div id="proposalList" class="card-list"></div>
+        <h3 class="muted" style="margin-top:18px">Config snapshots (version control)</h3>
+        <div class="memory-controls">
+          <button class="btn" onclick="createSnapshot()">Snapshot now</button>
+        </div>
+        <div id="snapshotList" class="card-list"></div>
+        <h3 class="muted" style="margin-top:18px">Loop lab</h3>
+        <div class="memory-controls">
+          <select id="loopAgent"><option value="phantom">👻 Phantom</option><option value="coded">💻 Coded</option><option value="evolution">🧬 Evolution</option></select>
+          <input id="loopObjective" placeholder="objective to run through the improvement loop…" style="flex:1">
+          <button class="btn btn-primary" onclick="runLoopTask()">Run loop</button>
+        </div>
+        <div class="memory-controls">
+          <label class="muted small">max iterations</label><input id="loopIters" type="number" value="4" style="width:60px">
+          <label class="muted small">fail threshold</label><input id="loopFail" type="number" value="2" style="width:60px">
+        </div>
+        <div id="loopResult" class="card hidden"></div>
       </section>
 
       <!-- permissions view -->

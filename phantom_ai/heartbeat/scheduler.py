@@ -40,6 +40,9 @@ def parse_expression(expression: str) -> dict:
     m = re.match(r"^(?:daily\s+at\s+|at\s+)(\d{1,2}):(\d{2})$", expr)
     if m:
         return {"kind": "daily", "hour": int(m.group(1)), "minute": int(m.group(2))}
+    m = re.match(r"^weekly\s+at\s+(\d{1,2}):(\d{2})$", expr)
+    if m:
+        return {"kind": "weekly", "hour": int(m.group(1)), "minute": int(m.group(2))}
     parts = expr.split()
     field_re = re.compile(r"^(\*|\d{1,2}|\*/\d{1,2})$")
     if len(parts) == 5 and all(field_re.fullmatch(p) for p in parts):
@@ -55,10 +58,12 @@ def next_run_at(expression: str, from_dt: Optional[datetime] = None) -> str:
     base = from_dt or datetime.now(timezone.utc)
     if parsed["kind"] == "interval":
         return (base + timedelta(seconds=parsed["every_sec"])).isoformat(timespec="milliseconds")
-    if parsed["kind"] == "daily":
+    if parsed["kind"] in ("daily", "weekly"):
         nxt = base.replace(hour=parsed["hour"], minute=parsed["minute"], second=0, microsecond=0)
         if nxt <= base:
             nxt += timedelta(days=1)
+        if parsed["kind"] == "weekly":
+            nxt += timedelta(days=6)
         return nxt.isoformat(timespec="milliseconds")
     # cron (limited to minute/hour granularity)
     minute, hour = parsed["minute"], parsed["hour"]

@@ -106,6 +106,40 @@ A prominent, always-visible control (UI button, never relies on the AI): engagin
 heartbeat, cancels pending tasks, and cancels in-flight agent runs where safely cancellable; the
 user can still browse logs/settings and disarm. Agent runs and scheduler loops check it each step.
 
+## 8. Evolution & System Intelligence (Tier 11, additive)
+
+The system is self-monitoring, multi-brain, graph-aware and continuously improving — built as
+additive modules on top of the existing architecture:
+
+- **Capability Registry** (`brains/`) — every brain (Phantom, Coded, Evolution, + dynamically
+  registered brains) has a machine-readable definition: id, name, role, system prompt, model,
+  provider, tools, memory scope, permissions, dependencies, version, status, health/performance
+  stats. New brains register at runtime (validate → capabilities → permissions → activate);
+  privileged brains require authorization. Persisted, so they survive restarts.
+- **Evolution Brain** (`evolution` identity) — system-level intelligence: introspection tools
+  (brain_status, graph_query, self_audit), improvement proposals, snapshots/rollback, loop
+  execution, and daily/weekly self-audit schedules (quiet hours 22:00–07:00 UTC).
+- **Graph Engine** (`graph/`) — persistent typed nodes/edges (user, project, task, memory,
+  tool, conversation, …) with BFS neighbor/path discovery; agents auto-track runs, tool calls
+  and memories; the retriever enriches the context package with graph-relevant nodes.
+- **Loop Engineering** (`loops/`) — OBSERVE→…→REPEAT orchestration with hard limits: max
+  iterations, per-iteration timeout, cost budget, failure threshold, strategy switching,
+  escalation to another brain, approval gate, and pre-loop snapshot + rollback on failure.
+- **Model routing** (`providers/router.py`) — per-brain fast/default/strong model map chosen by
+  task complexity; agents rebuild their provider automatically when the router selects a
+  different model.
+- **Critic/verification** — `Agent.verify()` runs an independent critic pass; `verify_result`
+  tool and the Loop Engine use it before declaring success.
+- **Self-improvement with safety** (`evolution/`) — analyst aggregates success/failure, latency,
+  API errors, tool errors, handoff failures, approvals/denials, cost, unused capabilities into
+  daily/weekly reports and proposals. Proposals deploy only after explicit approval and are
+  wrapped in config snapshots; `rollback_snapshot` restores the previous stable configuration.
+- **Health Center** — Health & Intelligence dashboard (UI) + `/api/brains`, `/api/graph*`,
+  `/api/proposals`, `/api/snapshots`, `/api/evolution/*`, `/api/loops/run`.
+- **Self-update** — the Electron app exposes an in-app **Update button** (electron-updater):
+  when `package.json` version is increased and a new GitHub Release is published, the app
+  detects it via `latest.yml`/`latest-linux.yml`, downloads and restarts to install.
+
 ## 8. Verification strategy (how "done" is proven per tier)
 
 - **Tier 1–3** (providers/agents/delegation): unit + integration tests against a **local

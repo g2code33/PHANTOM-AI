@@ -6,6 +6,8 @@ prompt, model, API key, memory namespace and conversation namespace.
 
 from __future__ import annotations
 
+import os
+
 from ..config import DEFAULT_MODELS, KEY_ENV
 
 # Shared safety preamble — identical for both entities. It defines the
@@ -88,16 +90,61 @@ You speak plainly, show the evidence, and never claim a fix that wasn't verified
 """ + _CONTEXT_RULES
 
 
+EVOLUTION_SYSTEM_PROMPT = SAFETY_PREAMBLE + """
+
+IDENTITY
+You are EVOLUTION 🧬 — the system-level intelligence of this AI platform.
+You are NOT a general chatbot: you analyze, improve, optimize, and maintain the
+entire PHANTOM + CODED ecosystem: every brain, model, tool, workflow, project,
+memory, permission, dependency, task, and their relationships and performance.
+
+MISSION
+- Keep a live picture of the system: use brain_status to inspect all brains and
+  their health, use graph_query to explore relationships, use list_proposals /
+  list_snapshots to review changes.
+- Detect optimization opportunities (repeated failures, slow tools, expensive
+  models, handoff failures, unused capabilities) and record them as proposals.
+- Run self_audit to produce daily/weekly internal reports.
+- Run autonomous tasks through run_loop_task with strict limits (iterations,
+  timeout, cost budget, failure thresholds, escalation, rollback).
+- Before any change to the system: create_snapshot; after: monitor; on failure:
+  rollback_snapshot. Never apply high-risk changes without approval.
+
+SAFETY (non-negotiable)
+- You never change permissions, expose API keys, disable security controls,
+  delete memories/files, or install software. You propose; the user or the
+  approval flow decides.
+- Improvements follow: PROPOSE → VERSION → SANDBOX → TEST → VERIFY → APPROVE →
+  DEPLOY → MONITOR → ROLLBACK IF NECESSARY.
+- If a strategy fails repeatedly, change strategy instead of repeating it.
+- Evidence over assertion: verify with tools before claiming success.
+""" + _CONTEXT_RULES
+
+
 def identity(agent_id: str) -> dict:
+    if agent_id == "evolution":
+        return {
+            "id": "evolution",
+            "display_name": "Evolution",
+            "emoji": "🧬",
+            "tagline": "System intelligence — analysis, optimization, maintenance",
+            "system_prompt": EVOLUTION_SYSTEM_PROMPT,
+            "default_model": os.environ.get("EVOLUTION_DEFAULT_MODEL",
+                                            DEFAULT_MODELS["phantom"]),
+            "key_env": "EVOLUTION_NVIDIA_API_KEY",
+            "memory_namespace": "evolution",
+            "conversation_namespace": "evolution",
+        }
+    display = "Phantom" if agent_id == "phantom" else "Coded"
     return {
         "id": agent_id,
-        "display_name": "Phantom" if agent_id == "phantom" else "Coded",
+        "display_name": display,
         "emoji": "👻" if agent_id == "phantom" else "💻",
         "tagline": ("General-purpose AI computer operator" if agent_id == "phantom"
                     else "Technical specialist AI computer operator"),
         "system_prompt": PHANTOM_SYSTEM_PROMPT if agent_id == "phantom" else CODED_SYSTEM_PROMPT,
-        "default_model": DEFAULT_MODELS[agent_id],
-        "key_env": KEY_ENV[agent_id],
+        "default_model": DEFAULT_MODELS.get(agent_id, DEFAULT_MODELS["phantom"]),
+        "key_env": KEY_ENV.get(agent_id, KEY_ENV["phantom"]),
         "memory_namespace": agent_id,
         "conversation_namespace": agent_id,
     }
@@ -114,5 +161,11 @@ def identity_summary() -> list[dict]:
             "id": "coded", "display_name": "Coded", "emoji": "💻",
             "tagline": "Technical specialist AI computer operator",
             "default_model": DEFAULT_MODELS["coded"],
+        },
+        {
+            "id": "evolution", "display_name": "Evolution", "emoji": "🧬",
+            "tagline": "System intelligence — analysis, optimization, maintenance",
+            "default_model": os.environ.get("EVOLUTION_DEFAULT_MODEL",
+                                            DEFAULT_MODELS["phantom"]),
         },
     ]

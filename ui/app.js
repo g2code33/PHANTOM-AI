@@ -434,6 +434,133 @@ async function loadTasks() {
 }
 async function cancelTask(id) { await api(`/api/tasks/${id}/cancel`); loadTasks(); }
 
+/* ============================== HEALTH / EVOLUTION ============================== */
+async function loadHealth() {
+  const [brains, graph, proposals, snapshots] = await Promise.all([
+    api("/api/brains").catch(() => ({ brains: [] })),
+    api("/api/graph").catch(() => ({ stats: {} })),
+    api("/api/proposals").catch(() => ({ proposals: [] })),
+    api("/api/snapshots").catch(() => ({ snapshots: [] })),
+  ]);
+  const stats = graph.stats || {};
+  $("healthSummary").textContent = `${(brains.brains || []).length} brains · ${stats.nodes || 0} graph nodes · ${stats.edges || 0} edges`;
+  $("graphStats").textContent = `nodes: ${stats.nodes || 0} · edges: ${stats.edges || 0} · ${JSON.stringify(stats.by_type || {})}`;
+
+  // brains
+  const bl = $("brainList");
+  bl.innerHTML = "";
+  for (const b of brains.brains || []) {
+    const card = document.createElement("div");
+    card.className = "card";
+    const stateCls = b.health_state === "online" ? "ok" : b.health_state === "degraded" ? "warn" : "info";
+    card.innerHTML = `
+      <div class="card-title">
+        🧬 ${esc(b.name)} <span class="muted small">(${esc(b.id)})</span>
+        <span class="pill ${stateCls}">${esc(b.health_state || "unknown")}</span>
+        <span class="pill ${b.status === "active" ? "ok" : "err"}">${esc(b.status)}</span>
+        <span class="pill info">v${b.version || 1}</span>
+      </div>
+      <div class="card-meta">
+        <span>model: <b>${esc(b.model)}</b></span>
+        <span>role: ${esc(b.role)}</span>
+        <span>tools: ${b.tools === "all" ? "all" : esc((b.tools || []).join(", "))}</span>
+      </div>
+      <div class="card-meta">
+        <span>success: <b>${b.success_rate != null ? (b.success_rate * 100).toFixed(0) + "%" : "—"}</b></span>
+        <span>latency: ${b.avg_latency_ms != null ? b.avg_latency_ms.toFixed(0) + " ms" : "—"}</span>
+        <span>error rate: ${b.error_rate != null ? (b.error_rate * 100).toFixed(0) + "%" : "—"}</span>
+        <span>tasks: ${b.tasks || 0}</span>
+        <span>last active: ${b.last_active ? timeAgo(b.last_active) : "—"}</span>
+      </div>`;
+    bl.appendChild(card);
+  }
+  if (!(brains.brains || []).length) bl.innerHTML = `<div class="card muted">No brains registered.</div>`;
+
+  // proposals
+  const pl = $("proposalList");
+  pl.innerHTML = "";
+  for (const p of proposals.proposals || []) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <div class="card-title">💡 ${esc(p.title)}
+        <span class="pill ${p.status === "deployed" ? "ok" : p.status === "proposed" ? "warn" : "info"}">${esc(p.status)}</span>
+        <span class="pill ${p.risk === "high" ? "err" : p.risk === "medium" ? "warn" : "info"}">${esc(p.risk)} risk</span>
+        <span class="pill info">${esc(p.kind)}</span>
+      </div>
+      <div class="card-body small">${esc(p.description)}</div>
+      <div class="card-meta">by ${esc(p.created_by)} · ${timeAgo(p.created_at)}${p.result ? " · " + esc(String(p.result).slice(0, 120)) : ""}</div>
+      <div class="card-actions">
+        ${p.status === "proposed" ? `<button class="mini-btn" onclick="approveProposal('${p.id}')">Approve & deploy</button>
+          <button class="mini-btn" onclick="rejectProposal('${p.id}')">Reject</button>` : ""}
+      </div>`;
+    pl.appendChild(card);
+  }
+  if (!(proposals.proposals || []).length) pl.innerHTML = `<div class="card muted">No proposals yet — ask Evolution to run a self-audit.</div>`;
+
+  // snapshots
+  const sl = $("snapshotList");
+  sl.innerHTML = "";
+  for (const s of snapshots.snapshots || []) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <div class="card-title">📸 ${esc(s.label)} <span class="muted small">${esc(s.id.slice(0, 8))}</span>
+        <span class="pill info">${esc(s.kind)}</span>
+        ${s.restored_at ? `<span class="pill warn">restored ${timeAgo(s.restored_at)}</span>` : ""}
+      </div>
+      <div class="card-meta">${timeAgo(s.created_at)}${s.previous_id ? ` · prev: ${esc(s.previous_id.slice(0, 8))}` : ""}</div>
+      <div class="card-actions"><button class="mini-btn" onclick="restoreSnapshot('${s.id}')">Restore (rollback)</button></div>`;
+    sl.appendChild(card);
+  }
+  if (!(snapshots.snapshots || []).length) sl.innerHTML = `<div class="card muted">No snapshots yet.</div>`;
+}
+async function approveProposal(id) {
+  if (!confirm("Approve & deploy this proposal? A pre-change snapshot will be created.")) return;
+  const res = await api(`/api/proposals/${id}/approve`);
+  toast(`Proposal ${res.status}`);
+  loadHealth();
+}
+async function rejectProposal(id) { await api(`/api/proposals/${id}/reject`); loadHealth(); }
+async function createSnapshot() { await api("/api/snapshots", { body: { label: "manual snapshot", description: "from Health dashboard" } }); toast("Snapshot created"); loadHealth(); }
+async function restoreSnapshot(id) {
+  if (!confirm("Restore this snapshot? Current configuration will be overwritten.")) return;
+  await api(`/api/snapshots/${id}/restore`, { body: { reason: "manual rollback from Health dashboard" } });
+  toast("Snapshot restored");
+  loadHealth();
+}
+async function trackGraphNode() {
+  const nodeType = $("graphNodeType").value.trim();
+  const label = $("graphNodeLabel").value.trim();
+  if (!nodeType || !label) { toast("node type + label required"); return; }
+  const res = await api("/api/graph/track", { body: { node_type: nodeType, label } });
+  toast(`Tracked ${nodeType}: ${label}`);
+  $("graphNodeLabel").value = "";
+  loadHealth();
+}
+async function runLoopTask() {
+  const objective = $("loopObjective").value.trim();
+  if (!objective) { toast("objective required"); return; }
+  const res = await api("/api/loops/run", { body: {
+    agent: $("loopAgent").value,
+    objective,
+    max_iterations: parseInt($("loopIters").value, 10) || 4,
+    failure_threshold: parseInt($("loopFail").value, 10) || 2,
+    rollback: true,
+  }});
+  $("loopResult").classList.remove("hidden");
+  $("loopResult").textContent = `Loop task started: ${res.name} (${res.id}) — status ${res.status}. Watch the Tasks view.`;
+  toast("Loop task launched");
+}
+async function runSelfAudit() {
+  const res = await api("/api/evolution/audit", { body: { period: "daily" } });
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = `<div class="card-title">📋 Daily self-audit</div><div class="card-body mono small">${esc(res.report)}</div>`;
+  $("proposalList").prepend(card);
+  toast("Self-audit generated");
+}
+
 /* ============================== AUDIT ============================== */
 async function loadAuditEvents() {
   const res = await api("/api/audit/events");
@@ -574,6 +701,15 @@ async function loadSettings() {
       <div class="row"><label>TTS provider</label>
         <select id="ttsProvider"><option value="browser">browser speechSynthesis</option><option value="openai-compatible">openai-compatible (server)</option></select>
       </div>
+    </div>
+    <div class="settings-section">
+      <h3>⬆ App updates</h3>
+      <div class="row"><label>Desktop app</label>
+        <span id="updateState" class="muted">checking…</span>
+        <button id="updateCheckBtn" class="btn">Check now</button>
+        <button id="updateInstallBtn" class="btn btn-primary hidden">Restart &amp; install</button>
+      </div>
+      <p class="muted small">The desktop app self-updates from GitHub Releases (latest.yml / latest-linux.yml). When the version in package.json is increased and a new release is published, the ⬆ button in the top bar offers the update. Packaged app only — dev mode and the browser show the status only.</p>
     </div>
     <div class="settings-section">
       <h3>📱 Mobile / remote backend</h3>
@@ -802,12 +938,69 @@ function speak(text) {
   } catch (e) {}
 }
 
+/* ============================== UPDATER ============================== */
+const updater = window.phaiUpdater || null;
+let updaterState = { state: "idle" };
+function renderUpdater() {
+  const btn = $("updateBtn");
+  const installBtn = $("updateInstallBtn");
+  const stateEl = $("updateState");
+  if (!updater) {
+    if (btn) btn.classList.add("hidden");
+    if (stateEl) stateEl.textContent = "not available (run the packaged desktop app)";
+    return;
+  }
+  const s = updaterState;
+  if (s.state === "available" || s.state === "ready") {
+    btn.classList.remove("hidden");
+    btn.textContent = s.state === "ready" ? "🔄 Restart" : `⬆ v${s.version}`;
+    btn.title = s.state === "ready" ? "Restart & install the update" : `Update to v${s.version}`;
+    if (installBtn) {
+      installBtn.classList.toggle("hidden", s.state !== "ready");
+      if (s.state === "ready") installBtn.textContent = `Restart & install v${s.version}`;
+    }
+  } else {
+    btn.classList.add("hidden");
+  }
+  if (stateEl) {
+    stateEl.textContent = s.state === "checking" ? "checking for updates…"
+      : s.state === "up-to-date" ? `up to date (v${s.version})`
+      : s.state === "downloading" ? `downloading… ${s.percent || 0}%`
+      : s.state === "error" ? `update error: ${s.message || "unknown"}`
+      : s.state === "dev" ? "dev mode — updates only in the packaged app"
+      : s.state === "available" ? `update available: v${s.version}`
+      : s.state === "ready" ? `update ready: v${s.version} — restart to install`
+      : "not checked yet";
+  }
+}
+async function checkForUpdates() {
+  if (!updater) return;
+  updaterState = { state: "checking" };
+  renderUpdater();
+  const res = await updater.check().catch((e) => ({ state: "error", message: String(e) }));
+  updaterState = res || { state: "error", message: "no response" };
+  renderUpdater();
+  if (updaterState.state === "available") {
+    toast(`⬆ Update available: v${updaterState.version}`);
+    updater.download();
+  } else if (updaterState.state === "up-to-date") {
+    toast("✅ You're on the latest version");
+  } else if (updaterState.state === "dev") {
+    toast("📦 Updates work in the packaged app (dev mode skipped)");
+  }
+}
+async function installUpdate() {
+  if (!updater) return;
+  updater.install();
+}
+
 /* ============================== VIEW SWITCH ============================== */
 function switchView(view) {
   state.view = view;
   document.querySelectorAll(".view-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
   if (view === "memory") loadMemories();
+  if (view === "health") loadHealth();
   if (view === "tasks") loadTasks();
   if (view === "audit") { loadAuditEvents(); loadAudit(); }
   if (view === "permissions") loadPermissions();
@@ -881,6 +1074,24 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // permissions
   $("permAgent").onchange = loadPermissions;
+
+  // health / evolution
+  $("healthRefresh").onclick = loadHealth;
+  $("auditRunBtn").onclick = runSelfAudit;
+
+  // updater wiring
+  if (updater) {
+    updater.onStatus((s) => { updaterState = s || {}; renderUpdater(); });
+    $("updateBtn").onclick = () => { if (updaterState.state === "ready") installUpdate(); else checkForUpdates(); };
+    const checkBtn = $("updateCheckBtn");
+    const installBtn = $("updateInstallBtn");
+    if (checkBtn) checkBtn.onclick = checkForUpdates;
+    if (installBtn) installBtn.onclick = installUpdate;
+    renderUpdater();
+    setTimeout(checkForUpdates, 2500); // auto-check shortly after start
+  } else {
+    renderUpdater();
+  }
 
   // settings live-save
   document.addEventListener("change", (ev) => {

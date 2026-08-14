@@ -23,16 +23,17 @@ async def test_status_and_agents(app):
         res = await client.get("/api/status")
         assert res.status_code == 200
         data = res.json()
-        assert len(data["agents"]) == 2
+        assert len(data["agents"]) == 3  # phantom, coded, evolution
         assert data["killswitch"]["engaged"] is False
         ids = {a["id"] for a in data["agents"]}
-        assert ids == {"phantom", "coded"}
+        assert ids == {"phantom", "coded", "evolution"}
         assert data["providers"]["phantom"]["ok"] is True
 
         res2 = await client.get("/api/agents")
-        agents = res2.json()["agents"]
-        assert agents[0]["display_name"] == "Phantom"
-        assert agents[1]["display_name"] == "Coded"
+        agents = {a["id"]: a for a in res2.json()["agents"]}
+        assert agents["phantom"]["display_name"] == "Phantom"
+        assert agents["coded"]["display_name"] == "Coded"
+        assert agents["evolution"]["display_name"] == "Evolution"
 
 
 async def test_chat_over_http(app):

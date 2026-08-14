@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from ..agents.identities import identity_summary
+from ..agents.identities import identity, identity_summary
 from ..config import AGENTS, KEY_ENV, UI_DIR, mask_key
 from ..permissions.policy import PermissionLevel
 from ..tools.base import ToolContext, ToolError
@@ -118,7 +118,8 @@ def create_app(app: App) -> FastAPI:
     @fastapi.get("/api/status")
     async def status():
         provider_statuses = {}
-        for agent_id in AGENTS:
+        brain_ids = await app.brain_ids()
+        for agent_id in brain_ids:
             try:
                 provider_statuses[agent_id] = await app.provider_status(agent_id)
             except Exception as exc:  # noqa: BLE001
@@ -130,23 +131,23 @@ def create_app(app: App) -> FastAPI:
             "providers": provider_statuses,
             "agents": [
                 {
-                    **identity_summary()[0 if agent_id == "phantom" else 1],
+                    **identity(agent_id),
                     "provider": provider_statuses.get(agent_id, {}).get("provider"),
                     "model": app.providers[agent_id].model,
                     "connected": provider_statuses.get(agent_id, {}).get("ok", False),
                 }
-                for agent_id in AGENTS
+                for agent_id in brain_ids
             ],
-            "active_runs": {a: app.agents[a].active_runs() for a in AGENTS},
+            "active_runs": {a: app.agents[a].active_runs() for a in brain_ids},
             "pending_confirmations": {a: len(await app.confirmations.pending_for_agent(a))
-                                      for a in AGENTS},
+                                      for a in brain_ids},
         }
 
     @fastapi.get("/api/agents")
     async def agents():
         out = []
-        for agent_id in AGENTS:
-            meta = identity_summary()[0 if agent_id == "phantom" else 1]
+        for agent_id in await app.brain_ids():
+            meta = identity(agent_id)
             out.append({
                 "id": agent_id,
                 "display_name": meta["display_name"],
@@ -154,20 +155,21 @@ def create_app(app: App) -> FastAPI:
                 "tagline": meta["tagline"],
                 "model": app.providers[agent_id].model,
                 "provider": app.providers[agent_id].name,
-                "api_key_configured": bool(app.secrets.get(KEY_ENV[agent_id])),
+                "api_key_configured": bool(app.secrets.get(KEY_ENV.get(agent_id, "")) or
+                                           app.secrets.get(KEY_ENV["phantom"])),
             })
         return {"agents": out}
 
     # ------------------------------------------------------------ conversations
     @fastapi.get("/api/conversations")
     async def list_conversations(agent: str = "phantom", limit: int = 100):
-        if agent not in AGENTS:
+        if agent not in await app.brain_ids():
             raise HTTPException(400, "unknown agent")
         return {"conversations": await app.conversations.list_for_agent(agent, limit)}
 
     @fastapi.post("/api/conversations")
     async def create_conversation(body: ConversationCreate):
-        if body.agent not in AGENTS:
+        if body.agent not in await app.brain_ids():
             raise HTTPException(400, "unknown agent")
         conv = await app.conversations.create(body.agent, body.title)
         return conv
@@ -202,7 +204,7 @@ def create_app(app: App) -> FastAPI:
     # ------------------------------------------------------------------ chat
     @fastapi.post("/api/agents/{agent_id}/chat")
     async def chat(agent_id: str, body: ChatRequest):
-        if agent_id not in AGENTS:
+        if agent_id not in app.agents:
             raise HTTPException(404, "unknown agent")
         if app.killswitch.is_engaged():
             raise HTTPException(409, "kill switch is engaged — disengage it before chatting")
@@ -320,7 +322,7 @@ def create_app(app: App) -> FastAPI:
 
     @fastapi.post("/api/settings/rebuild-provider")
     async def rebuild_provider(body: AgentIdBody):
-        if body.agent not in AGENTS:
+        if body.agent not in app.agents:
             raise HTTPException(400, "unknown agent")
         return await app.rebuild_provider(body.agent)
 
@@ -498,7 +500,7 @@ def create_app(app: App) -> FastAPI:
     async def engage_killswitch(body: KillSwitchBody):
         await app.killswitch.engage(body.reason or "manual")
         cancelled = await app.tasks.cancel_all()
-        for agent_id in AGENTS:
+        for agent_id in await app.brain_ids():
             for run_id in list(app.agents[agent_id].active_runs()):
                 app.agents[agent_id].cancel(run_id)
         await app.events.publish("killswitch.state", app.killswitch.to_dict())
@@ -518,6 +520,178 @@ def create_app(app: App) -> FastAPI:
         return {"stt": {"provider": stt.get("provider", "browser")},
                 "tts": {"provider": tts.get("provider", "browser"),
                         "voice": tts.get("voice", "")}}
+
+    # -------------------------------------------------------------- evolution
+    @fastapi.get("/api/brains")
+    async def brains():
+        if app.brains is None:
+            return {"brains": []}
+        if app.brain_health is not None:
+            await app.brain_health.update_all(app.brains)
+        return {"brains": [app.brains.summary(b) for b in await app.brains.list()]}
+
+    @fastapi.post("/api/brains")
+    async def register_brain(body: dict):
+        """Dynamic brain creation (Brain Definition format)."""
+        from ..brains.definitions import BrainDefinition
+
+        definition = BrainDefinition.from_dict(body)
+        try:
+            result = await app.brains.register(
+                definition, created_by=body.get("created_by", "user"),
+                require_approval=bool(definition.permissions))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from None
+        return result
+
+    @fastapi.delete("/api/brains/{bid}")
+    async def delete_brain(bid: str):
+        if bid in ("phantom", "coded", "evolution"):
+            raise HTTPException(400, "builtin brains cannot be deleted")
+        await app.brains.delete(bid)
+        app.agents.pop(bid, None)
+        return {"ok": True}
+
+    @fastapi.get("/api/graph")
+    async def graph_stats():
+        return {"stats": await app.graph.stats()}
+
+    @fastapi.get("/api/graph/query")
+    async def graph_query(q: str = "", node_type: str = "", limit: int = 25):
+        return {"nodes": await app.graph.store.search(q, node_type or None, limit)}
+
+    @fastapi.get("/api/graph/neighbors")
+    async def graph_neighbors(node: str, depth: int = 2):
+        return {"nodes": await app.graph.related(node, depth=min(depth, 5))}
+
+    @fastapi.get("/api/graph/path")
+    async def graph_path(source: str, target: str):
+        ids = await app.graph.path_between(source, target)
+        nodes = []
+        for nid in ids:
+            node = await app.graph.store.get_node(nid)
+            if node:
+                nodes.append(node)
+        return {"path": nodes}
+
+    @fastapi.post("/api/graph/track")
+    async def graph_track(body: dict):
+        node_type = body.get("node_type", "")
+        label = body.get("label", "")
+        if not node_type or not label:
+            raise HTTPException(400, "node_type and label required")
+        try:
+            result = await app.graph.track(
+                node_type, label, body.get("properties") or {},
+                agent=body.get("agent", "user"),
+                relation=body.get("relation", ""), target=body.get("target", ""))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return result
+
+    @fastapi.get("/api/proposals")
+    async def proposals(status: str = "", limit: int = 100):
+        return {"proposals": await app.proposals.list(status or None, limit)}
+
+    @fastapi.post("/api/proposals")
+    async def create_proposal(body: dict):
+        proposal = await app.proposals.create(
+            title=body.get("title", "Untitled"),
+            description=body.get("description", ""),
+            kind=body.get("kind", "config"),
+            changes=body.get("changes") or {},
+            risk=body.get("risk", "low"),
+            created_by=body.get("created_by", "user"))
+        return proposal
+
+    @fastapi.post("/api/proposals/{pid}/approve")
+    async def approve_proposal(pid: str):
+        """Approve + deploy a proposal: snapshot pre-change, apply changes,
+        mark deployed. This is the PROPOSE → APPROVE → DEPLOY step."""
+        proposal = await app.proposals.get(pid)
+        if not proposal:
+            raise HTTPException(404, "proposal not found")
+        if proposal["status"] != "proposed":
+            raise HTTPException(409, f"proposal already {proposal['status']}")
+        snapshot = await app.snapshots.capture(
+            label=f"pre-deploy:{proposal['title'][:60]}",
+            description="snapshot before proposal deployment")
+        await app.proposals.set_status(pid, "approved")
+        result = await _apply_proposal_changes(app, proposal)
+        status = "deployed" if result else "failed"
+        await app.proposals.set_status(pid, status, result=str(result)[:2000])
+        await app.audit.record("user", "proposal.deployed", {
+            "proposal_id": pid, "status": status, "snapshot_id": snapshot["id"]})
+        return {"ok": True, "status": status, "snapshot_id": snapshot["id"]}
+
+    @fastapi.post("/api/proposals/{pid}/reject")
+    async def reject_proposal(pid: str):
+        await app.proposals.set_status(pid, "rejected", result="rejected by user")
+        return {"ok": True}
+
+    @fastapi.get("/api/snapshots")
+    async def snapshots(limit: int = 50):
+        return {"snapshots": await app.snapshots.list()}
+
+    @fastapi.post("/api/snapshots")
+    async def create_snapshot(body: dict):
+        snap = await app.snapshots.capture(
+            label=body.get("label", "manual snapshot"),
+            description=body.get("description", ""))
+        return snap
+
+    @fastapi.post("/api/snapshots/{sid}/restore")
+    async def restore_snapshot(sid: str, body: dict | None = None):
+        try:
+            snapshot = await app.snapshots.restore(
+                sid, reason=(body or {}).get("reason", "manual"))
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return {"ok": True, "snapshot": snapshot}
+
+    @fastapi.get("/api/evolution/metrics")
+    async def evolution_metrics(since_hours: int = 24):
+        return await app.analyst.metrics(since_hours=min(since_hours, 24 * 30))
+
+    @fastapi.get("/api/evolution/opportunities")
+    async def evolution_opportunities(since_hours: int = 24):
+        return {"opportunities": await app.analyst.opportunities(
+            since_hours=min(since_hours, 24 * 30))}
+
+    @fastapi.post("/api/evolution/audit")
+    async def run_self_audit(body: dict | None = None):
+        period = (body or {}).get("period", "daily")
+        report = await app.analyst.generate_report(period)
+        return {"report": report}
+
+    @fastapi.post("/api/loops/run")
+    async def run_loop(body: dict):
+        """Run an autonomous task through the improvement loop (background)."""
+        from ..loops.engine import LoopConfig
+
+        objective = body.get("objective", "")
+        if not objective:
+            raise HTTPException(400, "objective required")
+        agent = body.get("agent", "phantom")
+        if agent not in app.agents:
+            raise HTTPException(400, f"unknown agent: {agent}")
+
+        async def factory(task_id: str):
+            cfg = LoopConfig(
+                max_iterations=max(1, min(int(body.get("max_iterations", 5)), 20)),
+                timeout_sec=max(30, min(int(body.get("timeout_sec", 300)), 1800)),
+                failure_threshold=max(1, min(int(body.get("failure_threshold", 3)), 10)),
+                escalate_to=body.get("escalate_to", "") or "",
+                rollback=bool(body.get("rollback", True)),
+                success_criteria=body.get("success_criteria",
+                                          "The objective is achieved and verifiable."),
+            )
+            return await app.loops.run(agent, objective, body.get("context", ""), cfg)
+
+        task = await app.tasks.launch(agent, f"Loop: {objective[:60]}", "loop", factory)
+        return task
 
     # ------------------------------------------------------------- artifacts
     @fastapi.get("/api/artifacts/{fname}")
@@ -582,3 +756,20 @@ def create_app(app: App) -> FastAPI:
             return FileResponse(UI_DIR / "styles.css", media_type="text/css")
 
     return fastapi
+
+
+async def _apply_proposal_changes(app: Any, proposal: dict) -> bool:
+    """Deploy a proposal's changes (settings/permissions). Wrapped in
+    snapshots by the caller; a failure leaves the system untouched."""
+    changes = proposal.get("changes") or {}
+    try:
+        for agent, kv in (changes.get("settings") or {}).items():
+            for key, value in kv.items():
+                await app.settings.set(key, value, agent)
+        for agent, tool_levels in (changes.get("permissions") or {}).items():
+            for tool, level in tool_levels.items():
+                if app.registry.has(tool):
+                    await app.settings.set(f"perm:{tool}", level, agent)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
