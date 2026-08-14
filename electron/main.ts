@@ -28,6 +28,43 @@ let backendPort = 0;
 let mainWindow: BrowserWindow | null = null;
 let updateStatus: Record<string, unknown> = { state: "idle" };
 
+// --------------------------------------------------------------------------
+// Linux sandbox fallback
+//
+// Electron's Chromium sandbox needs /opt/<App>/chrome-sandbox to be owned by
+// root with mode 4755 (setuid). The deb's after-install hook
+// (build/after_install.sh) sets that up, but if it ever isn't (AppImage,
+// custom installs, filesystems without setuid), Chromium aborts with
+// "The SUID sandbox helper binary was found, but is not configured correctly".
+// Detect that and fall back to --no-sandbox so the app still opens.
+// --------------------------------------------------------------------------
+
+function ensureLinuxSandbox() {
+  if (process.platform !== "linux") return;
+  if (!app.isPackaged) return; // dev runs are fine
+  const candidates = [
+    path.join(path.dirname(process.execPath), "chrome-sandbox"),
+    path.join(process.resourcesPath || "", "chrome-sandbox"),
+    "/opt/PhantomCoded/chrome-sandbox",
+  ];
+  for (const candidate of candidates) {
+    try {
+      const st = fs.statSync(candidate);
+      if ((st.mode & 0o4000) !== 0) return; // setuid bit present → sandbox OK
+    } catch {
+      /* keep looking */
+    }
+  }
+  console.warn(
+    "[main] chrome-sandbox is not setuid root — Chromium sandbox unavailable; " +
+    "falling back to --no-sandbox. Fix permanently with: " +
+    "sudo chown root:root /opt/PhantomCoded/chrome-sandbox && sudo chmod 4755 /opt/PhantomCoded/chrome-sandbox",
+  );
+  app.commandLine.appendSwitch("no-sandbox");
+}
+
+ensureLinuxSandbox();
+
 function sendUpdateStatus(status: Record<string, unknown>) {
   updateStatus = status;
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -197,6 +234,9 @@ function createWindow() {
     minHeight: 640,
     title: "PHANTOM + CODED",
     backgroundColor: "#0b0e14",
+    icon: process.platform === "linux"
+      ? path.join(resourceRoot(), "build", "icon.png")
+      : undefined,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

@@ -1,6 +1,6 @@
 {
   "name": "phantom-coded",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "PHANTOM + CODED \u2014 personal AI computer operator: two AI entities (Phantom, Coded) on one shared agent framework.",
   "author": "g2code33",
   "license": "MIT",
@@ -42,7 +42,8 @@
       "dist/**/*",
       "ui/**/*",
       "phantom_ai/**/*",
-      "pyproject.toml"
+      "pyproject.toml",
+      "build/icon.png"
     ],
     "asarUnpack": [
       "dist/**/*",
@@ -86,6 +87,7 @@
       "synopsis": "PHANTOM + CODED personal AI computer operator"
     },
     "deb": {
+      "afterInstall": "build/after_install.sh",
       "artifactName": "phantom-coded_${version}_amd64.${ext}"
     },
     "appImage": {
