@@ -1,15 +1,27 @@
-"""Entry point: `python -m phantom_ai.main` starts the PHANTOM + CODED app."""
+"""Entry point: `python -m phantom_ai.main` starts the Phantom app.
+
+Works BOTH as a module (`python -m phantom_ai.main`, used in dev and by the
+Electron dev fallback) AND as a frozen PyInstaller script (the packaged app).
+"""
 
 from __future__ import annotations
 
 import asyncio
 import os
 import socket
+import sys
 
 import uvicorn
 
-from .api.app import App
-from .api.server import create_app
+# PyInstaller runs this file as a standalone script, so relative imports fail
+# ("attempted relative import with no known parent package"). Import the
+# package absolutely instead; when frozen, the package is bundled alongside.
+if bool(getattr(sys, "frozen", False)):
+    from phantom_ai.api.app import App
+    from phantom_ai.api.server import create_app
+else:
+    from .api.app import App
+    from .api.server import create_app
 
 HOST = os.environ.get("PHAI_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PHAI_PORT", os.environ.get("PORT", "8000")))

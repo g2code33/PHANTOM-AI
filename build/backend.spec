@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for the PHANTOM + CODED backend.
+# PyInstaller spec for the Phantom backend.
 #
 # Produces a single self-contained executable (dist-backend/phantom-backend,
 # or phantom-backend.exe on Windows) that the Electron shell spawns instead of
@@ -30,15 +30,77 @@ uvicorn_hidden = [
     "uvicorn.middleware.debug",
 ]
 
+# Collect the whole phantom_ai package explicitly so frozen absolute imports
+# (from phantom_ai.api.app import App) always resolve regardless of what the
+# modulegraph happens to follow from main.py.
+phantom_pkg_hidden = [
+    "phantom_ai",
+    "phantom_ai.config",
+    "phantom_ai.main",
+    "phantom_ai.api.app",
+    "phantom_ai.api.server",
+    "phantom_ai.agents.core",
+    "phantom_ai.agents.delegation",
+    "phantom_ai.agents.identities",
+    "phantom_ai.brains.definitions",
+    "phantom_ai.brains.health",
+    "phantom_ai.brains.registry",
+    "phantom_ai.brains.specialists",
+    "phantom_ai.core.events",
+    "phantom_ai.core.killswitch",
+    "phantom_ai.evolution.analyst",
+    "phantom_ai.evolution.snapshots",
+    "phantom_ai.graph.engine",
+    "phantom_ai.health.manager",
+    "phantom_ai.health.redflags",
+    "phantom_ai.health.vault",
+    "phantom_ai.heartbeat.scheduler",
+    "phantom_ai.loops.engine",
+    "phantom_ai.memory.retriever",
+    "phantom_ai.permissions.confirm",
+    "phantom_ai.permissions.levels",
+    "phantom_ai.permissions.policy",
+    "phantom_ai.permissions.validation",
+    "phantom_ai.providers",
+    "phantom_ai.providers.base",
+    "phantom_ai.providers.mock",
+    "phantom_ai.providers.nvidia",
+    "phantom_ai.providers.router",
+    "phantom_ai.storage.conversations",
+    "phantom_ai.storage.db",
+    "phantom_ai.storage.evolution",
+    "phantom_ai.storage.ops",
+    "phantom_ai.tasks.manager",
+    "phantom_ai.tools",
+    "phantom_ai.tools.base",
+    "phantom_ai.tools.browser",
+    "phantom_ai.tools.clipboard",
+    "phantom_ai.tools.delegation_tools",
+    "phantom_ai.tools.evolution_tools",
+    "phantom_ai.tools.files",
+    "phantom_ai.tools.gui",
+    "phantom_ai.tools.health_tools",
+    "phantom_ai.tools.memory_tools",
+    "phantom_ai.tools.notify",
+    "phantom_ai.tools.processes",
+    "phantom_ai.tools.system",
+    "phantom_ai.tools.terminal",
+    "phantom_ai.tools.web",
+    "phantom_ai.voice.stt",
+    "phantom_ai.voice.tts",
+]
+
 a = Analysis(
     ["../phantom_ai/main.py"],
     pathex=[".."],
     binaries=[],
     datas=[("../ui", "ui")],
-    hiddenimports=uvicorn_hidden + ["aiosqlite", "cryptography", "jsonschema", "psutil"],
+    hiddenimports=uvicorn_hidden + phantom_pkg_hidden + [
+        "aiosqlite", "cryptography", "jsonschema", "psutil",
+    ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["backend-runtime-hook.py"],
     excludes=[
         # GUI/browser automation is an optional, lazily-imported capability;
         # keeping it out of the bundle avoids heavy/compiled deps. The tools
