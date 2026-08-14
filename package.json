@@ -1,6 +1,6 @@
 {
   "name": "phantom-coded",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "PHANTOM + CODED \u2014 personal AI computer operator: two AI entities (Phantom, Coded) on one shared agent framework.",
   "author": "g2code33",
   "license": "MIT",
@@ -98,7 +98,16 @@
       "owner": "g2code33",
       "repo": "PHANTOM-AI",
       "releaseType": "release"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "dist-backend",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
   },
   "dependencies": {
     "electron-updater": "^6.8.9"

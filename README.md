@@ -57,11 +57,17 @@ The same build-and-release structure as `g2code33/CLINICAL-RX-`:
 - **Versioning** — bump `version` in `package.json` → push → new release.
   `npm run release:patch` does bump + commit + push in one step.
 
-The Electron shell (`electron/main.ts`) spawns the Python backend with `--port-file` and loads
-the UI from `http://127.0.0.1:<port>` (backend stays local-only). The Android app connects to a
-backend you configure under Settings → Backend URL. Note: the packaged desktop installer
-currently expects a Python 3.10+ on the machine (or `PHAI_PYTHON`); bundling a standalone
-Python via PyInstaller is a documented follow-up.
+The Electron shell (`electron/main.ts`) spawns the backend with `--port-file` and loads the UI
+from `http://127.0.0.1:<port>` (backend stays local-only). The Android app connects to a
+backend you configure under Settings → Backend URL.
+
+Since **v0.1.2** the desktop installers bundle the Python backend as a standalone
+PyInstaller executable (`resources/backend/phantom-backend[.exe]`, built in CI) — no system
+Python, uvicorn or pip installs needed on the user's machine. The Electron shell prefers the
+bundled backend, then `PHAI_BACKEND`, then a system Python (dev fallback). User data (DB,
+secrets, screenshots) lives in the app's userData dir (`~/.local/share/phantom-coded` on
+Linux, `%LOCALAPPDATA%\phantom-coded` on Windows) when packaged. Linux installs also fix the
+Chromium SUID sandbox via a deb post-install hook, with an automatic `--no-sandbox` fallback.
 
 ## What's inside
 
