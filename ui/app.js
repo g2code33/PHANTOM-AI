@@ -1,6 +1,12 @@
 /* PHANTOM + CODED — UI logic (vanilla JS, no build step) */
 "use strict";
 
+// API base: in the browser this is empty (same origin as the Python backend).
+// Inside the Capacitor app there is no backend on device, so a backend URL can
+// be configured (Settings → Backend URL, persisted to localStorage).
+const API_BASE = (localStorage.getItem("phai.apiBase") || "").replace(/\/+$/, "");
+const WS_BASE = API_BASE ? API_BASE.replace(/^http/, "ws") : "";
+
 const AGENTS = { phantom: { name: "Phantom", emoji: "👻", color: "var(--phantom)" },
                  coded:   { name: "Coded",   emoji: "💻", color: "var(--coded)" } };
 
@@ -31,7 +37,7 @@ const timeAgo = (iso) => {
 };
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
+  const res = await fetch(API_BASE + path, {
     headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
     method: opts.method || (opts.body ? "POST" : "GET"),
     body: opts.body ? JSON.stringify(opts.body) : undefined,
@@ -47,8 +53,9 @@ async function api(path, opts = {}) {
 /* ============================== WEBSOCKET ============================== */
 let ws = null;
 function connectWS() {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  const base = (WS_BASE || location.origin).replace(/\/+$/, "");
+  const proto = base.startsWith("https") ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${base.replace(/^https?:\/\//, "")}/ws`);
   ws.onmessage = (ev) => { try { handleEvent(JSON.parse(ev.data)); } catch (e) {} };
   ws.onclose = () => setTimeout(connectWS, 1500);
   ws.onopen = () => ws.send(JSON.stringify({ type: "ping" }));
@@ -569,6 +576,14 @@ async function loadSettings() {
       </div>
     </div>
     <div class="settings-section">
+      <h3>📱 Mobile / remote backend</h3>
+      <div class="row"><label>Backend URL (for the Android app)</label>
+        <input type="text" id="apiBase" placeholder="http://192.168.1.50:8000">
+        <button class="btn" onclick="saveApiBase()">Save</button>
+        <span class="muted small">Where the app can reach the PHANTOM + CODED backend. Leave empty in the desktop/browser build.</span>
+      </div>
+    </div>
+    <div class="settings-section">
       <h3>🛡️ Safety</h3>
       <div class="row"><label>Access token (PHAI_ACCESS_TOKEN)</label><span class="muted small">set via environment variable before start</span></div>
     </div>`);
@@ -589,9 +604,16 @@ async function loadSettings() {
   $("quietEnd").value = g["quiet.end"] || "";
   $("taskMax").value = g["task.max_concurrent"] ?? 4;
   $("delLoops").value = g["delegation.max_loops"] ?? 3;
+  $("apiBase").value = localStorage.getItem("phai.apiBase") || "";
   await loadSchedules();
 }
 
+function saveApiBase() {
+  const val = $("apiBase").value.trim();
+  localStorage.setItem("phai.apiBase", val);
+  toast(val ? `Backend URL set — reloading…` : "Backend URL cleared — reloading…");
+  setTimeout(() => location.reload(), 600);
+}
 async function saveSetting(agent, key, value, el) {
   await api("/api/settings", { body: { agent, key, value } });
   toast(`Saved ${key}`);

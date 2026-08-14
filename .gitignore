@@ -5,3 +5,19 @@ __pycache__/
 data/
 *.log
 .arena/
+
+# Node / web build
+node_modules/
+dist/
+dist-electron/
+release/
+
+# Capacitor / Android
+android/.gradle/
+android/**/build/
+android/local.properties
+android/app/release-keystore.jks
+*.jks
+*.keystore
+*.keystore.b64
+

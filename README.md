@@ -36,9 +36,32 @@ model (the UI explains how to enable it).
 .venv/bin/python scripts/verify_tiers.py        # runs every tier's test suite + a live
                                                 # end-to-end smoke (real HTTP + WS + tools)
 .venv/bin/python -m pytest tests/ -q           # the full suite (62 tests)
+npm run typecheck && npm run web:build          # Electron main (tsc) + web bundle
 ```
 
 `scripts/verify_tiers.py` prints a per-tier PASS/FAIL table (see `docs/TIERS.md`).
+
+## Desktop & mobile packaging (release on push to `main`)
+
+The same build-and-release structure as `g2code33/CLINICAL-RX-`:
+
+- **Windows installer** — `PhantomCoded-Setup-<ver>.exe` (+ `latest.yml`) via electron-builder/nsis.
+- **Linux** — `phantom-coded_<ver>_amd64.deb` + `PhantomCoded-<ver>.AppImage` (+ `latest-linux.yml`).
+- **Android** — `phantom-coded-<ver>.apk` via Capacitor 8 (`capacitor.config.ts`, committed
+  `android/` project, icons/splash generated from `resources/icon.png`).
+- **CI** — `.github/workflows/build-desktop.yml` (editable copy:
+  `docs/workflow-build-desktop.yml`): push to `main` → matrix (ubuntu+windows) builds and
+  auto-publishes everything to a GitHub Release with `GH_TOKEN` + `EP_GH_IGNORE_TIME`.
+  Android release signing uses `ANDROID_KEYSTORE_BASE64/PASSWORD/ALIAS/KEY_PASSWORD`
+  secrets with automatic fallback to the debug key so builds never break.
+- **Versioning** — bump `version` in `package.json` → push → new release.
+  `npm run release:patch` does bump + commit + push in one step.
+
+The Electron shell (`electron/main.ts`) spawns the Python backend with `--port-file` and loads
+the UI from `http://127.0.0.1:<port>` (backend stays local-only). The Android app connects to a
+backend you configure under Settings → Backend URL. Note: the packaged desktop installer
+currently expects a Python 3.10+ on the machine (or `PHAI_PYTHON`); bundling a standalone
+Python via PyInstaller is a documented follow-up.
 
 ## What's inside
 

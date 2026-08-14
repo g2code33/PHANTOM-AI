@@ -1,0 +1,89 @@
+{
+  "name": "phantom-coded",
+  "version": "0.1.0",
+  "description": "PHANTOM + CODED — personal AI computer operator: two AI entities (Phantom, Coded) on one shared agent framework.",
+  "author": "g2code33",
+  "license": "MIT",
+  "main": "dist-electron/main.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/g2code33/PHANTOM-AI.git"
+  },
+  "scripts": {
+    "web:build": "node scripts/build-web.js",
+    "typecheck": "tsc --noEmit -p tsconfig.electron.json",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "electron:dev": "npm run web:build && npm run build:electron && electron .",
+    "dist": "npm run web:build && npm run build:electron && electron-builder",
+    "cap:add": "npx cap add android",
+    "cap:sync": "npm run web:build && npx cap sync android",
+    "cap:assets": "npx capacitor-assets generate --android",
+    "smoke": ".venv/bin/python -m pytest tests/ -q",
+    "release:patch": "npm version patch --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require('./package.json').version\")\" && git push origin main"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/cli": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@types/node": "^22.10.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.6.3"
+  },
+  "build": {
+    "appId": "com.g2code33.phantomcoded",
+    "productName": "PhantomCoded",
+    "copyright": "Copyright © 2026 g2code33",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist-electron/**/*",
+      "dist/**/*",
+      "ui/**/*",
+      "phantom_ai/**/*",
+      "pyproject.toml"
+    ],
+    "asarUnpack": [
+      "dist/**/*",
+      "build/**/*",
+      "ui/**/*",
+      "phantom_ai/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "artifactName": "PhantomCoded-Setup-${version}.${ext}"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "deb",
+          "arch": ["x64"]
+        },
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        }
+      ],
+      "category": "Utility",
+      "maintainer": "g2code33",
+      "synopsis": "PHANTOM + CODED personal AI computer operator"
+    },
+    "deb": {
+      "artifactName": "phantom-coded_${version}_amd64.${ext}"
+    },
+    "appImage": {
+      "artifactName": "PhantomCoded-${version}.${ext}"
+    }
+  }
+}

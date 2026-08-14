@@ -36,12 +36,17 @@ def build_app() -> App:
     return App()
 
 
-async def serve(app: App | None = None) -> None:
+async def serve(app: App | None = None, port_file: str | None = None) -> None:
     app = app or build_app()
     await app.startup()
     if app.scheduler:
         await app.scheduler.start()
     port = free_port(PORT)
+    if port_file:
+        path = os.path.abspath(os.path.expanduser(port_file))
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(str(port))
     config = uvicorn.Config(create_app(app), host=HOST, port=port, log_level="info")
     server = uvicorn.Server(config)
     print(f"\n  PHANTOM + CODED running at http://{HOST}:{port}")
@@ -53,7 +58,14 @@ async def serve(app: App | None = None) -> None:
 
 
 def main() -> None:
-    asyncio.run(serve())
+    import argparse
+
+    parser = argparse.ArgumentParser(description="PHANTOM + CODED backend")
+    parser.add_argument("--port-file", default="",
+                        help="write the bound port to this file once the server is up "
+                             "(used by the Electron shell)")
+    args = parser.parse_args()
+    asyncio.run(serve(port_file=args.port_file or None))
 
 
 if __name__ == "__main__":
