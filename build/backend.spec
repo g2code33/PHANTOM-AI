@@ -11,6 +11,17 @@
 
 import os
 
+# PyInstaller resolves paths inside the spec relative to the CURRENT WORKING
+# DIRECTORY (where pyinstaller is invoked), NOT the spec file's folder — the
+# runtime_hooks path proved that in CI (FileNotFoundError:
+# '.../PHANTOM-AI/backend-runtime-hook.py'). Build every path as absolute from
+# SPECPATH (the spec's own directory) so the build works from any CWD.
+spec_dir = os.path.abspath(SPECPATH)        # .../build
+repo_root = os.path.dirname(spec_dir)       # repo root
+entry = os.path.join(repo_root, "phantom_ai", "main.py")
+ui_dir = os.path.join(repo_root, "ui")
+runtime_hook = os.path.join(spec_dir, "backend-runtime-hook.py")
+
 # uvicorn selects its loop/http/ws implementations at runtime via importlib,
 # which PyInstaller cannot see statically — declare them explicitly.
 uvicorn_hidden = [
@@ -91,16 +102,16 @@ phantom_pkg_hidden = [
 ]
 
 a = Analysis(
-    ["../phantom_ai/main.py"],
-    pathex=[".."],
+    [entry],
+    pathex=[repo_root],
     binaries=[],
-    datas=[("../ui", "ui")],
+    datas=[(ui_dir, "ui")],
     hiddenimports=uvicorn_hidden + phantom_pkg_hidden + [
         "aiosqlite", "cryptography", "jsonschema", "psutil",
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=["backend-runtime-hook.py"],
+    runtime_hooks=[runtime_hook],
     excludes=[
         # GUI/browser automation is an optional, lazily-imported capability;
         # keeping it out of the bundle avoids heavy/compiled deps. The tools
