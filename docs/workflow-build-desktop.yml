@@ -3,9 +3,9 @@ name: build-desktop
 # PHANTOM + CODED — desktop + mobile release pipeline
 #
 # Pushing to `main` triggers:
-#   - Windows installer (PhantomCoded-Setup-<ver>.exe + latest.yml)
-#   - Linux packages (phantom-coded_<ver>_amd64.deb + PhantomCoded-<ver>.AppImage + latest-linux.yml)
-#   - Android app (phantom-coded-<ver>.apk)
+#   - Windows installer (Phantom-Setup-<ver>.exe + latest.yml)
+#   - Linux packages (phantom_<ver>_amd64.deb + Phantom-<ver>.AppImage + latest-linux.yml)
+#   - Android app (phantom-<ver>.apk)
 # all published to a GitHub Release automatically (no tags required).
 #
 # The editable copy of this file lives at docs/workflow-build-desktop.yml
