@@ -1,10 +1,15 @@
-# PHANTOM + CODED 👻💻
+# Phantom 👻
 
-**A personal AI computer operator.** Two independent AI entities — **Phantom** (general-purpose
-strategist) and **Coded** (technical specialist) — living in one shared agent framework inside a
-single local application. Both are real PC operators (files, applications, terminal, web,
-system), not chatbot demos. They have separate identities, system prompts, NVIDIA API keys,
-conversations, long-term memories and tool permissions — and they can delegate tasks to each other.
+**A personal AI computer companion — voice-first.** Phantom lives inside your computer: it
+listens, understands, reasons, speaks, remembers, plans, acts (with permission), monitors
+tasks and can speak to you proactively when enabled. The interface is an immersive presence
+environment, not a chat dashboard.
+
+Inside the platform: **Coded** (💻 coding/development persona), **Health** (🩺 private wellness,
+encrypted vault), **Evolution** (🧬 system intelligence) and a full catalogue of **specialist
+brains** (planner, tutor, research, security, critic, …) — all separate entities on one shared
+agent framework, with their own identities, configurations, memories and tool permissions,
+able to delegate to each other.
 
 ```
 USER → PHANTOM → delegate() → CODED → tools → PC
@@ -24,18 +29,22 @@ export CODED_NVIDIA_API_KEY="nvapi-..."        # Coded's own key
 #    …or set them later in the UI: Settings → API Keys (stored locally, chmod 600)
 
 # 3. run
-./scripts/run.sh           # → http://localhost:8000
+./scripts/run.sh           # → http://localhost:8000  (launches the Phantom environment)
 ```
 
-Without keys the app runs in an honest **offline mode** — everything works except the language
-model (the UI explains how to enable it).
+The first launch walks you through a short setup (name, voice, mode). Without keys the app runs
+in an honest **local mode** — all local capabilities work; external AI/voice are optional,
+configurable services (NVIDIA keys, Deepgram voice). Voice defaults to the browser's built-in
+streaming speech recognition + synthesis (works offline); Deepgram adds low-latency streaming
+voice when you configure `DEEPGRAM_API_KEY` (server-side; the UI only ever receives a
+short-lived token).
 
 ## Verification
 
 ```bash
 .venv/bin/python scripts/verify_tiers.py        # runs every tier's test suite + a live
                                                 # end-to-end smoke (real HTTP + WS + tools)
-.venv/bin/python -m pytest tests/ -q           # the full suite (62 tests)
+.venv/bin/python -m pytest tests/ -q           # the full suite (105 tests)
 npm run typecheck && npm run web:build          # Electron main (tsc) + web bundle
 ```
 
@@ -45,9 +54,9 @@ npm run typecheck && npm run web:build          # Electron main (tsc) + web bund
 
 The same build-and-release structure as `g2code33/CLINICAL-RX-`:
 
-- **Windows installer** — `PhantomCoded-Setup-<ver>.exe` (+ `latest.yml`) via electron-builder/nsis.
-- **Linux** — `phantom-coded_<ver>_amd64.deb` + `PhantomCoded-<ver>.AppImage` (+ `latest-linux.yml`).
-- **Android** — `phantom-coded-<ver>.apk` via Capacitor 8 (`capacitor.config.ts`, committed
+- **Windows installer** — `Phantom-Setup-<ver>.exe` (+ `latest.yml`) via electron-builder/nsis.
+- **Linux** — `phantom_<ver>_amd64.deb` + `Phantom-<ver>.AppImage` (+ `latest-linux.yml`).
+- **Android** — `phantom-<ver>.apk` via Capacitor 8 (`capacitor.config.ts`, committed
   `android/` project, icons/splash generated from `resources/icon.png`).
 - **CI** — `.github/workflows/build-desktop.yml` (editable copy:
   `docs/workflow-build-desktop.yml`): push to `main` → matrix (ubuntu+windows) builds and
@@ -57,11 +66,17 @@ The same build-and-release structure as `g2code33/CLINICAL-RX-`:
 - **Versioning** — bump `version` in `package.json` → push → new release.
   `npm run release:patch` does bump + commit + push in one step.
 
-The Electron shell (`electron/main.ts`) spawns the Python backend with `--port-file` and loads
-the UI from `http://127.0.0.1:<port>` (backend stays local-only). The Android app connects to a
-backend you configure under Settings → Backend URL. Note: the packaged desktop installer
-currently expects a Python 3.10+ on the machine (or `PHAI_PYTHON`); bundling a standalone
-Python via PyInstaller is a documented follow-up.
+The Electron shell (`electron/main.ts`) spawns the backend with `--port-file` and loads the UI
+from `http://127.0.0.1:<port>` (backend stays local-only). The Android app connects to a
+backend you configure under Settings → Backend URL.
+
+Since **v0.1.2** the desktop installers bundle the Python backend as a standalone
+PyInstaller executable (`resources/backend/phantom-backend[.exe]`, built in CI) — no system
+Python, uvicorn or pip installs needed on the user's machine. The Electron shell prefers the
+bundled backend, then `PHAI_BACKEND`, then a system Python (dev fallback). User data (DB,
+secrets, screenshots) lives in the app's userData dir (`~/.local/share/phantom-coded` on
+Linux, `%LOCALAPPDATA%\phantom-coded` on Windows) when packaged. Linux installs also fix the
+Chromium SUID sandbox via a deb post-install hook, with an automatic `--no-sandbox` fallback.
 
 ## What's inside
 

@@ -23,10 +23,10 @@ async def test_status_and_agents(app):
         res = await client.get("/api/status")
         assert res.status_code == 200
         data = res.json()
-        assert len(data["agents"]) == 4  # phantom, coded, evolution, health
+        assert len(data["agents"]) >= 4  # phantom, coded, evolution, health + specialists
         assert data["killswitch"]["engaged"] is False
         ids = {a["id"] for a in data["agents"]}
-        assert ids == {"phantom", "coded", "evolution", "health"}
+        assert {"phantom", "coded", "evolution", "health", "planner", "research"} <= ids
         assert data["providers"]["phantom"]["ok"] is True
 
         res2 = await client.get("/api/agents")

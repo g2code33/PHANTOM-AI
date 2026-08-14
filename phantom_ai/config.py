@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,8 +20,24 @@ from typing import Any, Optional
 # Paths
 # ---------------------------------------------------------------------------
 
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = Path(os.environ.get("PHAI_DATA_DIR", ROOT_DIR / "data"))
+
+# When the backend is bundled (PyInstaller), the extraction dir is temporary,
+# so user data (DB, secrets, screenshots) must live somewhere stable/writable:
+#   - PHAI_DATA_DIR (set by the Electron shell to its userData dir) wins.
+#   - otherwise XDG data home (Linux/mac) / LOCALAPPDATA (Windows).
+if IS_FROZEN:
+    if os.name == "nt":
+        _base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        _base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    _default_data = _base / "phantom-coded"
+else:
+    _default_data = ROOT_DIR / "data"
+
+DATA_DIR = Path(os.environ.get("PHAI_DATA_DIR", str(_default_data)))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
 DB_PATH = Path(os.environ.get("PHAI_DB_PATH", DATA_DIR / "phantom_coded.db"))
 SECRETS_PATH = Path(os.environ.get("PHAI_SECRETS_PATH", DATA_DIR / "secrets.json"))

@@ -21,3 +21,5 @@ android/app/release-keystore.jks
 *.keystore
 *.keystore.b64
 
+dist-backend/
+build/pyinstaller-work/

@@ -49,7 +49,7 @@ async def serve(app: App | None = None, port_file: str | None = None) -> None:
             fh.write(str(port))
     config = uvicorn.Config(create_app(app), host=HOST, port=port, log_level="info")
     server = uvicorn.Server(config)
-    print(f"\n  PHANTOM + CODED running at http://{HOST}:{port}")
+    print(f"\n  Phantom running at http://{HOST}:{port}")
     print(f"  DB: {app.db.path}")
     try:
         await server.serve()

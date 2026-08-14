@@ -20,6 +20,8 @@ async def test_seeded_brains_registered(app):
     instance, _state, _wd = app
     ids = await instance.brains.ids()
     assert {"phantom", "coded", "evolution", "health"} <= set(ids)
+    # specialist catalogue seeded
+    assert {"planner", "tutor", "research", "security", "critic", "execution"} <= set(ids)
     evolution = await instance.brains.get("evolution")
     assert evolution["role"] == "evolution"
     assert evolution["name"] == "Evolution"
