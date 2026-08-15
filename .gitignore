@@ -23,3 +23,6 @@ android/app/release-keystore.jks
 
 dist-backend/
 build/pyinstaller-work/
+
+# Cloudflare local deploy override (real KV ids — never commit)
+cloud/worker/wrangler.local.toml
