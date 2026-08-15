@@ -87,6 +87,32 @@ voice.onError = (msg) => {
   if (h) h.textContent = "⚠️ " + msg;
 };
 
+/* wake word heard while Phantom is sleeping → capture + verify + wake */
+voice.onWakeWord = async (agent) => {
+  if (state.killEngaged) return;
+  setPresence("WAKING", `“${agent}” heard — verifying…`);
+  const wav = await voice.captureWav(2);
+  if (!wav) { setPresence("IDLE", "Couldn't capture audio for verification"); return; }
+  const reader = new FileReader();
+  const b64 = await new Promise((res) => { reader.onload = () => res(String(reader.result).split(",")[1]); reader.readAsDataURL(wav); });
+  try {
+    const res = await api("/api/presence/wake", { body: { agent, sample_wav: b64 } });
+    if (res.woken) {
+      voice.currentAgent = agent;
+      voice.playReadyCue();
+      setPresence("LISTENING", (agent === "coded" ? "Coded" : "Phantom") + " is ready — speak");
+      if (state.voiceOn) voice.speak("Yes, " + (state.userName || "JOOJO") + "?");
+    } else if (res.need_verification) {
+      setPresence("IDLE", "Voice sample needed — try again");
+    } else {
+      setPresence("IDLE", "Voice not recognized — only JOOJO can wake me");
+      addActivity("wake", "🔇 wake denied: " + (res.reason || "voice mismatch"), "tool-err");
+    }
+  } catch (e) {
+    setPresence("IDLE", "Wake failed: " + e.message);
+  }
+};
+
 /* ============================== WS ============================== */
 let ws = null;
 function connectWS() {
@@ -161,6 +187,16 @@ function handleEvent(payload) {
         addActivity("voice", `🗣 ${(data.text || "").slice(0, 120)}`, "delegation");
       }
       break;
+    case "presence.state":
+      handlePresence(data);
+      break;
+    case "wake.detected":
+      addActivity("wake", `🔔 ${data.agent === "coded" ? "Coded" : "Phantom"} woken (${data.source})`, "tool-ok");
+      break;
+    case "ready_cue":
+      voice.playReadyCue();
+      setPresence("LISTENING", (data.agent === "coded" ? "Coded" : "Phantom") + " is ready — speak");
+      break;
     case "voice.stop":
       voice.stopAll(); voice.stopMic(); setPresence("IDLE");
       break;
@@ -196,6 +232,35 @@ function resumeListeningAfterReply() {
   } else {
     setPresence("IDLE");
   }
+}
+
+function handlePresence(p) {
+  voice.setPresenceState(p);
+  document.body.classList.toggle("presence-sleeping", p.state === "sleeping" || p.state === "silenced");
+  document.body.classList.toggle("presence-awake", p.state === "listening");
+  const agentName = p.active_agent === "coded" ? "Coded" : "Phantom";
+  const pill = $("presencePill");
+  if (pill) {
+    pill.textContent = p.state === "listening"
+      ? `🟢 ${agentName} awake`
+      : p.state === "silenced" ? "🤫 silent" : "💤 sleeping";
+  }
+  if (p.state === "listening") {
+    setPresence("LISTENING", agentName + " is awake — listening for you");
+  } else if (p.state === "sleeping") {
+    setPresence("IDLE", "Phantom is here — say “Phantom” or “Coded” to wake me");
+  } else if (p.state === "silenced") {
+    setPresence("IDLE", "Staying silent — say my name to wake me");
+  } else if (p.state === "killed") {
+    setPresence("IDLE", "Kill switch engaged — everything stopped");
+  }
+}
+
+async function loadPresence() {
+  try {
+    const p = await api("/api/presence");
+    handlePresence(p);
+  } catch (e) {}
 }
 
 function setContextLine(data) {
@@ -347,6 +412,7 @@ async function newConversation() {
 function switchPersona(agent) {
   if (state.running) { toast("Wait for the current run to finish"); return; }
   state.agent = agent;
+  voice.currentAgent = agent;   // replies use this persona's voice
   document.querySelectorAll(".seg").forEach((b) => b.classList.toggle("active", b.dataset.persona === agent));
   $("identityName").textContent = "Phantom"; // product name stays Phantom
   $("chatAgentFace").textContent = AGENTS[agent].emoji;
@@ -369,6 +435,7 @@ function switchPanel(panel) {
   document.querySelectorAll(".panel-btn").forEach((b) => b.classList.toggle("active", b.dataset.panel === panel));
   document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === `panel-${panel}`));
   $("drawerTitle").textContent = panel[0].toUpperCase() + panel.slice(1);
+  if (panel === "today") loadToday();
   if (panel === "memory") loadMemories();
   if (panel === "wellness") loadWellness();
   if (panel === "health") loadHealth();
@@ -376,6 +443,82 @@ function switchPanel(panel) {
   if (panel === "audit") { loadAuditEvents(); loadAudit(); }
   if (panel === "permissions") loadPermissions();
   if (panel === "settings") loadSettings();
+}
+
+/* ============================== TODAY (briefing + monitor) ============================== */
+async function loadToday(force) {
+  try {
+    const briefing = await api(`/api/briefing${force ? "?force=true" : ""}`);
+    renderBriefing(briefing);
+    const monitor = await api("/api/monitor");
+    renderMonitor(monitor);
+    const cfg = await api("/api/briefing/config").catch(() => null);
+    if (cfg && $("briefingTime")) $("briefingTime").value = cfg.time;
+  } catch (e) { /* backend not ready yet */ }
+}
+async function saveBriefingTime() {
+  const t = $("briefingTime").value;
+  if (!t) return;
+  try {
+    const res = await api("/api/briefing/config", { body: { time: t } });
+    toast(`Briefing moved to ${res.time} — schedules updated`);
+    loadToday();
+  } catch (e) { toast("Error: " + e.message); }
+}
+function applyTheme(theme) {
+  document.body.dataset.theme = theme === "yellow" ? "yellow" : "midnight";
+  localStorage.setItem("phantom.theme", theme === "yellow" ? "yellow" : "midnight");
+}
+function renderBriefing(b) {
+  const top = $("briefingTop");
+  top.innerHTML = "";
+  for (const group of b.top_priorities || []) {
+    const g = document.createElement("div");
+    g.className = "card";
+    const lvlCls = group.level === "high" ? "err" : group.level === "in_progress" ? "warn" : "info";
+    g.innerHTML = `<div class="card-title"><span class="pill ${lvlCls}">${esc(group.level)}</span></div>`;
+    for (const item of group.items) {
+      const d = document.createElement("div");
+      d.className = "card-body";
+      d.innerHTML = `<b>${esc(item.title)}</b>${item.detail ? ` — ${esc(item.detail)}` : ""}`;
+      g.appendChild(d);
+    }
+    top.appendChild(g);
+  }
+  if (!(b.top_priorities || []).length) top.innerHTML = `<div class="card muted">Nothing urgent today.</div>`;
+
+  const sections = $("briefingSections");
+  sections.innerHTML = "";
+  for (const [key, s] of Object.entries(b.sections || {})) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `<div class="card-title">${esc(s.title)}</div>
+      <div class="card-body small">${esc((s.items || []).join(" · "))}</div>`;
+    sections.appendChild(card);
+  }
+}
+function renderMonitor(m) {
+  const el = $("monitorCards");
+  el.innerHTML = "";
+  const sys = m.system || {};
+  const mk = (t, v, cls) => {
+    const d = document.createElement("div");
+    d.className = "card";
+    d.innerHTML = `<div class="card-title"><span class="pill ${cls}">${esc(t)}</span></div>
+      <div class="card-body small">${esc(v)}</div>`;
+    el.appendChild(d);
+  };
+  mk("CPU", `${sys.cpu_percent ?? "—"}%`, sys.cpu_percent > 80 ? "err" : "ok");
+  mk("Memory", `${sys.memory_percent ?? "—"}%`, sys.memory_percent > 85 ? "err" : "ok");
+  mk("Disk", `${sys.disk_percent ?? "—"}%`, sys.disk_percent > 90 ? "err" : "ok");
+  if (sys.battery) mk("Battery", `${sys.battery.percent}%${sys.battery.plugged ? " ⚡" : ""}`, sys.battery.percent < 20 && !sys.battery.plugged ? "warn" : "ok");
+  const t = m.tasks || {};
+  if (t.counts && t.counts.failed) mk("Failed tasks", String(t.counts.failed), "err");
+  const s = m.signals || {};
+  if (s.tool_failures_24h) mk("Tool failures 24h", String(s.tool_failures_24h), "warn");
+}
+function speakBriefing() {
+  api("/api/briefing").then((b) => { if (b.spoken && state.voiceOn) voice.speak(b.spoken); });
 }
 
 /* ============================== ACTIVITY ============================== */
@@ -716,6 +859,10 @@ async function loadSettings() {
         <select id="sttProvider"><option value="browser">browser (offline)</option><option value="deepgram">deepgram (online)</option></select></div>
       <div class="row"><label>TTS provider</label>
         <select id="ttsProvider"><option value="browser">browser (offline)</option><option value="deepgram">deepgram (online)</option></select></div>
+      <div class="row"><label>👻 Phantom voice</label>
+        <select id="voicePhantom"><option value="">default (calm male)</option></select></div>
+      <div class="row"><label>💻 Coded voice</label>
+        <select id="voiceCoded"><option value="">default (sharp male)</option></select></div>
       <div class="row"><label>Voice mode</label>
         <select id="voiceModeSel"><option value="private">private</option><option value="push">push-to-talk</option><option value="conversation">conversation</option></select></div>
       <div class="row"><label>Proactive speech</label>
@@ -723,7 +870,7 @@ async function loadSettings() {
       <div class="row"><label>Deepgram API key</label>
         <input type="password" id="deepgramKey" placeholder="${res.voice?.deepgram_masked ? "configured — type to replace" : "not set"}">
         <button class="btn" onclick="saveDeepgram()">Save</button></div>
-      <p class="muted small">The Deepgram key stays server-side; the UI only ever gets a short-lived token.</p>
+      <p class="muted small">The Deepgram key stays server-side; the UI only ever gets a short-lived token. Browser voices are your OS voices; Deepgram aura voices need a key.</p>
     </div>
     <div class="settings-section"><h3>🔁 Heartbeat & quiet hours</h3>
       <div class="row"><label>Quiet hours start (UTC)</label><input id="quietStart" placeholder="22:00"></div>
@@ -736,6 +883,30 @@ async function loadSettings() {
         <input id="schedPrompt" placeholder="prompt" style="flex:1">
         <button class="btn btn-primary" onclick="addSchedule()">Add</button></div>
     </div>
+    <div class="settings-section"><h3>🔊 Voice enrollment (speaker lock)</h3>
+      <p class="muted small">Only your voice should wake Phantom and Coded. Record 3 short phrases (2s each) for each agent.</p>
+      <div class="row"><label>Enroll Phantom</label>
+        <span id="enrollPhantomStatus" class="muted">…</span>
+        <button id="enrollPhantomBtn" class="btn">🎙 Enroll</button></div>
+      <div class="row"><label>Enroll Coded</label>
+        <span id="enrollCodedStatus" class="muted">…</span>
+        <button id="enrollCodedBtn" class="btn">🎙 Enroll</button></div>
+      <div class="row"><label>Speaker lock</label>
+        <input type="checkbox" id="speakerLockCb"> <span class="muted small">only my voice wakes them</span></div>
+      <div class="row"><label>Clear enrollment</label>
+        <button id="enrollClearBtn" class="btn btn-danger">Clear</button></div>
+    </div>
+    <div class="settings-section"><h3>🧠 Brains & API keys</h3>
+      <p class="muted small">Each of the 31 specialist brains can have its OWN API key + model for efficient routing. Leave a key empty to share Phantom's.</p>
+      <div id="brainKeys"></div>
+    </div>
+    <div class="settings-section"><h3>🎨 Appearance</h3>
+      <div class="row"><label>Theme</label>
+        <select id="themeSel">
+          <option value="midnight">Midnight (default)</option>
+          <option value="yellow">JOOJO Yellow #FFD600</option>
+        </select></div>
+    </div>
     <div class="settings-section"><h3>⬆ App updates</h3>
       <div class="row"><label>Desktop app</label><span id="updateState" class="muted">checking…</span>
         <button id="updateCheckBtn" class="btn">Check now</button>
@@ -744,6 +915,9 @@ async function loadSettings() {
     <div class="settings-section"><h3>📱 Mobile / remote backend</h3>
       <div class="row"><label>Backend URL</label><input type="text" id="apiBase" placeholder="http://192.168.1.50:8000">
         <button class="btn" onclick="saveApiBase()">Save</button></div>
+      <p class="muted small">On your iPhone (no App Store): run <code>bash scripts/tunnel.sh</code> on your PC,
+        open the <code>https://…trycloudflare.com</code> URL in Safari, then <b>Share → Add to Home Screen</b>.
+        If you set an access token, enter it in the phone's connection screen.</p>
     </div>`);
   body.innerHTML = sections.join("");
   for (const agentId of ["phantom", "coded", "health"]) {
@@ -760,8 +934,122 @@ async function loadSettings() {
   $("ttsProvider").value = vc.tts?.provider || "browser";
   $("voiceModeSel").value = vc.mode || "conversation";
   $("proactiveSel").value = vc.proactive_speech ? "1" : "0";
+  await loadVoicePickers(vc);
+  await Promise.all([loadBrainKeys(), loadEnrollStatus()]);
   await loadSchedules();
 }
+
+/* voice pickers (browser voices + deepgram catalog), per-persona */
+async function loadVoicePickers(vc) {
+  let catalog = { deepgram: [] };
+  try { catalog = await api("/api/voice/voices"); } catch (e) {}
+  const synth = window.speechSynthesis;
+  const browserVoices = synth ? synth.getVoices() : [];
+  if (synth && !browserVoices.length) {
+    synth.onvoiceschanged = () => loadVoicePickers(vc); // voices load async
+  }
+  const dgOpts = (catalog.deepgram || []).map((v) =>
+    `<option value="${esc(v.id)}">${v.gender === "male" ? "👨" : "👩"} ${esc(v.id)} — ${esc(v.style)}</option>`).join("");
+  const brOpts = browserVoices.map((v) =>
+    `<option value="${esc(v.name)}">🔊 ${esc(v.name)} (${esc(v.lang)})</option>`).join("");
+  const fill = (sel, cur) => {
+    $(sel).innerHTML = `<option value="">default</option>` + brOpts + (dgOpts ? `<optgroup label="Deepgram">${dgOpts}</optgroup>` : "");
+    if (cur) $(sel).value = cur;
+  };
+  fill("voicePhantom", vc.voices?.phantom || "");
+  fill("voiceCoded", vc.voices?.coded || "");
+}
+
+/* brains & API keys */
+async function loadBrainKeys() {
+  const res = await api("/api/brains/configs").catch(() => ({ brains: [] }));
+  const el = $("brainKeys");
+  el.innerHTML = "";
+  const rows = res.brains || [];
+  if (!rows.length) { el.innerHTML = `<div class="card muted">No brains.</div>`; return; }
+  for (const b of rows) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <div class="card-title">🧩 ${esc(b.name)} <span class="muted small">${esc(b.brain_id)}</span>
+        <span class="pill ${b.key_configured ? "ok" : "info"}">${b.key_configured ? "own key" : "shared"}</span></div>
+      <div class="memory-controls" style="margin:6px 0">
+        <input type="password" id="bkey-${esc(b.brain_id)}" placeholder="${b.key_configured ? "configured (" + esc(b.key_masked) + ") — type to replace" : "own API key (empty = share Phantom's)"}" style="flex:1">
+        <input type="text" id="bmodel-${esc(b.brain_id)}" value="${esc(b.model)}" placeholder="model" style="width:230px">
+        <button class="btn" onclick="saveBrainKey('${esc(b.brain_id)}')">Save</button>
+        ${b.key_configured ? `<button class="btn btn-danger" onclick="clearBrainKey('${esc(b.brain_id)}')">Remove key</button>` : ""}
+      </div>`;
+    el.appendChild(card);
+  }
+}
+window.saveBrainKey = async (bid) => {
+  const key = $(`bkey-${bid}`).value.trim();
+  const model = $(`bmodel-${bid}`).value.trim();
+  const body = {};
+  if (key) body.api_key = key;
+  if (model) body.model = model;
+  if (!Object.keys(body).length) return;
+  await api(`/api/brains/${bid}/config`, { body });
+  $(`bkey-${bid}`).value = "";
+  toast(`Saved config for ${bid}`);
+  loadBrainKeys();
+};
+window.clearBrainKey = async (bid) => {
+  await api(`/api/brains/${bid}/config`, { body: { delete_key: true } });
+  toast(`Removed own key for ${bid} — now shares Phantom's`);
+  loadBrainKeys();
+};
+
+/* voice enrollment */
+async function loadEnrollStatus() {
+  const [p, c] = await Promise.all([
+    api("/api/voice/enroll/status?agent=phantom"),
+    api("/api/voice/enroll/status?agent=coded"),
+  ]);
+  $("enrollPhantomStatus").textContent = p.enrolled ? "✅ enrolled" : (p.engine.available ? "not enrolled" : "engine unavailable: " + (p.engine.reason || "").slice(0, 60));
+  $("enrollCodedStatus").textContent = c.enrolled ? "✅ enrolled" : (c.engine.available ? "not enrolled" : "engine unavailable");
+  $("speakerLockCb").checked = p.speaker_lock;
+}
+async function enrollVoice(agent) {
+  toast(`🎙 Speak 3 short phrases for ${agent}…`);
+  for (let i = 1; i <= 3; i++) {
+    $("voiceHint").textContent = `Enrollment ${i}/3 — speak now…`;
+    const wav = await voice.captureWav(2);
+    if (!wav) { toast("mic capture failed"); return; }
+    const reader = new FileReader();
+    const b64 = await new Promise((res) => { reader.onload = () => res(String(reader.result).split(",")[1]); reader.readAsDataURL(wav); });
+    const res = await api(`/api/voice/enroll/sample?agent=${agent}`, {
+      headers: { "Content-Type": "application/octet-stream" },
+      method: "POST",
+      body: b64 ? atob(b64) : "",
+    }).catch((e) => ({ error: e.message }));
+    if (res.error) { toast("Enroll failed: " + res.error); return; }
+    if (res.enrolled) { toast(`✅ ${agent} voice enrolled`); break; }
+  }
+  $("voiceHint").textContent = "";
+  loadEnrollStatus();
+}
+window.enrollVoice = enrollVoice;
+
+/* wake detection from settings */
+window.addEventListener("DOMContentLoaded", () => {
+  const enrollPhantom = $("enrollPhantomBtn");
+  const enrollCoded = $("enrollCodedBtn");
+  if (enrollPhantom) enrollPhantom.onclick = () => enrollVoice("phantom");
+  if (enrollCoded) enrollCoded.onclick = () => enrollVoice("coded");
+  const clearBtn = $("enrollClearBtn");
+  if (clearBtn) clearBtn.onclick = async () => {
+    await api("/api/voice/enroll/clear", { body: { agent: "phantom" } });
+    await api("/api/voice/enroll/clear", { body: { agent: "coded" } });
+    toast("Enrollments cleared");
+    loadEnrollStatus();
+  };
+  const lockCb = $("speakerLockCb");
+  if (lockCb) lockCb.onchange = async () => {
+    await api("/api/voice/enroll/speaker-lock", { body: { enabled: lockCb.checked } });
+    toast(lockCb.checked ? "🔒 Speaker lock ON — only your voice wakes them" : "Speaker lock off");
+  };
+});
 async function saveSetting(agent, key, value) {
   await api("/api/settings", { body: { agent, key, value } });
 }
@@ -984,12 +1272,27 @@ function toast(msg) {
 window.toast = toast;
 
 document.addEventListener("DOMContentLoaded", async () => {
+  // apply saved theme (JOOJO yellow or midnight)
+  applyTheme(localStorage.getItem("phantom.theme") || "midnight");
+  const themeSel = $("themeSel");
+  if (themeSel) themeSel.value = localStorage.getItem("phantom.theme") || "midnight";
   // top bar
   document.querySelectorAll(".seg").forEach((b) => b.onclick = () => switchPersona(b.dataset.persona));
   $("drawerBtn").onclick = () => $("drawer").classList.contains("hidden") ? openDrawer() : closeDrawer();
   $("drawerClose").onclick = closeDrawer;
   document.querySelectorAll(".panel-btn").forEach((b) => b.onclick = () => switchPanel(b.dataset.panel));
   $("killSwitch").onclick = toggleKill;
+
+  // presence (wake / silent)
+  $("presencePill").onclick = () => {
+    // click pill = wake phantom (or the active agent's opposite if asleep)
+    api("/api/presence/wake", { body: { agent: state.agent, source: "ui" } }).then(loadPresence);
+  };
+  $("silentBtn").onclick = () => {
+    api("/api/presence/stay-silent").then(loadPresence);
+    voice.stopAll(); voice.stopMic();
+    toast("🤫 Staying silent until you say the wake word");
+  };
 
   // voice controls
   $("micToggle").onclick = () => {
@@ -1065,6 +1368,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (id === "ttsProvider") api("/api/voice/config", { body: { tts: { provider: ev.target.value } } });
     if (id === "voiceModeSel") { voice.setMode(ev.target.value); api("/api/voice/config", { body: { mode: ev.target.value } }); }
     if (id === "proactiveSel") api("/api/voice/config", { body: { proactive_speech: ev.target.value === "1" } });
+    if (id === "themeSel") applyTheme(ev.target.value);
+    if (id === "voicePhantom") {
+      voice.voices.phantom = ev.target.value;
+      api("/api/voice/config", { body: { voices: { phantom: ev.target.value } } });
+      if (state.agent === "phantom") voice.ttsVoice = ev.target.value;
+    }
+    if (id === "voiceCoded") {
+      voice.voices.coded = ev.target.value;
+      api("/api/voice/config", { body: { voices: { coded: ev.target.value } } });
+      if (state.agent === "coded") voice.ttsVoice = ev.target.value;
+    }
   });
 
   // updater
@@ -1077,6 +1391,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   await voice.init();
+  await loadPresence();
   await loadStatus();
   await refreshNotifications();
   switchPersona("phantom");

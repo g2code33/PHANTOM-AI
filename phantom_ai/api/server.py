@@ -112,7 +112,27 @@ def create_app(app: App) -> FastAPI:
     async def token_middleware(request: Request, call_next):
         if request.url.path.startswith(("/api/", "/ws")):
             _check_token(request)
-        return await call_next(request)
+        response = await call_next(request)
+        # Allow the Cloudflare-tunnel PWA origin (https) to call this backend
+        # (the PWA may be served from the tunnel URL, not 127.0.0.1).
+        origin = request.headers.get("origin", "")
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Access-Token"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        elif request.method == "OPTIONS":
+            response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
+
+    @fastapi.options("/{path:path}")
+    async def preflight(path: str):
+        from fastapi.responses import Response
+
+        return Response(status_code=200,
+                        headers={"Access-Control-Allow-Origin": "*",
+                                 "Access-Control-Allow-Headers": "Content-Type, X-Access-Token",
+                                 "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS"})
 
     # ------------------------------------------------------------------ status
     @fastapi.get("/api/status")
@@ -525,16 +545,42 @@ def create_app(app: App) -> FastAPI:
         tts = await app.settings.get("voice.tts", "*", {"provider": "browser"})
         mode = await app.settings.get("voice.mode", "*", "conversation")
         proactive = await app.settings.get("voice.proactive_speech", "*", False)
+        # per-persona voices (Phase 3): phantom & coded each have their own
+        voices = await app.settings.get("voice.voices", "*", {})
         dg = app.secrets.get("DEEPGRAM_API_KEY") or ""
         return {
             "stt": {"provider": stt.get("provider", "browser"),
                     "model": stt.get("model", "")},
             "tts": {"provider": tts.get("provider", "browser"),
                     "voice": tts.get("voice", "")},
+            "voices": {
+                "phantom": (voices or {}).get("phantom", ""),
+                "coded": (voices or {}).get("coded", ""),
+            },
             "mode": mode,
             "proactive_speech": bool(proactive),
             "deepgram_configured": bool(dg),
             "deepgram_masked": mask_key(dg),
+        }
+
+    @fastapi.get("/api/voice/voices")
+    async def voice_catalog():
+        """Known voice catalog: browser voices are enumerated client-side; the
+        Deepgram aura set is the server-side list (both male + female, so
+        JOOJO can give Phantom & Coded distinct voices)."""
+        return {
+            "deepgram": [
+                {"id": "aura-orion-en", "gender": "male",
+                 "style": "warm, calm — good default for Phantom"},
+                {"id": "aura-arcas-en", "gender": "male",
+                 "style": "sharper, technical — good default for Coded"},
+                {"id": "aura-asteria-en", "gender": "female", "style": "warm"},
+                {"id": "aura-luna-en", "gender": "female", "style": "soft"},
+                {"id": "aura-athena-en", "gender": "female", "style": "clear"},
+                {"id": "aura-helios-en", "gender": "male", "style": "clear"},
+                {"id": "aura-zeus-en", "gender": "male", "style": "deep"},
+            ],
+            "browser": [],  # filled by the UI from speechSynthesis.getVoices()
         }
 
     @fastapi.put("/api/voice/config")
@@ -543,6 +589,10 @@ def create_app(app: App) -> FastAPI:
             await app.settings.set("voice.stt", body["stt"], "*")
         if body.get("tts"):
             await app.settings.set("voice.tts", body["tts"], "*")
+        if body.get("voices"):
+            existing = await app.settings.get("voice.voices", "*", {})
+            merged = {**(existing or {}), **body["voices"]}
+            await app.settings.set("voice.voices", merged, "*")
         if body.get("mode") in ("private", "push", "conversation"):
             await app.settings.set("voice.mode", body["mode"], "*")
         if body.get("proactive_speech") is not None:
@@ -554,7 +604,7 @@ def create_app(app: App) -> FastAPI:
         if body.get("delete_deepgram_key"):
             app.secrets.delete("DEEPGRAM_API_KEY")
         await app.audit.record("user", "voice.config_changed",
-                               {"keys": [k for k in ("stt", "tts", "mode",
+                               {"keys": [k for k in ("stt", "tts", "voices", "mode",
                                                      "proactive_speech") if k in body]})
         return await voice_config()
 
@@ -622,6 +672,69 @@ def create_app(app: App) -> FastAPI:
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from None
         return result
+
+    @fastapi.get("/api/brains/configs")
+    async def brains_configs():
+        from ..brains.config import brain_key_envs, resolve_brain_config
+
+        out = []
+        for bid in await app.brain_ids():
+            brain = await app.brains.get(bid) if app.brains else None
+            definition = dict(brain) if brain else {}
+            cfg = await resolve_brain_config(bid, definition, app.secrets,
+                                             app.settings)
+            own = cfg["api_key"] and cfg["api_key"] != app.secrets.get(
+                "PHANTOM_NVIDIA_API_KEY")
+            out.append({
+                "brain_id": bid,
+                "name": (brain or {}).get("name", bid),
+                "role": (brain or {}).get("role", ""),
+                "model": cfg["model"],
+                "key_configured": bool(own),
+                "key_masked": mask_key(cfg["api_key"]) if cfg["api_key"] else "",
+                "key_env": brain_key_envs(bid)["api_key_env"],
+            })
+        return {"brains": out}
+
+    @fastapi.get("/api/brains/{bid}/config")
+    async def brain_config(bid: str):
+        from ..brains.config import brain_key_envs, resolve_brain_config
+
+        if bid not in app.agents:
+            raise HTTPException(404, "unknown brain")
+        brain = await app.brains.get(bid) if app.brains else None
+        definition = dict(brain) if brain else {}
+        cfg = await resolve_brain_config(bid, definition, app.secrets, app.settings)
+        key_envs = brain_key_envs(bid)
+        key_configured = bool(
+            cfg["api_key"] and cfg["api_key"] != app.secrets.get("PHANTOM_NVIDIA_API_KEY"))
+        return {
+            "brain_id": bid,
+            "name": (brain or {}).get("name", bid),
+            "model": cfg["model"],
+            "base_url": cfg["base_url"],
+            "key_configured": key_configured,
+            "key_masked": mask_key(cfg["api_key"]) if cfg["api_key"] else "",
+            "key_env": key_envs["api_key_env"],
+            "provider": app.providers[bid].name,
+        }
+
+    @fastapi.put("/api/brains/{bid}/config")
+    async def brain_config_set(bid: str, body: dict):
+        if bid not in app.agents:
+            raise HTTPException(404, "unknown brain")
+        if body.get("api_key"):
+            # never logged; stored in chmod-600 secrets store
+            app.secrets.set(f"brain.{bid}.api_key", str(body["api_key"]).strip())
+        if body.get("delete_key"):
+            app.secrets.delete(f"brain.{bid}.api_key")
+        if body.get("model"):
+            await app.settings.set(f"brain.{bid}.model", str(body["model"]).strip(), "*")
+        if body.get("base_url"):
+            await app.settings.set(f"brain.{bid}.base_url", str(body["base_url"]).strip(), "*")
+        await app.rebuild_provider(bid)
+        await app.audit.record("user", "brain.config_changed", {"brain": bid})
+        return await brain_config(bid)
 
     @fastapi.delete("/api/brains/{bid}")
     async def delete_brain(bid: str):
@@ -769,6 +882,236 @@ def create_app(app: App) -> FastAPI:
 
         task = await app.tasks.launch(agent, f"Loop: {objective[:60]}", "loop", factory)
         return task
+
+    # ------------------------------------------------------------- presence
+    @fastapi.get("/api/presence")
+    async def presence():
+        return app.wake.state_dict()
+
+    @fastapi.post("/api/presence/wake")
+    async def presence_wake_v2(request: Request):
+        """Wake with optional voice sample (raw body when it's a WAV, else JSON).
+        Speaker lock: a matching voiceprint is required when enabled+enrolled."""
+        ctype = request.headers.get("content-type", "")
+        agent = request.query_params.get("agent", "phantom") or "phantom"
+        wav_bytes = None
+        if "octet-stream" in ctype or "wav" in ctype:
+            wav_bytes = await request.body()
+        else:
+            body = await request.json()
+            agent = str(body.get("agent", agent))
+            import base64 as _b64
+
+            b64 = body.get("sample_wav")
+            if b64:
+                wav_bytes = _b64.b64decode(b64)
+        if agent not in ("phantom", "coded"):
+            raise HTTPException(400, "agent must be phantom or coded")
+        return await app.wake.wake(agent, source="wakeword", wav_bytes=wav_bytes)
+
+    # --------------------------------------------------------- voice enrollment
+    @fastapi.get("/api/voice/enroll/status")
+    async def enroll_status(agent: str = "phantom"):
+        return {
+            "agent": agent,
+            "enrolled": bool(await app.speaker.enrolled(agent)),
+            "speaker_lock": bool(await app.settings.get("wake.speaker_lock", "*", False)),
+            "engine": await app.speaker.available(),
+        }
+
+    @fastapi.post("/api/voice/enroll/sample")
+    async def enroll_sample(request: Request):
+        agent = request.query_params.get("agent", "phantom") or "phantom"
+        if agent not in ("phantom", "coded"):
+            raise HTTPException(400, "agent must be phantom or coded")
+        wav_bytes = await request.body()
+        if not wav_bytes or len(wav_bytes) < 100:
+            raise HTTPException(400, "empty audio sample")
+        try:
+            result = await app.speaker.enroll_sample(agent, wav_bytes)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except Exception as exc:  # noqa: BLE001 — engine/weights unavailable
+            raise HTTPException(503,
+                f"speaker engine unavailable: {exc}") from None
+        return result
+
+    @fastapi.post("/api/voice/enroll/clear")
+    async def enroll_clear(body: dict | None = None):
+        agent = (body or {}).get("agent", "phantom") or "phantom"
+        await app.speaker.clear(agent)
+        return {"ok": True}
+
+    @fastapi.put("/api/voice/enroll/speaker-lock")
+    async def enroll_speaker_lock(body: dict):
+        value = bool(body.get("enabled", True))
+        await app.wake.set_speaker_lock(value)
+        return {"speaker_lock": value}
+
+    @fastapi.post("/api/presence/wake")
+    async def presence_wake(request: Request):
+        """Wake with optional voice sample (raw WAV body or JSON with base64
+        sample_wav). Speaker lock: a matching voiceprint is required when
+        enabled and enrolled."""
+        ctype = request.headers.get("content-type", "")
+        agent = request.query_params.get("agent", "phantom") or "phantom"
+        wav_bytes = None
+        if "octet-stream" in ctype or "wav" in ctype:
+            wav_bytes = await request.body()
+        else:
+            import base64 as _b64
+
+            body = await request.json()
+            agent = str(body.get("agent", agent))
+            b64 = body.get("sample_wav")
+            if b64:
+                wav_bytes = _b64.b64decode(b64)
+        if agent not in ("phantom", "coded"):
+            raise HTTPException(400, "agent must be phantom or coded")
+        return await app.wake.wake(agent, source="wakeword", wav_bytes=wav_bytes)
+
+    @fastapi.post("/api/presence/sleep")
+    async def presence_sleep(body: dict | None = None):
+        return await app.wake.sleep(reason=(body or {}).get("reason", "manual"))
+
+    @fastapi.post("/api/presence/stay-silent")
+    async def presence_stay_silent():
+        return await app.wake.stay_silent()
+
+    @fastapi.post("/api/presence/touch")
+    async def presence_touch():
+        await app.wake.touch()
+        return {"ok": True}
+
+    @fastapi.put("/api/presence/config")
+    async def presence_config(body: dict):
+        if body.get("enabled") is not None:
+            await app.wake.set_enabled(bool(body["enabled"]))
+        if body.get("idle_minutes") is not None:
+            await app.wake.set_idle_minutes(int(body["idle_minutes"]))
+        return app.wake.state_dict()
+
+    @fastapi.get("/api/presence/config")
+    async def presence_config_get():
+        return {
+            "enabled": bool(await app.settings.get("wake.enabled", "*", True)),
+            "idle_minutes": int(await app.settings.get("wake.idle_minutes", "*", 60)),
+            "engine": await app.settings.get("wake.engine", "*", "client"),
+            "words": {"phantom": "phantom", "coded": "coded"},
+        }
+
+    # -------------------------------------------------------------- profiles
+    @fastapi.get("/api/profiles")
+    async def profiles_list():
+        return {"profiles": await app.profiles.list()}
+
+    @fastapi.get("/api/profiles/default")
+    async def profiles_default():
+        profile = await app.profiles.default()
+        if not profile:
+            raise HTTPException(404, "no profile yet")
+        return profile
+
+    @fastapi.post("/api/profiles")
+    async def profiles_create(body: dict):
+        name = str(body.get("name", "")).strip()
+        if not name:
+            raise HTTPException(400, "name required")
+        profile = await app.profiles.create(
+            name, str(body.get("display_name", "")),
+            body.get("fields") or {})
+        await app.audit.record("user", "profile.created", {"profile": profile["id"]})
+        return profile
+
+    @fastapi.put("/api/profiles/{pid}")
+    async def profiles_update(pid: str, body: dict):
+        profile = await app.profiles.update(
+            pid, body.get("fields") or {}, display_name=body.get("display_name"))
+        if not profile:
+            raise HTTPException(404, "profile not found")
+        return profile
+
+    @fastapi.delete("/api/profiles/{pid}")
+    async def profiles_delete(pid: str):
+        ok = await app.profiles.delete(pid)
+        if not ok:
+            raise HTTPException(404, "profile not found")
+        return {"ok": True}
+
+    # ------------------------------------------------------------- briefing
+    @fastapi.get("/api/briefing")
+    async def briefing_get(force: bool = False):
+        """Cached briefing — instant; force=true regenerates."""
+        return await app.briefing.get(force=force)
+
+    @fastapi.post("/api/briefing/refresh")
+    async def briefing_refresh():
+        return await app.briefing.refresh()
+
+    @fastapi.get("/api/briefing/config")
+    async def briefing_config():
+        return {
+            "time": await app.settings.get("briefing.time", "*", "07:30"),
+            "schedules": [
+                {"name": s["name"], "agent": s["agent"], "expression": s["expression"]}
+                for s in await app.scheduler.store.list()
+                if s["name"] in ("Daily briefing", "Daily health briefing")
+            ],
+        }
+
+    @fastapi.put("/api/briefing/config")
+    async def briefing_config_set(body: dict):
+        try:
+            return await app.set_briefing_time(str(body["time"]))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @fastapi.get("/api/monitor")
+    async def monitor_get():
+        return await app.monitor.snapshot()
+
+    @fastapi.get("/api/monitor/watch")
+    async def monitor_watch():
+        return await app.monitor.watch_list()
+
+    # ------------------------------------------------------------- companion
+    @fastapi.get("/api/companion/status")
+    async def companion_status():
+        return await app.companion.status()
+
+    @fastapi.get("/api/companion/confirmations")
+    async def companion_confirmations():
+        return {"confirmations": await app.companion.pending_confirmations()}
+
+    @fastapi.post("/api/companion/confirmations/{cid}/approve")
+    async def companion_confirm_approve(cid: str):
+        row = await app.companion.decide_confirmation(cid, True)
+        await app.events.publish("confirmation.decided", {"confirmation": row})
+        return row
+
+    @fastapi.post("/api/companion/confirmations/{cid}/deny")
+    async def companion_confirm_deny(cid: str):
+        row = await app.companion.decide_confirmation(cid, False)
+        await app.events.publish("confirmation.decided", {"confirmation": row})
+        return row
+
+    @fastapi.post("/api/companion/voice")
+    async def companion_voice(request: Request):
+        """Phone tap-to-talk: raw WAV body + ?agent=phantom|coded. The PC
+        transcribes (Deepgram), runs the agent, returns the reply."""
+        agent = request.query_params.get("agent", "phantom") or "phantom"
+        if agent not in ("phantom", "coded"):
+            raise HTTPException(400, "agent must be phantom or coded")
+        wav = await request.body()
+        if not wav or len(wav) < 200:
+            raise HTTPException(400, "audio too short or empty")
+        try:
+            result = await app.companion.voice_forward(agent, wav)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from None
+        return result
 
     # ---------------------------------------------------------------- health
     @fastapi.get("/api/health/status")
@@ -957,6 +1300,42 @@ def create_app(app: App) -> FastAPI:
         @fastapi.get("/voice.js")
         async def voice_js():
             return FileResponse(UI_DIR / "voice.js", media_type="text/javascript")
+
+        @fastapi.get("/mobile")
+        async def mobile_index():
+            return FileResponse(UI_DIR / "mobile.html")
+
+        @fastapi.get("/mobile.js")
+        async def mobile_js():
+            return FileResponse(UI_DIR / "mobile.js", media_type="text/javascript")
+
+        @fastapi.get("/mobile.css")
+        async def mobile_css():
+            return FileResponse(UI_DIR / "mobile.css", media_type="text/css")
+
+        @fastapi.get("/manifest.webmanifest")
+        async def manifest():
+            return FileResponse(UI_DIR / "manifest.webmanifest",
+                                media_type="application/manifest+json")
+
+        @fastapi.get("/sw.js")
+        async def sw():
+            return FileResponse(UI_DIR / "sw.js", media_type="text/javascript")
+
+        @fastapi.get("/apple-touch-icon.png")
+        async def apple_icon():
+            return FileResponse(UI_DIR / "apple-touch-icon.png",
+                                media_type="image/png")
+
+        @fastapi.get("/icons/{fname}")
+        async def pwa_icon(fname: str):
+            name = Path(fname).name
+            if ".." in name or "/" in name:
+                raise HTTPException(400, "invalid icon")
+            path = UI_DIR / "icons" / name
+            if not path.exists():
+                raise HTTPException(404, "icon not found")
+            return FileResponse(path, media_type="image/png")
 
     return fastapi
 

@@ -16,6 +16,8 @@ from ..brains.definitions import BrainDefinition
 from ..brains.health import BrainHealth
 from ..brains.registry import BrainRegistry
 from ..brains.specialists import specialist_definitions
+from ..briefing.engine import BriefingEngine
+from ..companion.service import CompanionService
 from ..config import AGENTS, DB_PATH, DATA_DIR, KEY_ENV, SecretsStore, SettingsStore
 from ..core.events import EventBus
 from ..core.killswitch import KillSwitch
@@ -27,8 +29,10 @@ from ..health.vault import HealthVault
 from ..heartbeat.scheduler import HeartbeatScheduler
 from ..loops.engine import LoopEngine
 from ..memory.retriever import MemoryRetriever
+from ..monitor.engine import MonitorEngine
 from ..permissions.confirm import ConfirmationManager
 from ..permissions.policy import PermissionManager
+from ..profile.store import ProfileStore
 from ..providers import build_provider, create_provider
 from ..providers.base import ModelProvider
 from ..providers.router import ModelRouter
@@ -46,6 +50,8 @@ from ..storage.ops import (
 from ..tasks.manager import TaskManager
 from ..tools import build_registry
 from ..tools.health_tools import HEALTH_TOOLS
+from ..voice.speaker import SpeakerVerifier
+from ..wake.engine import WakeEngine
 
 
 class App:
@@ -94,6 +100,15 @@ class App:
         self.health_vault: HealthVault | None = None
         # Voice
         self._provider_cache: dict[str, tuple[float, dict]] = {}
+        # Jarvis presence
+        self.wake: WakeEngine | None = None
+        self.profiles: ProfileStore | None = None
+        self.speaker: SpeakerVerifier | None = None
+        # Jarvis monitoring + briefing (Phase 5)
+        self.monitor: MonitorEngine | None = None
+        self.briefing: BriefingEngine | None = None
+        # Jarvis companion (Phase 7)
+        self.companion: CompanionService | None = None
 
     # ------------------------------------------------------------------
     async def startup(self) -> None:
@@ -197,8 +212,45 @@ class App:
             agent.verifier = self.verifier
             agent.loop_engine = self.loops
 
+        # wake engine reacts to kill switch
+        async def _ks_watch():
+            while True:
+                if self.killswitch.is_engaged() and self.wake is not None:
+                    await self.wake.on_killswitch()
+                    return
+                await asyncio.sleep(1)
+
+        asyncio.ensure_future(_ks_watch())
+
         self.tasks = TaskManager(TaskStore(self.db), self.settings, self.events,
                                  self.killswitch)
+
+        # ---- Jarvis presence (Phase 1 + Phase 2 speaker lock) -------------
+        self.profiles = ProfileStore(self.db)
+        await self.profiles.seed_joojo()
+        # wire the profile store into every agent (built earlier in startup)
+        for agent in self.agents.values():
+            agent.profiles = self.profiles
+        self.speaker = SpeakerVerifier(self.secrets, self.audit)
+        self.wake = WakeEngine(self.settings, self.audit, self.events,
+                               self.killswitch, verifier=self.speaker)
+        await self.wake.start()
+
+        # ---- monitoring + briefing (Phase 5) --------------------------------
+        self.monitor = MonitorEngine(
+            settings=self.settings, audit=self.audit,
+            tasks=TaskStore(self.db), schedules=ScheduleStore(self.db),
+            health=self.health, graph=self.graph, profiles=self.profiles,
+            killswitch=self.killswitch, events=self.events)
+        self.briefing = BriefingEngine(
+            monitor=self.monitor, profiles=self.profiles, memories=self.memories,
+            settings=self.settings, health=self.health, events=self.events)
+        for agent in self.agents.values():
+            agent.briefing = self.briefing
+            agent.monitor = self.monitor
+        self.companion = CompanionService(self)
+        await self._seed_briefing_schedule()
+
         self.scheduler = HeartbeatScheduler(
             store=ScheduleStore(self.db), settings=self.settings,
             task_manager=self.tasks, agent_runner=self._run_agent, events=self.events,
@@ -222,14 +274,13 @@ class App:
     # ------------------------------------------------------------------
     async def _create_agent_from_definition(self, definition: BrainDefinition) -> dict:
         """Create a live Agent for a brain definition (builtin or dynamic)."""
-        from ..config import DEFAULT_MODELS
+        from ..brains.config import resolve_brain_config
 
         agent_id = definition.brain_id
-        key = (self.secrets.get(definition.key_env or "") or
-               self.secrets.get(KEY_ENV.get(agent_id, "")) or
-               self.secrets.get(KEY_ENV["phantom"]))
-        model = definition.model or DEFAULT_MODELS.get(agent_id, DEFAULT_MODELS["phantom"])
-        provider = build_provider(agent_id, api_key=key or "", model=model)
+        cfg = await resolve_brain_config(agent_id, definition.to_dict(),
+                                         self.secrets, self.settings)
+        provider = build_provider(agent_id, api_key=cfg["api_key"], model=cfg["model"],
+                                  base_url=cfg["base_url"] or None)
 
         agent = Agent(
             agent_id=agent_id, provider=provider, registry=self.registry,
@@ -250,10 +301,11 @@ class App:
         agent.loop_engine = self.loops
         agent.analyst = self.analyst
         agent.health = self.health
+        agent.profiles = self.profiles
 
         self.providers[agent_id] = provider
         self.agents[agent_id] = agent
-        return {"id": agent_id, "model": model}
+        return {"id": agent_id, "model": cfg["model"]}
 
     async def _critic_verify(self, objective: str, produced: str) -> dict:
         agent = self.agents.get("phantom")
@@ -283,9 +335,57 @@ class App:
 
                 await schedules.update(sched["id"], next_run_at=next_run_at(expression))
 
+    async def _seed_briefing_schedule(self) -> None:
+        """Morning briefing schedule for Phantom — time is configurable via
+        the briefing.time setting (default 07:30), changeable anytime."""
+        time_setting = await self.settings.get("briefing.time", "*", "07:30")
+        expression = _daily_expression(time_setting)
+        schedules = ScheduleStore(self.db)
+        existing = await schedules.list("phantom")
+        if not any(s["name"] == "Daily briefing" for s in existing):
+            prompt = ("Run the briefing tool (briefing_get) and read the spoken "
+                      "summary. Then send a concise NON-SENSITIVE notification "
+                      "with today's top priorities.")
+            sched = await schedules.create(
+                "phantom", "Daily briefing", expression, prompt,
+                quiet_start="22:00", quiet_end="07:00")
+            from ..heartbeat.scheduler import next_run_at
+
+            await schedules.update(sched["id"], next_run_at=next_run_at(expression))
+        else:
+            # keep the existing schedule in sync with the setting
+            for s in existing:
+                if s["name"] == "Daily briefing":
+                    await schedules.update(s["id"], expression=expression,
+                                           next_run_at=_next(expression))
+
+    async def set_briefing_time(self, hhmm: str) -> dict:
+        """Change the daily briefing time (anytime). Updates all briefing
+        schedules (Phantom daily briefing + Health briefing)."""
+        hhmm = hhmm.strip()
+        try:
+            hour, minute = (int(x) for x in hhmm.split(":"))
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError
+            hhmm = f"{hour:02d}:{minute:02d}"
+        except (ValueError, AttributeError):
+            raise ValueError("briefing time must be HH:MM (24h)")
+        await self.settings.set("briefing.time", hhmm, "*")
+        expression = _daily_expression(hhmm)
+        schedules = ScheduleStore(self.db)
+        for sched in await schedules.list():
+            if sched["name"] in ("Daily briefing", "Daily health briefing"):
+                await schedules.update(sched["id"], expression=expression,
+                                       next_run_at=_next(expression))
+        await self.audit.record("user", "briefing.time_changed", {"time": hhmm})
+        return {"time": hhmm, "expression": expression,
+                "updated_schedules": ["Daily briefing", "Daily health briefing"]}
+
     async def _seed_health_schedules(self) -> None:
         """Daily health briefing for the Health brain (idempotent, quiet-hours
-        aware, non-sensitive by default)."""
+        aware, non-sensitive by default). Time follows briefing.time."""
+        time_setting = await self.settings.get("briefing.time", "*", "07:30")
+        expression = _daily_expression(time_setting)
         schedules = ScheduleStore(self.db)
         existing = await schedules.list("health")
         names = {s["name"] for s in existing}
@@ -295,11 +395,16 @@ class App:
                       "user (medication names/appointment details only if the user opted in via "
                       "health privacy settings). Follow all health safety and privacy rules.")
             sched = await schedules.create(
-                "health", "Daily health briefing", "daily at 07:30", prompt,
+                "health", "Daily health briefing", expression, prompt,
                 quiet_start="22:00", quiet_end="07:00")
             from ..heartbeat.scheduler import next_run_at
 
-            await schedules.update(sched["id"], next_run_at=next_run_at("daily at 07:30"))
+            await schedules.update(sched["id"], next_run_at=next_run_at(expression))
+        else:
+            for s in existing:
+                if s["name"] == "Daily health briefing":
+                    await schedules.update(s["id"], expression=expression,
+                                           next_run_at=_next(expression))
 
     # ------------------------------------------------------------------
     async def _run_agent(self, agent_id: str, conversation_id: str, user_text: str,
@@ -338,16 +443,17 @@ class App:
         return False
 
     async def rebuild_provider(self, agent_id: str) -> dict:
-        from ..config import DEFAULT_MODELS
+        from ..brains.config import resolve_brain_config
 
-        model = (await self.settings.get("model", agent_id, DEFAULT_MODELS.get(agent_id, DEFAULT_MODELS["phantom"])))
-        key = (self.secrets.get(KEY_ENV.get(agent_id, "")) or
-               self.secrets.get(KEY_ENV["phantom"]))
-        provider = build_provider(
-            agent_id,
-            api_key=key or "",
-            model=model or DEFAULT_MODELS.get(agent_id, DEFAULT_MODELS["phantom"]),
-        )
+        brain = None
+        if self.brains is not None:
+            brain = await self.brains.get(agent_id)
+        definition = dict(brain) if brain else {}
+        cfg = await resolve_brain_config(agent_id, definition, self.secrets,
+                                         self.settings)
+        provider = build_provider(agent_id, api_key=cfg["api_key"],
+                                  model=cfg["model"],
+                                  base_url=cfg["base_url"] or None)
         old = self.providers.get(agent_id)
         if old and getattr(old, "name", "") == "nvidia":
             close = getattr(old, "aclose", None)
@@ -385,3 +491,17 @@ def _new_run_id() -> str:
     import uuid
 
     return uuid.uuid4().hex
+
+
+def _daily_expression(hhmm: str) -> str:
+    try:
+        hour, minute = (int(x) for x in str(hhmm).split(":"))
+    except (ValueError, AttributeError):
+        return "daily at 07:30"
+    return f"daily at {hour:02d}:{minute:02d}"
+
+
+def _next(expression: str) -> str:
+    from ..heartbeat.scheduler import next_run_at
+
+    return next_run_at(expression)

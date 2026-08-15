@@ -153,6 +153,9 @@ class Agent:
         self.snapshots: Any = None
         self.loop_engine: Any = None
         self.analyst: Any = None
+        self.profiles: Any = None
+        self.briefing: Any = None
+        self.monitor: Any = None
         self.tool_allowlist: Optional[set] = None
 
     async def ensure_model(self, task_text: str, mode: str = "chat") -> str:
@@ -293,6 +296,23 @@ class Agent:
         system_prompt = self.meta["system_prompt"]
         if memory_package:
             system_prompt += "\n\nRETRIEVED CONTEXT FOR THIS CONVERSATION:\n" + memory_package
+
+        # ---- profile injection (Jarvis P4: always know the user) ----
+        if self.profiles is not None:
+            try:
+                profile = await self.profiles.default()
+                if profile:
+                    compact = self.profiles.compact(profile, max_chars=1500)
+                    system_prompt += (
+                        "\n\nUSER PROFILE (who you are talking to):\n<user_profile>\n"
+                        + compact +
+                        "\n</user_profile>\n"
+                        "Rules: address the user by their display name (never 'sir'). "
+                        "If they share new durable personal info and don't say 'don't "
+                        "keep this', store it via profile_update (profile) or remember "
+                        "(memory). Never invent profile facts.")
+            except Exception:  # noqa: BLE001 — profile failure must not break the run
+                pass
 
         history = await self._history_messages(conversation_id, window, user_row["id"])
         protocol: str = "native"
@@ -620,6 +640,9 @@ class Agent:
             confirmations=self.confirmations,
             notifications=self.notifications,
             task_token=cancel_event,
+            profiles=self.profiles,
+            briefing=self.briefing,
+            monitor=self.monitor,
             brain_registry=self.brain_registry,
             graph=self.graph,
             proposals=self.proposals,

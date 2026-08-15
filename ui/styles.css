@@ -341,3 +341,58 @@ body[data-state="error"] #stateLabel { color: var(--red); }
   #coreOrb { width: 110px; height: 110px; }
   .segmented { display: none; }
 }
+
+/* Jarvis presence: sleeping orb is dim & slow; awake glows */
+body.presence-sleeping #coreOrb { opacity: .32; filter: saturate(.6); animation: coreBreath 9s ease-in-out infinite; }
+body.presence-sleeping #coreRing { animation-duration: 40s; }
+body.presence-sleeping #stateLabel { color: var(--muted); }
+body.presence-awake #coreOrb { box-shadow: 0 0 70px rgba(110,168,254,.6), inset 0 0 40px rgba(255,255,255,.15); }
+.presence-pill { cursor: pointer; }
+.presence-pill:hover { border-color: var(--accent); color: var(--text); }
+
+/* ---------------- JOOJO yellow theme (Phase 6) ---------------- */
+body[data-theme="yellow"] {
+  --accent: #ffd600;
+  --accent2: #ffb300;
+  --green: #8fd46a;
+  --cyan: #ffd600;
+  --bg: #0c0a05;
+  --bg2: #14100a;
+  --bg3: #1d1810;
+  --border: #2e2617;
+  --border2: #4a3d22;
+  --text: #f5ecd2;
+  --muted: #a3956f;
+}
+body[data-theme="yellow"] #coreOrb {
+  background: radial-gradient(circle at 38% 32%, #fff3b0, #ffd600 42%, #8a6d00 85%);
+  box-shadow: 0 0 60px rgba(255,214,0,.45), inset 0 0 40px rgba(255,255,255,.12);
+}
+body[data-theme="yellow"] body[data-state="listening"] #coreOrb {
+  box-shadow: 0 0 80px rgba(255,214,0,.7);
+}
+
+/* ---------------- card polish + transitions (Phase 6) ---------------- */
+.card { animation: cardIn .28s ease-out both; }
+.card:nth-child(2) { animation-delay: .03s; }
+.card:nth-child(3) { animation-delay: .06s; }
+.card:nth-child(4) { animation-delay: .09s; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(6px); } }
+
+#coreOrb, #coreRing { transition: box-shadow .4s ease, transform .3s ease, opacity .3s ease, filter .3s ease; }
+body[data-state] #stateLabel, body[data-state] #stateSub { transition: color .3s ease, opacity .3s ease; }
+
+.card-list .card .pill.err { background: rgba(240,113,139,.16); }
+.card-list .card .pill.warn { background: rgba(255,179,107,.16); }
+.card-list .card .pill.ok { background: rgba(127,214,160,.14); }
+
+#monitorCards { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+#monitorCards .card { padding: 10px 12px; }
+
+@media (min-width: 900px) {
+  #briefingSections { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+}
+.panel-head-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.panel-head-row h3 { margin: 0; }
+
+input[type="time"] { width: 130px; color-scheme: dark; }
