@@ -16,6 +16,7 @@ from ..brains.definitions import BrainDefinition
 from ..brains.health import BrainHealth
 from ..brains.registry import BrainRegistry
 from ..brains.specialists import specialist_definitions
+from ..briefing.engine import BriefingEngine
 from ..config import AGENTS, DB_PATH, DATA_DIR, KEY_ENV, SecretsStore, SettingsStore
 from ..core.events import EventBus
 from ..core.killswitch import KillSwitch
@@ -27,6 +28,7 @@ from ..health.vault import HealthVault
 from ..heartbeat.scheduler import HeartbeatScheduler
 from ..loops.engine import LoopEngine
 from ..memory.retriever import MemoryRetriever
+from ..monitor.engine import MonitorEngine
 from ..permissions.confirm import ConfirmationManager
 from ..permissions.policy import PermissionManager
 from ..profile.store import ProfileStore
@@ -101,6 +103,9 @@ class App:
         self.wake: WakeEngine | None = None
         self.profiles: ProfileStore | None = None
         self.speaker: SpeakerVerifier | None = None
+        # Jarvis monitoring + briefing (Phase 5)
+        self.monitor: MonitorEngine | None = None
+        self.briefing: BriefingEngine | None = None
 
     # ------------------------------------------------------------------
     async def startup(self) -> None:
@@ -228,6 +233,20 @@ class App:
                                self.killswitch, verifier=self.speaker)
         await self.wake.start()
 
+        # ---- monitoring + briefing (Phase 5) --------------------------------
+        self.monitor = MonitorEngine(
+            settings=self.settings, audit=self.audit,
+            tasks=TaskStore(self.db), schedules=ScheduleStore(self.db),
+            health=self.health, graph=self.graph, profiles=self.profiles,
+            killswitch=self.killswitch, events=self.events)
+        self.briefing = BriefingEngine(
+            monitor=self.monitor, profiles=self.profiles, memories=self.memories,
+            settings=self.settings, health=self.health, events=self.events)
+        for agent in self.agents.values():
+            agent.briefing = self.briefing
+            agent.monitor = self.monitor
+        await self._seed_briefing_schedule()
+
         self.scheduler = HeartbeatScheduler(
             store=ScheduleStore(self.db), settings=self.settings,
             task_manager=self.tasks, agent_runner=self._run_agent, events=self.events,
@@ -311,6 +330,21 @@ class App:
                 from ..heartbeat.scheduler import next_run_at
 
                 await schedules.update(sched["id"], next_run_at=next_run_at(expression))
+
+    async def _seed_briefing_schedule(self) -> None:
+        """Morning briefing schedule (07:30) for Phantom — speaks + caches."""
+        schedules = ScheduleStore(self.db)
+        existing = await schedules.list("phantom")
+        if not any(s["name"] == "Daily briefing" for s in existing):
+            prompt = ("Run the briefing tool (briefing_get) and read the spoken "
+                      "summary. Then send a concise NON-SENSITIVE notification "
+                      "with today's top priorities.")
+            sched = await schedules.create(
+                "phantom", "Daily briefing", "daily at 07:30", prompt,
+                quiet_start="22:00", quiet_end="07:00")
+            from ..heartbeat.scheduler import next_run_at
+
+            await schedules.update(sched["id"], next_run_at=next_run_at("daily at 07:30"))
 
     async def _seed_health_schedules(self) -> None:
         """Daily health briefing for the Health brain (idempotent, quiet-hours

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from .base import ToolContext, ToolError, ToolRegistry, ToolResult, ToolSpec
 from .browser import register_browser_tools
+from .briefing_tools import register_briefing_tools
 from .clipboard import register_clipboard_tools
 from .delegation_tools import register_delegation_tools
 from .evolution_tools import register_evolution_tools
@@ -39,6 +40,7 @@ def build_registry() -> ToolRegistry:
     register_evolution_tools(registry)
     register_health_tools(registry)
     register_profile_tools(registry)
+    register_briefing_tools(registry)
     return registry
 
 

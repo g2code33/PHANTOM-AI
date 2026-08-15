@@ -435,6 +435,7 @@ function switchPanel(panel) {
   document.querySelectorAll(".panel-btn").forEach((b) => b.classList.toggle("active", b.dataset.panel === panel));
   document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === `panel-${panel}`));
   $("drawerTitle").textContent = panel[0].toUpperCase() + panel.slice(1);
+  if (panel === "today") loadToday();
   if (panel === "memory") loadMemories();
   if (panel === "wellness") loadWellness();
   if (panel === "health") loadHealth();
@@ -442,6 +443,67 @@ function switchPanel(panel) {
   if (panel === "audit") { loadAuditEvents(); loadAudit(); }
   if (panel === "permissions") loadPermissions();
   if (panel === "settings") loadSettings();
+}
+
+/* ============================== TODAY (briefing + monitor) ============================== */
+async function loadToday(force) {
+  try {
+    const briefing = await api(`/api/briefing${force ? "?force=true" : ""}`);
+    renderBriefing(briefing);
+    const monitor = await api("/api/monitor");
+    renderMonitor(monitor);
+  } catch (e) { /* backend not ready yet */ }
+}
+function renderBriefing(b) {
+  const top = $("briefingTop");
+  top.innerHTML = "";
+  for (const group of b.top_priorities || []) {
+    const g = document.createElement("div");
+    g.className = "card";
+    const lvlCls = group.level === "high" ? "err" : group.level === "in_progress" ? "warn" : "info";
+    g.innerHTML = `<div class="card-title"><span class="pill ${lvlCls}">${esc(group.level)}</span></div>`;
+    for (const item of group.items) {
+      const d = document.createElement("div");
+      d.className = "card-body";
+      d.innerHTML = `<b>${esc(item.title)}</b>${item.detail ? ` — ${esc(item.detail)}` : ""}`;
+      g.appendChild(d);
+    }
+    top.appendChild(g);
+  }
+  if (!(b.top_priorities || []).length) top.innerHTML = `<div class="card muted">Nothing urgent today.</div>`;
+
+  const sections = $("briefingSections");
+  sections.innerHTML = "";
+  for (const [key, s] of Object.entries(b.sections || {})) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `<div class="card-title">${esc(s.title)}</div>
+      <div class="card-body small">${esc((s.items || []).join(" · "))}</div>`;
+    sections.appendChild(card);
+  }
+}
+function renderMonitor(m) {
+  const el = $("monitorCards");
+  el.innerHTML = "";
+  const sys = m.system || {};
+  const mk = (t, v, cls) => {
+    const d = document.createElement("div");
+    d.className = "card";
+    d.innerHTML = `<div class="card-title"><span class="pill ${cls}">${esc(t)}</span></div>
+      <div class="card-body small">${esc(v)}</div>`;
+    el.appendChild(d);
+  };
+  mk("CPU", `${sys.cpu_percent ?? "—"}%`, sys.cpu_percent > 80 ? "err" : "ok");
+  mk("Memory", `${sys.memory_percent ?? "—"}%`, sys.memory_percent > 85 ? "err" : "ok");
+  mk("Disk", `${sys.disk_percent ?? "—"}%`, sys.disk_percent > 90 ? "err" : "ok");
+  if (sys.battery) mk("Battery", `${sys.battery.percent}%${sys.battery.plugged ? " ⚡" : ""}`, sys.battery.percent < 20 && !sys.battery.plugged ? "warn" : "ok");
+  const t = m.tasks || {};
+  if (t.counts && t.counts.failed) mk("Failed tasks", String(t.counts.failed), "err");
+  const s = m.signals || {};
+  if (s.tool_failures_24h) mk("Tool failures 24h", String(s.tool_failures_24h), "warn");
+}
+function speakBriefing() {
+  api("/api/briefing").then((b) => { if (b.spoken && state.voiceOn) voice.speak(b.spoken); });
 }
 
 /* ============================== ACTIVITY ============================== */

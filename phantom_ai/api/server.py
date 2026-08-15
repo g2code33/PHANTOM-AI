@@ -1018,6 +1018,24 @@ def create_app(app: App) -> FastAPI:
             raise HTTPException(404, "profile not found")
         return {"ok": True}
 
+    # ------------------------------------------------------------- briefing
+    @fastapi.get("/api/briefing")
+    async def briefing_get(force: bool = False):
+        """Cached briefing — instant; force=true regenerates."""
+        return await app.briefing.get(force=force)
+
+    @fastapi.post("/api/briefing/refresh")
+    async def briefing_refresh():
+        return await app.briefing.refresh()
+
+    @fastapi.get("/api/monitor")
+    async def monitor_get():
+        return await app.monitor.snapshot()
+
+    @fastapi.get("/api/monitor/watch")
+    async def monitor_watch():
+        return await app.monitor.watch_list()
+
     # ---------------------------------------------------------------- health
     @fastapi.get("/api/health/status")
     async def health_status():

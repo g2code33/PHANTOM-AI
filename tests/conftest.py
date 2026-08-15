@@ -104,6 +104,7 @@ async def tool_ctx(app):
             loop_engine=instance.loops, verifier=instance.verifier,
             analyst=instance.analyst, agent_ids=("phantom", "coded", "evolution"),
             health=instance.health, profiles=instance.profiles,
+            briefing=instance.briefing, monitor=instance.monitor,
         ))
 
     yield factory

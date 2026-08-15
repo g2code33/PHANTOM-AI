@@ -87,7 +87,8 @@
       <span id="drawerTitle">Panels</span>
     </div>
     <nav id="drawerNav">
-      <button class="panel-btn active" data-panel="activity">Activity</button>
+      <button class="panel-btn active" data-panel="today">Today</button>
+      <button class="panel-btn" data-panel="activity">Activity</button>
       <button class="panel-btn" data-panel="chats">Chats</button>
       <button class="panel-btn" data-panel="memory">Memory</button>
       <button class="panel-btn" data-panel="wellness">Wellness</button>
@@ -98,7 +99,21 @@
       <button class="panel-btn" data-panel="settings">Settings</button>
     </nav>
 
-    <div id="panel-activity" class="panel active">
+    <div id="panel-today" class="panel active">
+      <div class="panel-head-row">
+        <h3>☀️ Today</h3>
+        <div class="memory-controls" style="margin:0">
+          <button id="briefingRefresh" class="btn mini-btn" onclick="loadToday(true)">Refresh</button>
+          <button class="mini-btn" onclick="speakBriefing()">🗣 Speak</button>
+        </div>
+      </div>
+      <div id="briefingTop" class="card-list"></div>
+      <div id="briefingSections" class="card-list"></div>
+      <h4 class="muted" style="margin-top:14px">Live monitor</h4>
+      <div id="monitorCards" class="card-list"></div>
+    </div>
+
+    <div id="panel-activity" class="panel">
       <div id="activityFeed" class="activity-feed"></div>
     </div>
 

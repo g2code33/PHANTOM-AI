@@ -154,6 +154,8 @@ class Agent:
         self.loop_engine: Any = None
         self.analyst: Any = None
         self.profiles: Any = None
+        self.briefing: Any = None
+        self.monitor: Any = None
         self.tool_allowlist: Optional[set] = None
 
     async def ensure_model(self, task_text: str, mode: str = "chat") -> str:
@@ -639,6 +641,8 @@ class Agent:
             notifications=self.notifications,
             task_token=cancel_event,
             profiles=self.profiles,
+            briefing=self.briefing,
+            monitor=self.monitor,
             brain_registry=self.brain_registry,
             graph=self.graph,
             proposals=self.proposals,
