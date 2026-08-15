@@ -54,3 +54,18 @@ async def test_mobile_works_with_origin_header(app):
         assert st["profile_name"] == "JOOJO"
         html = (await client.get("/mobile")).text
         assert "Phantom Companion" in html
+
+
+async def test_named_tunnel_scripts_present(app):
+    root = Path(app.__class__.__module__.split(".")[0]).resolve().parent
+    for name in ("tunnel-setup.sh", "tunnel-run.sh"):
+        p = root / "scripts" / name
+        assert p.exists(), f"{name} missing"
+        text = p.read_text()
+        assert "cloudflared" in text
+    setup = (root / "scripts" / "tunnel-setup.sh").read_text()
+    assert "tunnel login" in setup       # login flow present
+    assert "trycloudflare" in setup      # no-domain option
+    assert "route dns" in setup          # custom-domain option
+    run = (root / "scripts" / "tunnel-run.sh").read_text()
+    assert "tunnel run" in run
