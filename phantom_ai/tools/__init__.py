@@ -10,6 +10,7 @@ from .base import ToolContext, ToolError, ToolRegistry, ToolResult, ToolSpec
 from .browser import register_browser_tools
 from .briefing_tools import register_briefing_tools
 from .clipboard import register_clipboard_tools
+from .cloud_tools import register_cloud_tools
 from .delegation_tools import register_delegation_tools
 from .evolution_tools import register_evolution_tools
 from .files import register_file_tools
@@ -41,6 +42,7 @@ def build_registry() -> ToolRegistry:
     register_health_tools(registry)
     register_profile_tools(registry)
     register_briefing_tools(registry)
+    register_cloud_tools(registry)
     return registry
 
 

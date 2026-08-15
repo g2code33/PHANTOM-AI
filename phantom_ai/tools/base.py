@@ -96,6 +96,8 @@ class ToolContext:
     # --- Briefing + monitor (Jarvis P5) ---
     briefing: Any = None
     monitor: Any = None
+    # --- Cloud sync (portable) ---
+    cloudsync: Any = None
 
 
 async def _run_with_timeout(coro: Awaitable, timeout: float, ctx: ToolContext) -> Any:

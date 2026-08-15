@@ -156,6 +156,7 @@ class Agent:
         self.profiles: Any = None
         self.briefing: Any = None
         self.monitor: Any = None
+        self.cloudsync: Any = None
         self.tool_allowlist: Optional[set] = None
 
     async def ensure_model(self, task_text: str, mode: str = "chat") -> str:
@@ -643,6 +644,7 @@ class Agent:
             profiles=self.profiles,
             briefing=self.briefing,
             monitor=self.monitor,
+            cloudsync=self.cloudsync,
             brain_registry=self.brain_registry,
             graph=self.graph,
             proposals=self.proposals,

@@ -1,0 +1,15 @@
+{
+  "name": "phantom-portable-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Phantom \u2014 portable cloud Worker (Cloudflare). Always-on lightweight Phantom.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "login": "wrangler login"
+  },
+  "devDependencies": {
+    "wrangler": "^3.80.0"
+  },
+  "type": "module"
+}

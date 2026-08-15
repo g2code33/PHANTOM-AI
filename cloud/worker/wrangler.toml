@@ -1,0 +1,25 @@
+name = "phantom-portable"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# Cloud memory / profile / reminders (free tier KV)
+[[kv_namespaces]]
+binding = "PHANTOM_MEMORY"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[[kv_namespaces]]
+binding = "PHANTOM_PROFILE"
+id = "REPLACE_WITH_KV_PROFILE_ID"
+
+[[kv_namespaces]]
+binding = "PHANTOM_REMINDERS"
+id = "REPLACE_WITH_KV_REMINDERS_ID"
+
+# vars (non-secret defaults)
+[vars]
+NVIDIA_MODEL = "nvidia/llama-3.3-70b-instruct"
+
+# secrets (set with: npx wrangler secret put <name>)
+#   NVIDIA_API_KEY        — your NVIDIA key (portable brain)
+#   DEEPGRAM_API_KEY      — voice transcription on the cloud side
+#   PHANTOM_CLOUD_TOKEN   — optional access token (send as X-Access-Token)

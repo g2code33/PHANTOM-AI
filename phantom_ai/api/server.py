@@ -1113,6 +1113,53 @@ def create_app(app: App) -> FastAPI:
             raise HTTPException(503, str(exc)) from None
         return result
 
+    # ------------------------------------------------------------- cloudsync
+    @fastapi.get("/api/cloud/config")
+    async def cloud_config():
+        return await app.cloudsync.config()
+
+    @fastapi.put("/api/cloud/config")
+    async def cloud_config_set(body: dict):
+        return await app.cloudsync.save_config(
+            url=str(body.get("url", "")).strip(),
+            token=str(body.get("token", "")).strip(),
+            clear=bool(body.get("clear")))
+
+    @fastapi.get("/api/cloud/memories")
+    async def cloud_memories():
+        if not await app.cloudsync.configured():
+            from fastapi import HTTPException
+
+            raise HTTPException(503, "portable Phantom URL not configured")
+        return {"memories": await app.cloudsync.list_cloud_memories()}
+
+    @fastapi.post("/api/cloud/save")
+    async def cloud_save(body: dict):
+        """'Save this specifically to cloud' — explicit, audited."""
+        try:
+            return await app.cloudsync.save_to_cloud(
+                content=str(body.get("content", "")).strip(),
+                kind=str(body.get("kind", "fact")),
+                tags=body.get("tags"))
+        except (ValueError, RuntimeError) as exc:
+            from fastapi import HTTPException
+
+            raise HTTPException(400 if isinstance(exc, ValueError) else 503,
+                                str(exc)) from None
+
+    @fastapi.post("/api/cloud/sync")
+    async def cloud_sync_all():
+        """Push profile + reminders, pull cloud memories (the shared slice)."""
+        out: dict[str, Any] = {}
+        if not await app.cloudsync.configured():
+            from fastapi import HTTPException
+
+            raise HTTPException(503, "portable Phantom URL not configured")
+        out["profile"] = await app.cloudsync.push_profile()
+        out["reminders"] = await app.cloudsync.push_reminders()
+        out["memories"] = await app.cloudsync.fetch_cloud_memories()
+        return out
+
     # ---------------------------------------------------------------- health
     @fastapi.get("/api/health/status")
     async def health_status():

@@ -52,6 +52,14 @@ npm run typecheck && npm run web:build          # Electron main (tsc) + web bund
 
 ## Desktop & mobile packaging (release on push to `main`)
 
+```bash
+# handy shortcuts
+npm run tunnel:quick      # random trycloudflare URL (PC companion)
+npm run tunnel:run        # stable named tunnel (after tunnel-setup.sh)
+npm run portable:deploy   # one-shot deploy of Portable Phantom to Cloudflare
+```
+
+
 The same build-and-release structure as `g2code33/CLINICAL-RX-`:
 
 - **Windows installer** — `Phantom-Setup-<ver>.exe` (+ `latest.yml`) via electron-builder/nsis.
