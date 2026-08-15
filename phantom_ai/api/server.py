@@ -1175,6 +1175,26 @@ def create_app(app: App) -> FastAPI:
                                {"masked": data.get("masked")})
         return data
 
+    @fastapi.post("/api/cloud/deploy")
+    async def cloud_deploy(body: dict | None = None):
+        """Redeploy the Portable Worker straight from Settings (no terminal).
+        Keys/token optional (env → deploy.sh); streams output as cloud.deploy_log."""
+        body = body or {}
+        try:
+            task = await app.clouddeploy.deploy(
+                nvidia_key=str(body.get("nvidia_key", "")).strip(),
+                deepgram_key=str(body.get("deepgram_key", "")).strip(),
+                cloud_token=str(body.get("cloud_token", "")).strip())
+        except RuntimeError as exc:
+            from fastapi import HTTPException
+
+            raise HTTPException(400, str(exc)) from None
+        return {"task": task}
+
+    @fastapi.get("/api/cloud/deploy/logs")
+    async def cloud_deploy_logs():
+        return {"logs": await app.clouddeploy.last_logs()}
+
     @fastapi.post("/api/cloud/save")
     async def cloud_save(body: dict):
         """'Save this specifically to cloud' — explicit, audited."""

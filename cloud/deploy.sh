@@ -38,9 +38,13 @@ if [ ! -d "$WORKER_DIR/node_modules/wrangler" ] && ! (cd "$WORKER_DIR" && npx --
 fi
 
 # 1) login (with a clear error if auth can't be established)
-echo " Step 1 — Cloudflare login (browser opens; free account is fine)…"
+echo " Step 1 — Cloudflare login check…"
 if ! wr whoami >/dev/null 2>&1; then
-  wr login || { echo "❌ Could not log in to Cloudflare. Run 'bash cloud/deploy.sh' on your own machine (browser login) or set CLOUDFLARE_API_TOKEN." >&2; exit 1; }
+  if [ "${NONINTERACTIVE:-}" = "1" ]; then
+    echo "❌ Not logged in to Cloudflare. Open the app on a machine where you've run 'wrangler login', or set CLOUDFLARE_API_TOKEN." >&2
+    exit 1
+  fi
+  wr login || { echo "❌ Could not log in to Cloudflare." >&2; exit 1; }
   wr whoami >/dev/null 2>&1 || { echo "❌ Login did not complete." >&2; exit 1; }
 fi
 echo " ✓ logged in"
@@ -95,7 +99,7 @@ echo " Step 3 — secrets…"
 set_secret() {
   local name="$1"
   local val="${!name:-}"
-  if [ -z "$val" ]; then
+  if [ -z "$val" ] && [ "${NONINTERACTIVE:-}" != "1" ]; then
     read -r -s -p "   ${name}: " val; echo
   fi
   if [ -n "$val" ]; then

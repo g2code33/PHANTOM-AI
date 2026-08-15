@@ -222,6 +222,9 @@ function handleEvent(payload) {
       else voice.setKill(false);
       break;
     case "heartbeat.run": addActivity("heartbeat", `💓 ${data.name}`, "tool-start"); break;
+    case "cloud.deploy_log":
+      document.dispatchEvent(new CustomEvent("cloud-deploy-log", { detail: data.line || "" }));
+      break;
     default: break;
   }
 }
@@ -922,10 +925,12 @@ async function loadSettings() {
       <div class="row">
         <button class="btn" onclick="saveCloud()">Save config</button>
         <button class="btn" onclick="saveCloudKeys()">Save keys</button>
+        <button class="btn" onclick="redeployCloud()">🔄 Redeploy cloud</button>
         <button class="btn" onclick="cloudSyncAll()">Sync now</button>
         <button class="btn btn-danger" onclick="clearCloud()">Clear</button>
         <span id="cloudStatus" class="muted small"></span>
       </div>
+      <pre id="cloudDeployLog" class="mono small hidden" style="max-height:220px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px;margin-top:8px"></pre>
       <p class="muted small">Key fields are sent straight to the Worker over https with your cloud token — never stored in the app, never shown back.</p>
     </div>
     <div class="settings-section"><h3>📱 Mobile / remote backend</h3>
@@ -1150,6 +1155,30 @@ window.cloudSyncAll = async () => {
     toast(`Synced — profile ✓, reminders ${r.reminders?.pushed ?? 0}, memories ${r.memories?.mirrored_new ?? 0} new`);
   } catch (e) { toast("Sync failed: " + e.message); }
 };
+window.redeployCloud = async () => {
+  const logEl = $("cloudDeployLog");
+  logEl.classList.remove("hidden");
+  logEl.textContent = "Redeploying Portable Phantom… (this takes ~1 min)";
+  try {
+    const r = await api("/api/cloud/deploy", {
+      body: { nvidia_key: $("cloudNvidia").value.trim(),
+              deepgram_key: $("cloudDeepgram").value.trim(),
+              cloud_token: $("cloudToken").value.trim() } });
+    toast("Redeploy started — watch the log");
+    $("cloudNvidia").value = ""; $("cloudDeepgram").value = ""; $("cloudToken").value = "";
+  } catch (e) {
+    logEl.textContent = "✗ " + e.message;
+    toast("Redeploy failed: " + e.message);
+  }
+};
+/* stream cloud.deploy_log events into the log box */
+document.addEventListener("cloud-deploy-log", (ev) => {
+  const logEl = $("cloudDeployLog");
+  if (logEl && !logEl.classList.contains("hidden")) {
+    logEl.textContent += "\n" + ev.detail;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+});
 
 /* ============================== UPDATER ============================== */
 const updater = window.phaiUpdater || null;

@@ -17,6 +17,7 @@ from ..brains.health import BrainHealth
 from ..brains.registry import BrainRegistry
 from ..brains.specialists import specialist_definitions
 from ..briefing.engine import BriefingEngine
+from ..clouddeploy.service import CloudDeploy
 from ..cloudsync.service import CloudSync
 from ..companion.service import CompanionService
 from ..config import AGENTS, DB_PATH, DATA_DIR, KEY_ENV, SecretsStore, SettingsStore
@@ -112,6 +113,8 @@ class App:
         self.companion: CompanionService | None = None
         # Jarvis cloud sync (portable)
         self.cloudsync: CloudSync | None = None
+        # Cloud redeploy from the app
+        self.clouddeploy: CloudDeploy | None = None
 
     # ------------------------------------------------------------------
     async def startup(self) -> None:
@@ -254,6 +257,8 @@ class App:
         self.companion = CompanionService(self)
         self.cloudsync = CloudSync(self.secrets, self.settings, self.audit,
                                    self.memories, self.profiles)
+        self.clouddeploy = CloudDeploy(self.secrets, self.tasks, self.events,
+                                       self.audit)
         for agent in self.agents.values():
             agent.cloudsync = self.cloudsync
         await self._seed_briefing_schedule()
