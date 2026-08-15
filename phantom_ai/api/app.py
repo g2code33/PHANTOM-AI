@@ -115,6 +115,8 @@ class App:
         self.cloudsync: CloudSync | None = None
         # Cloud redeploy from the app
         self.clouddeploy: CloudDeploy | None = None
+        # Multi-provider voice engine (STT/TTS failover chains)
+        self.voice_mgr: Any = None
 
     # ------------------------------------------------------------------
     async def startup(self) -> None:
@@ -261,6 +263,12 @@ class App:
                                        self.audit)
         for agent in self.agents.values():
             agent.cloudsync = self.cloudsync
+
+        # ---- multi-provider voice engine (failover chains) -----------------
+        from ..voice.manager import VoiceManager
+
+        self.voice_mgr = VoiceManager(self.secrets, self.settings, self.db,
+                                      data_dir=str(self.data_dir))
         await self._seed_briefing_schedule()
 
         self.scheduler = HeartbeatScheduler(
@@ -274,6 +282,8 @@ class App:
     async def shutdown(self) -> None:
         if self.scheduler:
             await self.scheduler.stop()
+        if getattr(self, "voice_mgr", None) is not None:
+            self.voice_mgr.close()
         for provider in self.providers.values():
             close = getattr(provider, "aclose", None)
             if close:

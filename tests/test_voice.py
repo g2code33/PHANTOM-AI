@@ -24,8 +24,10 @@ async def test_voice_config_defaults(app):
         res = await client.get("/api/voice/config")
         assert res.status_code == 200
         cfg = res.json()
-        assert cfg["stt"]["provider"] == "browser"
-        assert cfg["tts"]["provider"] == "browser"
+        assert cfg["stt"]["provider"] == "server"
+        assert cfg["tts"]["provider"] == "server"
+        assert cfg["stt_priority"] == ["deepgram", "groq", "local_whisper"]
+        assert cfg["tts_priority"] == ["deepgram", "cloud", "local"]
         assert cfg["mode"] in ("private", "push", "conversation")
         assert cfg["proactive_speech"] in (True, False)
         assert cfg["deepgram_configured"] is False
@@ -107,7 +109,7 @@ async def test_status_includes_voice_config(app):
     async with await _client(instance) as client:
         data = (await client.get("/api/status")).json()
         assert "voice" in data
-        assert data["voice"]["stt"]["provider"] in ("browser", "deepgram")
+        assert data["voice"]["stt"]["provider"] in ("browser", "deepgram", "server")
 
 
 async def test_heartbeat_proactive_speech_off_by_default(app):

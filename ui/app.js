@@ -76,8 +76,14 @@ voice.onInterim = (t) => {
   const h = $("voiceHint");
   if (h) h.textContent = t ? "🎙️ " + t.slice(0, 160) : "";
 };
-voice.onFinal = async (text) => {
+voice.onFinal = async (text, meta) => {
   $("voiceHint").textContent = "";
+  if (meta?.provider) {
+    // show which provider handled the speech (multi-provider transparency)
+    const provLabel = { deepgram: "Deepgram", groq: "Groq Whisper", local_whisper: "Local Whisper", browser: "Browser" }[meta.provider] || meta.provider;
+    const el = $("stateSub");
+    if (el) el.textContent = "via " + provLabel;
+  }
   if (state.running) return; // ignore stray transcripts while an agent is running
   await sendMessage(text, { via: "voice" });
 };
@@ -863,9 +869,24 @@ async function loadSettings() {
   sections.push(`
     <div class="settings-section"><h3>🎙️ Voice</h3>
       <div class="row"><label>STT provider</label>
-        <select id="sttProvider"><option value="browser">browser (offline)</option><option value="deepgram">deepgram (online)</option></select></div>
+        <select id="sttProvider"><option value="server">auto (Deepgram → Groq → local)</option><option value="browser">browser (offline)</option><option value="deepgram">deepgram (online)</option></select></div>
       <div class="row"><label>TTS provider</label>
-        <select id="ttsProvider"><option value="browser">browser (offline)</option><option value="deepgram">deepgram (online)</option></select></div>
+        <select id="ttsProvider"><option value="server">auto (Deepgram Aura → cloud → local)</option><option value="browser">browser (system voices)</option><option value="deepgram">deepgram Aura (online)</option></select></div>
+      <div class="row"><label>STT priority</label>
+        <input type="text" id="sttPriority" placeholder="deepgram, groq, local_whisper" style="flex:1"></div>
+      <div class="row"><label>TTS priority</label>
+        <input type="text" id="ttsPriority" placeholder="deepgram, cloud, local" style="flex:1"></div>
+      <div class="row"><label>Local Whisper model</label>
+        <select id="localModelSel"><option value="tiny">tiny (fastest, ~39 MB)</option><option value="base" selected>base (good, ~74 MB)</option><option value="small">small (better, ~460 MB)</option><option value="medium">medium (slow)</option></select></div>
+      <div class="row"><label>Voice activity threshold</label>
+        <input type="range" id="vadThreshold" min="0.005" max="0.12" step="0.005" style="flex:1">
+        <span id="vadThresholdLbl" class="muted small" style="width:60px"></span></div>
+      <div class="row"><label>Auto-stop after silence (ms)</label>
+        <input type="number" id="autoStopMs" min="300" max="5000" step="100" style="width:120px"></div>
+      <div class="row"><label>Max recording (ms)</label>
+        <input type="number" id="maxRecordMs" min="2000" max="60000" step="500" style="width:120px"></div>
+      <div class="row"><label>Continuous listening</label>
+        <select id="continuousSel"><option value="1">on</option><option value="0">off</option></select></div>
       <div class="row"><label>👻 Phantom voice</label>
         <select id="voicePhantom"><option value="">default (calm male)</option></select></div>
       <div class="row"><label>💻 Coded voice</label>
@@ -874,6 +895,10 @@ async function loadSettings() {
         <select id="voiceModeSel"><option value="private">private</option><option value="push">push-to-talk</option><option value="conversation">conversation</option></select></div>
       <div class="row"><label>Proactive speech</label>
         <select id="proactiveSel"><option value="0">off</option><option value="1">on</option></select></div>
+      <div class="row"><label>🎤 Test voice system</label>
+        <button class="btn" onclick="testVoicePipeline()">Test Voice System</button>
+        <span class="muted small">records 2s → STT → Phantom → TTS → speaker</span></div>
+      <div id="voiceStatusBox"></div>
       <div class="row"><label>Deepgram API key</label>
         <input type="password" id="deepgramKey" placeholder="${res.voice?.deepgram_masked ? `configured (${esc(res.voice.deepgram_masked)}) — type to replace` : "not set"}">
         <button class="btn" onclick="saveDeepgram()">Save</button>
@@ -969,10 +994,21 @@ async function loadSettings() {
     $("cloudStatus").textContent = cc.url ? `☁️ ${cc.url_masked}${cc.token_configured ? " (token set)" : ""}` : "not configured";
   } catch (e) {}
   const vc = res.voice || {};
-  $("sttProvider").value = vc.stt?.provider || "browser";
-  $("ttsProvider").value = vc.tts?.provider || "browser";
+  $("sttProvider").value = vc.stt?.provider || "server";
+  $("ttsProvider").value = vc.tts?.provider || "server";
   $("voiceModeSel").value = vc.mode || "conversation";
   $("proactiveSel").value = vc.proactive_speech ? "1" : "0";
+  if ($("sttPriority")) $("sttPriority").value = (vc.stt_priority || ["deepgram", "groq", "local_whisper"]).join(", ");
+  if ($("ttsPriority")) $("ttsPriority").value = (vc.tts_priority || ["deepgram", "cloud", "local"]).join(", ");
+  if ($("localModelSel")) $("localModelSel").value = vc.local_model || "base";
+  if ($("vadThreshold")) {
+    $("vadThreshold").value = vc.vad_threshold ?? 0.03;
+    $("vadThresholdLbl").textContent = "sensitivity " + (vc.vad_threshold ?? 0.03);
+  }
+  if ($("autoStopMs")) $("autoStopMs").value = vc.auto_stop_ms ?? 900;
+  if ($("maxRecordMs")) $("maxRecordMs").value = vc.max_record_ms ?? 15000;
+  if ($("continuousSel")) $("continuousSel").value = vc.continuous ? "1" : "0";
+  loadVoiceStatus();
   await loadVoicePickers(vc);
   await Promise.all([loadBrainKeys(), loadEnrollStatus()]);
   await loadSchedules();
@@ -1139,6 +1175,69 @@ window.testKey = async (kind, agent) => {
     const r = await api("/api/keys/test", { body: { kind, agent: agent || "phantom" } });
     toast(r.message, r.ok ? "ok" : "err");
   } catch (e) { toast("✗ " + e.message, "err"); }
+};
+
+const VOICE_STATE_ICON = { healthy: "🟢", degraded: "🟡", disabled: "🔴", unavailable: "⚪", untested: "⚪" };
+
+async function loadVoiceStatus() {
+  const box = $("voiceStatusBox");
+  if (!box) return;
+  try {
+    const [st, us] = await Promise.all([
+      api("/api/voice/status"), api("/api/voice/usage"),
+    ]);
+    const provs = (st.providers || []).map((p) => {
+      const icon = VOICE_STATE_ICON[p.state] || "⚪";
+      const active = p.active ? " <b>← active</b>" : "";
+      const err = p.last_error ? `<div class="small muted" style="margin-left:22px">${esc(p.last_error)}</div>` : "";
+      const prio = p.priority ? ` <span class="muted small">#${p.priority}</span>` : "";
+      return `<div style="margin:4px 0">${icon} ${esc(p.label)} <span class="muted small">(${esc(p.role_label)})</span>${prio}${active}${err}</div>`;
+    }).join("");
+    const lw = st.local_whisper || {};
+    const lwLine = lw.installed
+      ? `🟢 Local Whisper <span class="muted small">(${esc(lw.model)}${lw.loaded ? ", loaded" : ", idle"})</span>`
+      : `⚪ Local Whisper <span class="muted small">(${esc(lw.model)}) — ${esc(lw.reason || "not installed")}</span>`;
+    const t = us.totals || {};
+    box.innerHTML = `
+      <div class="card" style="margin-top:8px">
+        <div class="card-title">Provider status</div>
+        <div>${provs || "no providers"}</div>
+        <div style="margin-top:4px">${lwLine}</div>
+        <div class="muted small" style="margin-top:6px">Last 24h: ${t.requests || 0} requests · ${((t.audio_seconds || 0) / 60).toFixed(1)} min audio · est. cost $${(t.est_cost_usd || 0).toFixed(4)}</div>
+      </div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="muted small">provider status unavailable: ${esc(e.message)}</div>`;
+  }
+}
+
+window.testVoicePipeline = async () => {
+  try {
+    toast("🎤 Recording 2s… speak now");
+    const wav = await voice.captureWav(2);
+    if (!wav) { toast("✗ Microphone not available", "err"); return; }
+    toast("⏳ Running full pipeline (STT → Phantom → TTS)…");
+    const fd = new FormData();
+    fd.append("audio", wav, "test.wav");
+    const res = await fetch("/api/voice/test", { method: "POST", body: fd });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch (e) {}
+      toast("✗ " + detail, "err");
+      return;
+    }
+    const sttProv = res.headers.get("X-STT-Provider") || "?";
+    const ttsProv = res.headers.get("X-TTS-Provider") || "?";
+    const transcript = res.headers.get("X-Transcript") || "";
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.onended = () => URL.revokeObjectURL(url);
+    await audio.play();
+    toast(`✓ Voice system OK — STT: ${sttProv} → TTS: ${ttsProv}${transcript ? ` (heard: "${transcript.slice(0, 60)}")` : ""}`, "ok");
+    loadVoiceStatus();
+  } catch (e) {
+    toast("✗ Voice test failed: " + e.message, "err");
+  }
 };
 async function loadSchedules() {
   const res = await api("/api/schedules");
@@ -1501,10 +1600,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     if (id === "quietStart") saveSetting("*", "quiet.start", ev.target.value.trim());
     if (id === "quietEnd") saveSetting("*", "quiet.end", ev.target.value.trim());
-    if (id === "sttProvider") api("/api/voice/config", { method: "PUT", body: { stt: { provider: ev.target.value } } }).then(() => toast("✓ STT provider saved", "ok")).catch((e) => toast("✗ " + e.message, "err"));
-    if (id === "ttsProvider") api("/api/voice/config", { method: "PUT", body: { tts: { provider: ev.target.value } } }).then(() => toast("✓ TTS provider saved", "ok")).catch((e) => toast("✗ " + e.message, "err"));
+    if (id === "sttProvider") { voice.sttProvider = ev.target.value; api("/api/voice/config", { method: "PUT", body: { stt: { provider: ev.target.value } } }).then(() => toast("✓ STT provider saved", "ok")).catch((e) => toast("✗ " + e.message, "err")); }
+    if (id === "ttsProvider") { voice.ttsProvider = ev.target.value; api("/api/voice/config", { method: "PUT", body: { tts: { provider: ev.target.value } } }).then(() => toast("✓ TTS provider saved", "ok")).catch((e) => toast("✗ " + e.message, "err")); }
     if (id === "voiceModeSel") { voice.setMode(ev.target.value); api("/api/voice/config", { method: "PUT", body: { mode: ev.target.value } }); }
     if (id === "proactiveSel") api("/api/voice/config", { method: "PUT", body: { proactive_speech: ev.target.value === "1" } });
+    if (id === "sttPriority") api("/api/voice/config", { method: "PUT", body: { stt_priority: ev.target.value.split(",").map((s) => s.trim()).filter(Boolean) } }).then(() => { toast("✓ STT priority saved", "ok"); loadVoiceStatus(); }).catch((e) => toast("✗ " + e.message, "err"));
+    if (id === "ttsPriority") api("/api/voice/config", { method: "PUT", body: { tts_priority: ev.target.value.split(",").map((s) => s.trim()).filter(Boolean) } }).then(() => { toast("✓ TTS priority saved", "ok"); loadVoiceStatus(); }).catch((e) => toast("✗ " + e.message, "err"));
+    if (id === "localModelSel") api("/api/voice/config", { method: "PUT", body: { local_model: ev.target.value } }).then(() => { toast("✓ Local Whisper model: " + ev.target.value, "ok"); loadVoiceStatus(); }).catch((e) => toast("✗ " + e.message, "err"));
+    if (id === "vadThreshold") {
+      const v = parseFloat(ev.target.value);
+      $("vadThresholdLbl").textContent = "sensitivity " + v;
+      voice.vadThreshold = v;
+      api("/api/voice/config", { method: "PUT", body: { vad_threshold: v } });
+    }
+    if (id === "autoStopMs") { voice.autoStopMs = parseInt(ev.target.value) || 900; api("/api/voice/config", { method: "PUT", body: { auto_stop_ms: voice.autoStopMs } }); }
+    if (id === "maxRecordMs") { voice.maxRecordMs = parseInt(ev.target.value) || 15000; api("/api/voice/config", { method: "PUT", body: { max_record_ms: voice.maxRecordMs } }); }
+    if (id === "continuousSel") { voice.continuous = ev.target.value === "1"; api("/api/voice/config", { method: "PUT", body: { continuous: voice.continuous } }); }
     if (id === "themeSel") applyTheme(ev.target.value);
     if (id === "voicePhantom") {
       voice.voices.phantom = ev.target.value;

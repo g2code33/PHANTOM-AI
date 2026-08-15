@@ -288,7 +288,8 @@
       <div class="onb-row"><label>What should I call you?</label>
         <input id="onbName" type="text" placeholder="your name" value=""></div>
       <div class="onb-row"><label>Voice replies</label>
-        <select id="onbVoice"><option value="browser">Browser voice (offline)</option>
+        <select id="onbVoice"><option value="server" selected>Auto (Deepgram → Groq → local)</option>
+          <option value="browser">Browser voice (offline)</option>
           <option value="deepgram">Deepgram (online, streaming)</option></select></div>
       <div class="onb-row"><label>AI mode</label>
         <select id="onbMode"><option value="online">Online enhanced (NVIDIA models)</option>

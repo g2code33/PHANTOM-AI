@@ -143,12 +143,33 @@ Settings → Schedules. Expressions: `every 30m`, `every 2h`, `hourly`, `daily a
 up after a restart (within 24 h). Results arrive as dismissible notifications — heartbeat never
 runs high-risk actions without your approval.
 
-## Voice (push-to-talk)
+## Voice (multi-provider engine)
 
-Click 🎙️ and speak (Web Speech API in Chrome/Edge). The transcript goes through the *same* agent
-core as typed text. 🔊 toggles spoken replies (browser speech synthesis; interrupted on your next
-message). Server-side STT/TTS providers (OpenAI/NIM-compatible endpoints) plug in behind the same
-abstraction — configure in Settings → Voice.
+Settings → Voice runs the full **failover chains** (automatic — you don't switch manually):
+
+- **STT (speech-to-text):** Deepgram → Groq Whisper (`whisper-large-v3-turbo`) → Local Whisper (offline)
+- **TTS (speech):** Deepgram Aura → configured cloud fallback → Local (Piper / espeak-ng)
+
+The central `VoiceManager` (backend) tracks provider health, disables unhealthy providers with
+exponential backoff (short for rate limits, long for invalid keys), counts usage + estimated cost
+(24h dashboard in Settings), and always returns friendly messages — e.g.
+*"Deepgram is rate-limited — switching to the next provider"* — never raw errors or keys.
+
+- **API keys** (NVIDIA, Deepgram, Groq, cloud token) are stored server-side in a chmod-600 file,
+  masked everywhere in the UI (`dg_••••`), and each has a **Test** button that verifies it live
+  without the key ever leaving the backend.
+- **Offline:** Local Whisper (`base` recommended on 8 GB laptops; `tiny` for weaker machines) +
+  Piper/espeak-ng keep voice working with zero internet. The Whisper model loads **only while you
+  speak** and releases after idle — it never runs in the background. Install:
+  `pip install faster-whisper` + `sudo apt install espeak-ng`, then download a model once with
+  `python -m phantom_ai.voice.install_whisper base` (see Operational notes).
+- **Provider status dashboard** (Settings → Voice) shows 🟢/🟡/🔴 per provider, which one is
+  active, and last error. **Test Voice System** records 2 s and runs the whole pipeline
+  (mic → STT → Phantom AI → TTS → speaker) end-to-end.
+- Voice modes: conversation (continuous, auto-stops after silence), push-to-talk, private.
+  Adjustable VAD sensitivity, auto-stop silence, and max recording length in Settings.
+- Browser (Web Speech / speechSynthesis) and Deepgram streaming modes remain available if you
+  prefer them.
 
 ## Security posture
 

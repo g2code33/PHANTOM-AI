@@ -7,7 +7,8 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (FastAPI, File, Form, HTTPException, Request, UploadFile,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -48,6 +49,20 @@ def _key_test_result(kind: str, resp) -> dict:
                 "message": f"⚠️ {kind} is rate-limited — try again later"}
     return {"ok": False, "kind": kind_l,
             "message": f"✗ {kind} returned an error ({status}) — try again later"}
+
+
+async def _save_voice_upload(app: App, upload: UploadFile) -> Path:
+    """Persist an uploaded mic recording to a temp WAV under the data dir."""
+    import uuid
+
+    data = await upload.read()
+    if not data:
+        raise HTTPException(400, "empty audio upload")
+    upload_dir = Path(app.data_dir) / "voice_uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    path = upload_dir / f"rec_{uuid.uuid4().hex[:12]}.wav"
+    path.write_bytes(data)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -645,14 +660,15 @@ def create_app(app: App) -> FastAPI:
     # ------------------------------------------------------------------ voice
     @fastapi.get("/api/voice/config")
     async def voice_config():
-        stt = await app.settings.get("voice.stt", "*", {"provider": "browser"})
-        tts = await app.settings.get("voice.tts", "*", {"provider": "browser"})
+        stt = await app.settings.get("voice.stt", "*", {"provider": "server"})
+        tts = await app.settings.get("voice.tts", "*", {"provider": "server"})
         mode = await app.settings.get("voice.mode", "*", "conversation")
         proactive = await app.settings.get("voice.proactive_speech", "*", False)
         # per-persona voices (Phase 3): phantom & coded each have their own
         voices = await app.settings.get("voice.voices", "*", {})
         dg = app.secrets.get("DEEPGRAM_API_KEY") or ""
         groq = app.secrets.get("GROQ_API_KEY") or ""
+        tts_cloud = await app.settings.get("voice.tts_cloud", "*", {}) or {}
         return {
             "stt": {"provider": stt.get("provider", "browser"),
                     "model": stt.get("model", "")},
@@ -668,6 +684,22 @@ def create_app(app: App) -> FastAPI:
             "deepgram_masked": mask_key(dg),
             "groq_configured": bool(groq),
             "groq_masked": mask_key(groq),
+            # multi-provider voice engine settings
+            "stt_priority": await app.settings.get(
+                "voice.stt_priority", "*",
+                ["deepgram", "groq", "local_whisper"]),
+            "tts_priority": await app.settings.get(
+                "voice.tts_priority", "*",
+                ["deepgram", "cloud", "local"]),
+            "local_model": await app.settings.get("voice.local_model", "*", "base"),
+            "tts_cloud": {
+                "base_url": (tts_cloud or {}).get("base_url", ""),
+                "configured": bool((tts_cloud or {}).get("base_url")),
+            },
+            "vad_threshold": await app.settings.get("voice.vad_threshold", "*", 0.02),
+            "auto_stop_ms": await app.settings.get("voice.auto_stop_ms", "*", 900),
+            "max_record_ms": await app.settings.get("voice.max_record_ms", "*", 15000),
+            "continuous": bool(await app.settings.get("voice.continuous", "*", True)),
         }
 
     @fastapi.get("/api/voice/voices")
@@ -707,6 +739,40 @@ def create_app(app: App) -> FastAPI:
             if body.get("proactive_speech") is not None:
                 await app.settings.set("voice.proactive_speech",
                                        bool(body["proactive_speech"]), "*")
+            # multi-provider voice engine settings
+            if body.get("stt_priority"):
+                prio = body["stt_priority"]
+                if isinstance(prio, str):
+                    prio = [p.strip() for p in prio.split(",") if p.strip()]
+                await app.settings.set("voice.stt_priority", list(prio), "*")
+            if body.get("tts_priority"):
+                prio = body["tts_priority"]
+                if isinstance(prio, str):
+                    prio = [p.strip() for p in prio.split(",") if p.strip()]
+                await app.settings.set("voice.tts_priority", list(prio), "*")
+            if body.get("local_model"):
+                await app.settings.set("voice.local_model",
+                                       str(body["local_model"]).strip(), "*")
+            if body.get("tts_cloud") is not None:
+                existing_cfg = await app.settings.get("voice.tts_cloud", "*", {}) or {}
+                merged_cfg = {**(existing_cfg or {}), **body["tts_cloud"]}
+                # never store a key in the DB — move it to the secrets file
+                if merged_cfg.get("api_key"):
+                    app.secrets.set("VOICE_TTS_CLOUD_API_KEY",
+                                    str(merged_cfg.pop("api_key")).strip())
+                await app.settings.set("voice.tts_cloud", merged_cfg, "*")
+            if body.get("vad_threshold") is not None:
+                await app.settings.set("voice.vad_threshold",
+                                       float(body["vad_threshold"]), "*")
+            if body.get("auto_stop_ms") is not None:
+                await app.settings.set("voice.auto_stop_ms",
+                                       int(body["auto_stop_ms"]), "*")
+            if body.get("max_record_ms") is not None:
+                await app.settings.set("voice.max_record_ms",
+                                       int(body["max_record_ms"]), "*")
+            if body.get("continuous") is not None:
+                await app.settings.set("voice.continuous",
+                                       bool(body["continuous"]), "*")
         except Exception as exc:  # noqa: BLE001
             log.warning("voice settings save failed: %s", exc)
             persisted = False
@@ -758,6 +824,101 @@ def create_app(app: App) -> FastAPI:
             raise
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"Deepgram token failed: {exc}") from None
+
+    # ------------------------------------------- multi-provider voice engine
+    @fastapi.get("/api/voice/status")
+    async def voice_status():
+        if app.voice_mgr is None:
+            raise HTTPException(503, "voice engine not ready")
+        return await app.voice_mgr.status()
+
+    @fastapi.get("/api/voice/usage")
+    async def voice_usage():
+        if app.voice_mgr is None:
+            raise HTTPException(503, "voice engine not ready")
+        return await app.voice_mgr.usage_summary()
+
+    @fastapi.post("/api/voice/stt")
+    async def voice_stt(audio: UploadFile = File(...), language: str = Form("en")):
+        """Mic audio (WAV) -> STT failover chain. Returns the transcript plus
+        which provider handled it (never the keys)."""
+        if app.voice_mgr is None:
+            raise HTTPException(503, "voice engine not ready")
+        from ..voice.errors import VoiceProviderError
+
+        path = await _save_voice_upload(app, audio)
+        try:
+            return await app.voice_mgr.transcribe(str(path), language=language)
+        except VoiceProviderError as exc:
+            raise HTTPException(502, exc.friendly) from None
+        finally:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+
+    @fastapi.post("/api/voice/tts")
+    async def voice_tts(body: dict):
+        """Text -> TTS failover chain. Returns synthesized audio (mp3/wav)
+        plus the provider used in a response header."""
+        if app.voice_mgr is None:
+            raise HTTPException(503, "voice engine not ready")
+        from ..voice.errors import VoiceProviderError
+
+        text = (body.get("text") or "").strip()
+        if not text:
+            raise HTTPException(400, "text required")
+        try:
+            out = await app.voice_mgr.synthesize(text, voice=str(body.get("voice") or ""))
+        except VoiceProviderError as exc:
+            raise HTTPException(502, exc.friendly) from None
+        media = "audio/mpeg" if out["format"] == "mp3" else "audio/wav"
+        return FileResponse(
+            out["audio_path"], media_type=media,
+            headers={"X-TTS-Provider": out["provider"],
+                     "X-Fallbacks": ",".join(out["fallbacks"])})
+
+    @fastapi.post("/api/voice/test")
+    async def voice_test(audio: UploadFile = File(...)):
+        """Full pipeline test: mic -> STT -> Phantom AI -> TTS -> audio.
+        The 'Test Voice System' button records 2s and calls this."""
+        if app.voice_mgr is None:
+            raise HTTPException(503, "voice engine not ready")
+        from ..voice.errors import VoiceProviderError
+
+        path = await _save_voice_upload(app, audio)
+
+        async def _reply(transcript: str) -> str:
+            try:
+                if await app.conversations.get("voice-test") is None:
+                    await app.conversations.create(
+                        "phantom", title="Voice test", conversation_id="voice-test")
+                result = await app._run_agent(
+                    "phantom", "voice-test",
+                    f"Acknowledge this in one short sentence: {transcript}",
+                    mode="voice_test")
+                content = ((result or {}).get("content") or "").strip()
+                return content or f"You said: {transcript}"
+            except Exception:  # noqa: BLE001
+                return f"You said: {transcript}"
+
+        try:
+            out = await app.voice_mgr.test_pipeline(str(path), reply_fn=_reply)
+        except VoiceProviderError as exc:
+            raise HTTPException(502, exc.friendly) from None
+        finally:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+        media = "audio/mpeg" if out["format"] == "mp3" else "audio/wav"
+        return FileResponse(
+            out["audio_path"], media_type=media,
+            headers={"X-STT-Provider": out["stt_provider"],
+                     "X-TTS-Provider": out["tts_provider"],
+                     "X-Fallbacks": ",".join(out["stt_fallbacks"] + out["tts_fallbacks"]),
+                     "X-Transcript": out["transcript"][:200],
+                     "X-Reply": out["reply"][:200]})
 
     @fastapi.post("/api/voice/speak")
     async def voice_speak(body: dict):
