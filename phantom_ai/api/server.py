@@ -525,16 +525,42 @@ def create_app(app: App) -> FastAPI:
         tts = await app.settings.get("voice.tts", "*", {"provider": "browser"})
         mode = await app.settings.get("voice.mode", "*", "conversation")
         proactive = await app.settings.get("voice.proactive_speech", "*", False)
+        # per-persona voices (Phase 3): phantom & coded each have their own
+        voices = await app.settings.get("voice.voices", "*", {})
         dg = app.secrets.get("DEEPGRAM_API_KEY") or ""
         return {
             "stt": {"provider": stt.get("provider", "browser"),
                     "model": stt.get("model", "")},
             "tts": {"provider": tts.get("provider", "browser"),
                     "voice": tts.get("voice", "")},
+            "voices": {
+                "phantom": (voices or {}).get("phantom", ""),
+                "coded": (voices or {}).get("coded", ""),
+            },
             "mode": mode,
             "proactive_speech": bool(proactive),
             "deepgram_configured": bool(dg),
             "deepgram_masked": mask_key(dg),
+        }
+
+    @fastapi.get("/api/voice/voices")
+    async def voice_catalog():
+        """Known voice catalog: browser voices are enumerated client-side; the
+        Deepgram aura set is the server-side list (both male + female, so
+        JOOJO can give Phantom & Coded distinct voices)."""
+        return {
+            "deepgram": [
+                {"id": "aura-orion-en", "gender": "male",
+                 "style": "warm, calm — good default for Phantom"},
+                {"id": "aura-arcas-en", "gender": "male",
+                 "style": "sharper, technical — good default for Coded"},
+                {"id": "aura-asteria-en", "gender": "female", "style": "warm"},
+                {"id": "aura-luna-en", "gender": "female", "style": "soft"},
+                {"id": "aura-athena-en", "gender": "female", "style": "clear"},
+                {"id": "aura-helios-en", "gender": "male", "style": "clear"},
+                {"id": "aura-zeus-en", "gender": "male", "style": "deep"},
+            ],
+            "browser": [],  # filled by the UI from speechSynthesis.getVoices()
         }
 
     @fastapi.put("/api/voice/config")
@@ -543,6 +569,10 @@ def create_app(app: App) -> FastAPI:
             await app.settings.set("voice.stt", body["stt"], "*")
         if body.get("tts"):
             await app.settings.set("voice.tts", body["tts"], "*")
+        if body.get("voices"):
+            existing = await app.settings.get("voice.voices", "*", {})
+            merged = {**(existing or {}), **body["voices"]}
+            await app.settings.set("voice.voices", merged, "*")
         if body.get("mode") in ("private", "push", "conversation"):
             await app.settings.set("voice.mode", body["mode"], "*")
         if body.get("proactive_speech") is not None:
@@ -554,7 +584,7 @@ def create_app(app: App) -> FastAPI:
         if body.get("delete_deepgram_key"):
             app.secrets.delete("DEEPGRAM_API_KEY")
         await app.audit.record("user", "voice.config_changed",
-                               {"keys": [k for k in ("stt", "tts", "mode",
+                               {"keys": [k for k in ("stt", "tts", "voices", "mode",
                                                      "proactive_speech") if k in body]})
         return await voice_config()
 

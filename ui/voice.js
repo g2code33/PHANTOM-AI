@@ -23,6 +23,8 @@ class PhantomVoice {
     this.sttProvider = "browser";    // browser | deepgram
     this.ttsProvider = "browser";    // browser | deepgram
     this.ttsVoice = "";
+    this.voices = { phantom: "", coded: "" };  // per-persona voices (Phase 3)
+    this.currentAgent = "phantom";   // whose voice to use when speaking
     this.proactiveSpeech = false;
     this.deepgramConfigured = false;
     this.muted = false;              // master mute (no TTS)
@@ -59,9 +61,11 @@ class PhantomVoice {
     this.onSpeakEnd = null;
     this.onError = null;      // (message) => void
     this.onWakeWord = null;   // (agent) => void — wake word heard while sleeping
+    this.onInterrupt = null;  // (void) => void — user barged in
     this.wakeEngine = "browser";
     this._wakeRec = null;
     this._wakeActive = false;
+    this._hotFrames = 0;
   }
 
   // ---------------------------------------------------------------- config
@@ -73,6 +77,7 @@ class PhantomVoice {
       this.sttProvider = cfg.stt?.provider || "browser";
       this.ttsProvider = cfg.tts?.provider || "browser";
       this.ttsVoice = cfg.tts?.voice || "";
+      this.voices = { phantom: cfg.voices?.phantom || "", coded: cfg.voices?.coded || "" };
       this.proactiveSpeech = !!cfg.proactive_speech;
       this.deepgramConfigured = !!cfg.deepgram_configured;
       if (this.mode === "private") this.micEnabled = false;
@@ -152,21 +157,30 @@ class PhantomVoice {
   }
 
   _vad(level) {
-    const SPEECH = 0.035, SILENCE = 0.014;
+    const SPEECH = 0.030, SILENCE = 0.012;  // slightly more sensitive for barge
     if (level > SPEECH) {
       this._vadBuf.push(Date.now());
       if (this._vadBuf.length > 30) this._vadBuf.shift();
-      // barge-in: user speaks while we speak → stop us immediately
+      // barge-in: user speaks while we speak → stop us immediately.
+      // Require 2 consecutive hot frames (~fast but not jitter-triggered).
       if (this.state === "SPEAKING" && this.micEnabled) {
-        this.bargeIn();
+        if (this._hotFrames === undefined) this._hotFrames = 0;
+        this._hotFrames += 1;
+        if (this._hotFrames >= 2) {
+          this._hotFrames = 0;
+          this.bargeIn();
+        }
       }
-    } else if (level < SILENCE && this._vadBuf.length) {
-      this._vadBuf = [];
-      // end-of-turn while listening and idle (no agent running) → send final
-      if (this.state === "LISTENING" && this._endTurnTimer === null) {
-        this._endTurnTimer = setTimeout(() => {
-          this._endTurnTimer = null;
-        }, 0); // end-of-turn is handled by the STT engine's onend/final
+    } else {
+      this._hotFrames = 0;
+      if (level < SILENCE && this._vadBuf.length) {
+        this._vadBuf = [];
+        // end-of-turn while listening and idle (no agent running) → send final
+        if (this.state === "LISTENING" && this._endTurnTimer === null) {
+          this._endTurnTimer = setTimeout(() => {
+            this._endTurnTimer = null;
+          }, 0); // end-of-turn is handled by the STT engine's onend/final
+        }
       }
     }
   }
@@ -339,8 +353,11 @@ class PhantomVoice {
     synth.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.04;
-    if (this.ttsVoice) {
-      const v = synth.getVoices().find((x) => x.name === this.ttsVoice || x.lang === this.ttsVoice);
+    // per-persona voice: use the active agent's configured voice, else global
+    const pref = this.voices[this.currentAgent] || this.ttsVoice || "";
+    if (pref) {
+      const voices = synth.getVoices();
+      const v = voices.find((x) => x.name === pref) || voices.find((x) => x.lang === pref);
       if (v) u.voice = v;
     }
     u.onend = () => this._speakDone();
@@ -353,8 +370,11 @@ class PhantomVoice {
     try {
       const res = await fetch("/api/voice/deepgram-token", { method: "POST" });
       const { token } = await res.json();
+      // per-persona Deepgram aura voice (defaults: Phantom=orion, Coded=arcas)
+      const dgVoice = this.voices[this.currentAgent] || this.ttsVoice ||
+        (this.currentAgent === "coded" ? "aura-arcas-en" : "aura-orion-en");
       const ws = new WebSocket(
-        "wss://api.deepgram.com/v1/speak?model=aura-asteria-en",
+        `wss://api.deepgram.com/v1/speak?model=${encodeURIComponent(dgVoice)}`,
         ["token", token],
       );
       this._dgSpeakWs = ws;
@@ -429,16 +449,17 @@ class PhantomVoice {
   // ---------------------------------------------------------------- controls
   bargeIn() {
     if (this.state !== "SPEAKING") return;
-    this.stopSpeaking();
+    this.stopSpeaking();                 // cut audio immediately
     this.setState("INTERRUPTED");
+    this.onInterrupt?.();
     clearTimeout(this._interruptTimer);
     this._interruptTimer = setTimeout(() => {
       if (this.mode === "conversation" && this.micEnabled) {
-        this.startListening();
+        this.startListening();           // fast return to listening
       } else if (this.state === "INTERRUPTED") {
         this.setState("IDLE");
       }
-    }, 300);
+    }, 120);
   }
 
   async pushToTalkStart() {

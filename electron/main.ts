@@ -325,6 +325,25 @@ function showWindow() {
   }
 }
 
+// live tray presence: poll the backend state and reflect it in the tooltip
+function startTrayPresencePolling() {
+  const poll = async () => {
+    try {
+      const res = await fetch(backendUrl("/api/presence"), { signal: AbortSignal.timeout(4000) });
+      const p = await res.json();
+      const agent = p.active_agent === "coded" ? "Coded" : p.active_agent === "phantom" ? "Phantom" : "";
+      const label = p.state === "listening"
+        ? `${agent} awake — listening`
+        : p.state === "silenced" ? "Staying silent"
+        : p.state === "killed" ? "KILL SWITCH ENGAGED"
+        : "Sleeping — say Phantom or Coded";
+      tray?.setToolTip("Phantom · " + label);
+    } catch (e) { /* backend briefly down — keep last tooltip */ }
+  };
+  poll();
+  setInterval(poll, 5000);
+}
+
 // auto-start at login (Windows/macOS native; Linux via XDG autostart)
 function enableAutoStart() {
   try {
@@ -411,6 +430,7 @@ app.whenReady().then(async () => {
   }
   createTray();
   enableAutoStart();
+  startTrayPresencePolling();
   // Jarvis: launch into the tray; open the window unless --hidden (autostart).
   if (!process.argv.includes("--hidden")) {
     createWindow();

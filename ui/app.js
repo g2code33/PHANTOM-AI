@@ -98,6 +98,7 @@ voice.onWakeWord = async (agent) => {
   try {
     const res = await api("/api/presence/wake", { body: { agent, sample_wav: b64 } });
     if (res.woken) {
+      voice.currentAgent = agent;
       voice.playReadyCue();
       setPresence("LISTENING", (agent === "coded" ? "Coded" : "Phantom") + " is ready — speak");
       if (state.voiceOn) voice.speak("Yes, " + (state.userName || "JOOJO") + "?");
@@ -411,6 +412,7 @@ async function newConversation() {
 function switchPersona(agent) {
   if (state.running) { toast("Wait for the current run to finish"); return; }
   state.agent = agent;
+  voice.currentAgent = agent;   // replies use this persona's voice
   document.querySelectorAll(".seg").forEach((b) => b.classList.toggle("active", b.dataset.persona === agent));
   $("identityName").textContent = "Phantom"; // product name stays Phantom
   $("chatAgentFace").textContent = AGENTS[agent].emoji;
@@ -780,6 +782,10 @@ async function loadSettings() {
         <select id="sttProvider"><option value="browser">browser (offline)</option><option value="deepgram">deepgram (online)</option></select></div>
       <div class="row"><label>TTS provider</label>
         <select id="ttsProvider"><option value="browser">browser (offline)</option><option value="deepgram">deepgram (online)</option></select></div>
+      <div class="row"><label>👻 Phantom voice</label>
+        <select id="voicePhantom"><option value="">default (calm male)</option></select></div>
+      <div class="row"><label>💻 Coded voice</label>
+        <select id="voiceCoded"><option value="">default (sharp male)</option></select></div>
       <div class="row"><label>Voice mode</label>
         <select id="voiceModeSel"><option value="private">private</option><option value="push">push-to-talk</option><option value="conversation">conversation</option></select></div>
       <div class="row"><label>Proactive speech</label>
@@ -787,7 +793,7 @@ async function loadSettings() {
       <div class="row"><label>Deepgram API key</label>
         <input type="password" id="deepgramKey" placeholder="${res.voice?.deepgram_masked ? "configured — type to replace" : "not set"}">
         <button class="btn" onclick="saveDeepgram()">Save</button></div>
-      <p class="muted small">The Deepgram key stays server-side; the UI only ever gets a short-lived token.</p>
+      <p class="muted small">The Deepgram key stays server-side; the UI only ever gets a short-lived token. Browser voices are your OS voices; Deepgram aura voices need a key.</p>
     </div>
     <div class="settings-section"><h3>🔁 Heartbeat & quiet hours</h3>
       <div class="row"><label>Quiet hours start (UTC)</label><input id="quietStart" placeholder="22:00"></div>
@@ -841,8 +847,30 @@ async function loadSettings() {
   $("ttsProvider").value = vc.tts?.provider || "browser";
   $("voiceModeSel").value = vc.mode || "conversation";
   $("proactiveSel").value = vc.proactive_speech ? "1" : "0";
+  await loadVoicePickers(vc);
   await Promise.all([loadBrainKeys(), loadEnrollStatus()]);
   await loadSchedules();
+}
+
+/* voice pickers (browser voices + deepgram catalog), per-persona */
+async function loadVoicePickers(vc) {
+  let catalog = { deepgram: [] };
+  try { catalog = await api("/api/voice/voices"); } catch (e) {}
+  const synth = window.speechSynthesis;
+  const browserVoices = synth ? synth.getVoices() : [];
+  if (synth && !browserVoices.length) {
+    synth.onvoiceschanged = () => loadVoicePickers(vc); // voices load async
+  }
+  const dgOpts = (catalog.deepgram || []).map((v) =>
+    `<option value="${esc(v.id)}">${v.gender === "male" ? "👨" : "👩"} ${esc(v.id)} — ${esc(v.style)}</option>`).join("");
+  const brOpts = browserVoices.map((v) =>
+    `<option value="${esc(v.name)}">🔊 ${esc(v.name)} (${esc(v.lang)})</option>`).join("");
+  const fill = (sel, cur) => {
+    $(sel).innerHTML = `<option value="">default</option>` + brOpts + (dgOpts ? `<optgroup label="Deepgram">${dgOpts}</optgroup>` : "");
+    if (cur) $(sel).value = cur;
+  };
+  fill("voicePhantom", vc.voices?.phantom || "");
+  fill("voiceCoded", vc.voices?.coded || "");
 }
 
 /* brains & API keys */
@@ -1249,6 +1277,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (id === "ttsProvider") api("/api/voice/config", { body: { tts: { provider: ev.target.value } } });
     if (id === "voiceModeSel") { voice.setMode(ev.target.value); api("/api/voice/config", { body: { mode: ev.target.value } }); }
     if (id === "proactiveSel") api("/api/voice/config", { body: { proactive_speech: ev.target.value === "1" } });
+    if (id === "voicePhantom") {
+      voice.voices.phantom = ev.target.value;
+      api("/api/voice/config", { body: { voices: { phantom: ev.target.value } } });
+      if (state.agent === "phantom") voice.ttsVoice = ev.target.value;
+    }
+    if (id === "voiceCoded") {
+      voice.voices.coded = ev.target.value;
+      api("/api/voice/config", { body: { voices: { coded: ev.target.value } } });
+      if (state.agent === "coded") voice.ttsVoice = ev.target.value;
+    }
   });
 
   // updater
