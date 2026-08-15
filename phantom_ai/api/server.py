@@ -1054,6 +1054,45 @@ def create_app(app: App) -> FastAPI:
     async def monitor_watch():
         return await app.monitor.watch_list()
 
+    # ------------------------------------------------------------- companion
+    @fastapi.get("/api/companion/status")
+    async def companion_status():
+        return await app.companion.status()
+
+    @fastapi.get("/api/companion/confirmations")
+    async def companion_confirmations():
+        return {"confirmations": await app.companion.pending_confirmations()}
+
+    @fastapi.post("/api/companion/confirmations/{cid}/approve")
+    async def companion_confirm_approve(cid: str):
+        row = await app.companion.decide_confirmation(cid, True)
+        await app.events.publish("confirmation.decided", {"confirmation": row})
+        return row
+
+    @fastapi.post("/api/companion/confirmations/{cid}/deny")
+    async def companion_confirm_deny(cid: str):
+        row = await app.companion.decide_confirmation(cid, False)
+        await app.events.publish("confirmation.decided", {"confirmation": row})
+        return row
+
+    @fastapi.post("/api/companion/voice")
+    async def companion_voice(request: Request):
+        """Phone tap-to-talk: raw WAV body + ?agent=phantom|coded. The PC
+        transcribes (Deepgram), runs the agent, returns the reply."""
+        agent = request.query_params.get("agent", "phantom") or "phantom"
+        if agent not in ("phantom", "coded"):
+            raise HTTPException(400, "agent must be phantom or coded")
+        wav = await request.body()
+        if not wav or len(wav) < 200:
+            raise HTTPException(400, "audio too short or empty")
+        try:
+            result = await app.companion.voice_forward(agent, wav)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from None
+        return result
+
     # ---------------------------------------------------------------- health
     @fastapi.get("/api/health/status")
     async def health_status():
@@ -1241,6 +1280,18 @@ def create_app(app: App) -> FastAPI:
         @fastapi.get("/voice.js")
         async def voice_js():
             return FileResponse(UI_DIR / "voice.js", media_type="text/javascript")
+
+        @fastapi.get("/mobile")
+        async def mobile_index():
+            return FileResponse(UI_DIR / "mobile.html")
+
+        @fastapi.get("/mobile.js")
+        async def mobile_js():
+            return FileResponse(UI_DIR / "mobile.js", media_type="text/javascript")
+
+        @fastapi.get("/mobile.css")
+        async def mobile_css():
+            return FileResponse(UI_DIR / "mobile.css", media_type="text/css")
 
     return fastapi
 

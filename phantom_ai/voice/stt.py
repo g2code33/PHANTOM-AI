@@ -54,10 +54,51 @@ class OpenAICompatSTTProvider(STTProvider):
             return (resp.json() or {}).get("text", "")
 
 
+class DeepgramSTTProvider(STTProvider):
+    """Server-side Deepgram transcription (REST upload). Used by the companion
+    voice-forwarding: the phone sends a WAV, the PC transcribes via Deepgram."""
+
+    name = "deepgram"
+
+    def __init__(self, api_key: str, model: str = "nova-2",
+                 base_url: str = "https://api.deepgram.com/v1") -> None:
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+
+    async def transcribe(self, audio_path: str, language: str = "en") -> str:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            with open(audio_path, "rb") as fh:
+                resp = await client.post(
+                    f"{self.base_url}/listen",
+                    headers={"Authorization": f"Token {self.api_key}"},
+                    params={"model": self.model, "punctuate": "true",
+                            "language": language},
+                    files={"audio": (audio_path.split("/")[-1], fh,
+                                    "audio/wav")},
+                )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"Deepgram STT failed: HTTP {resp.status_code}: {resp.text[:200]}")
+            data = resp.json()
+            transcript = (data.get("results") or {}).get("channels", [{}])[0] \
+                .get("alternatives", [{}])[0].get("transcript", "")
+            if not transcript.strip():
+                raise RuntimeError("Deepgram returned empty transcript (no speech detected?)")
+            return transcript.strip()
+
+
 def create_stt_provider(config: dict[str, Any]) -> STTProvider:
     provider = config.get("provider", "browser")
     if provider == "browser":
         return BrowserSTTProvider()
+    if provider == "deepgram":
+        return DeepgramSTTProvider(
+            api_key=config.get("api_key", ""),
+            model=config.get("model", "nova-2"),
+            base_url=config.get("base_url", "https://api.deepgram.com/v1"))
     if provider == "openai-compatible":
         return OpenAICompatSTTProvider(
             base_url=config.get("base_url", ""),

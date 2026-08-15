@@ -17,6 +17,7 @@ from ..brains.health import BrainHealth
 from ..brains.registry import BrainRegistry
 from ..brains.specialists import specialist_definitions
 from ..briefing.engine import BriefingEngine
+from ..companion.service import CompanionService
 from ..config import AGENTS, DB_PATH, DATA_DIR, KEY_ENV, SecretsStore, SettingsStore
 from ..core.events import EventBus
 from ..core.killswitch import KillSwitch
@@ -106,6 +107,8 @@ class App:
         # Jarvis monitoring + briefing (Phase 5)
         self.monitor: MonitorEngine | None = None
         self.briefing: BriefingEngine | None = None
+        # Jarvis companion (Phase 7)
+        self.companion: CompanionService | None = None
 
     # ------------------------------------------------------------------
     async def startup(self) -> None:
@@ -245,6 +248,7 @@ class App:
         for agent in self.agents.values():
             agent.briefing = self.briefing
             agent.monitor = self.monitor
+        self.companion = CompanionService(self)
         await self._seed_briefing_schedule()
 
         self.scheduler = HeartbeatScheduler(
