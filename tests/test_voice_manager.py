@@ -333,7 +333,10 @@ async def test_status_endpoint(app, voice_mock):
         dg = next(p for p in st["providers"] if p["name"] == "deepgram" and p["role"] == "stt")
         assert dg["configured"] is True
         assert dg["label"] == "Deepgram"
-        assert st["local_whisper"]["installed"] is False  # honest in sandbox
+        assert isinstance(st["local_whisper"]["installed"], bool)
+        assert st["local_whisper"]["model"] in ("tiny", "base", "small", "medium", "large")
+        if not st["local_whisper"]["installed"]:
+            assert st["local_whisper"]["reason"]  # honest explanation shown
 
 
 async def test_usage_endpoint(app, voice_mock):
@@ -379,3 +382,15 @@ async def test_wav_duration():
     assert abs(wav_duration(path) - 1.0) < 0.05
     os.unlink(path)
     assert wav_duration("/nonexistent.wav") == 0.0
+
+
+def test_local_whisper_detection_honest():
+    """When faster-whisper is missing OR the model is missing, the provider
+    reports installed()=False with an actionable reason (never crashes)."""
+    from phantom_ai.voice.stt import LocalWhisperSTTProvider
+
+    p = LocalWhisperSTTProvider(data_dir="/nonexistent-phantom-models", model="base")
+    assert p.installed() is False
+    assert "whisper" in p.missing_reason().lower()
+    assert p.loaded() is False
+    p.release()  # safe no-op
