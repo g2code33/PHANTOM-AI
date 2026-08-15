@@ -72,6 +72,12 @@ placeholder_of() {
     *) echo "" ;;
   esac
 }
+# true if the given KV namespace id exists on the CURRENT Cloudflare account
+kv_exists_on_account() {
+  local id="$1"
+  wr kv namespace list 2>/dev/null | grep -q "\"$id\""
+}
+
 set_kv_id() {
   local binding="$1"
   local placeholder
@@ -94,22 +100,47 @@ except Exception: print('')" 2>/dev/null || true)
       echo "   ❌ could not create $binding (wrangler said: $out)" >&2
       exit 1
     fi
-    # write real id into the gitignored local override
-    python3 - "$LOCAL_CFG" "$placeholder" "$id" <<'PY'
+    write_kv_id "$binding" "$placeholder" "$id"
+    echo "   ✓ $binding = $id"
+  elif ! kv_exists_on_account "$id"; then
+    # the saved id belongs to a DIFFERENT Cloudflare account (or was deleted).
+    # Recreate it on the current account and update the local override so the
+    # deploy never 500s against a stale namespace. (Self-healing: no need to
+    # delete wrangler.local.toml manually when switching accounts.)
+    echo "   $binding id ($id) not found on this Cloudflare account — recreating…"
+    local out
+    out=$(wr kv namespace create "$binding" 2>&1 || true)
+    local new_id
+    new_id=$(echo "$out" | python3 -c "import sys,json
+try: print(json.load(sys.stdin)['id'])
+except Exception: print('')" 2>/dev/null || true)
+    if [ -z "$new_id" ]; then
+      new_id=$(echo "$out" | grep -oE '[a-f0-9]{32}' | head -1 || true)
+    fi
+    if [ -z "$new_id" ]; then
+      echo "   ❌ could not recreate $binding (wrangler said: $out)" >&2
+      exit 1
+    fi
+    write_kv_id "$binding" "$id" "$new_id"
+    echo "   ✓ $binding recreated = $new_id"
+  else
+    echo "   $binding already set ($id)"
+  fi
+}
+
+# write a kv id into the gitignored local override (replacing old, or appending)
+write_kv_id() {
+  local binding="$1" old="$2" new="$3"
+  python3 - "$LOCAL_CFG" "$old" "$new" <<'PY'
 import sys
 p, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
 s = open(p).read()
 if ('id = "' + old + '"') in s:
     s = s.replace('id = "' + old + '"', 'id = "' + new + '"', 1)
 else:
-    # append the binding if missing
-    s += '\n[[kv_namespaces]]\nbinding = "' + 'X' + '"\nid = "' + new + '"\n'
+    s += '\n[[kv_namespaces]]\nbinding = "X"\nid = "' + new + '"\n'
 open(p, "w").write(s)
 PY
-    echo "   ✓ $binding = $id"
-  else
-    echo "   $binding already set ($id)"
-  fi
 }
 set_kv_id PHANTOM_MEMORY
 set_kv_id PHANTOM_PROFILE
