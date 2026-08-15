@@ -623,6 +623,69 @@ def create_app(app: App) -> FastAPI:
             raise HTTPException(403, str(exc)) from None
         return result
 
+    @fastapi.get("/api/brains/configs")
+    async def brains_configs():
+        from ..brains.config import brain_key_envs, resolve_brain_config
+
+        out = []
+        for bid in await app.brain_ids():
+            brain = await app.brains.get(bid) if app.brains else None
+            definition = dict(brain) if brain else {}
+            cfg = await resolve_brain_config(bid, definition, app.secrets,
+                                             app.settings)
+            own = cfg["api_key"] and cfg["api_key"] != app.secrets.get(
+                "PHANTOM_NVIDIA_API_KEY")
+            out.append({
+                "brain_id": bid,
+                "name": (brain or {}).get("name", bid),
+                "role": (brain or {}).get("role", ""),
+                "model": cfg["model"],
+                "key_configured": bool(own),
+                "key_masked": mask_key(cfg["api_key"]) if cfg["api_key"] else "",
+                "key_env": brain_key_envs(bid)["api_key_env"],
+            })
+        return {"brains": out}
+
+    @fastapi.get("/api/brains/{bid}/config")
+    async def brain_config(bid: str):
+        from ..brains.config import brain_key_envs, resolve_brain_config
+
+        if bid not in app.agents:
+            raise HTTPException(404, "unknown brain")
+        brain = await app.brains.get(bid) if app.brains else None
+        definition = dict(brain) if brain else {}
+        cfg = await resolve_brain_config(bid, definition, app.secrets, app.settings)
+        key_envs = brain_key_envs(bid)
+        key_configured = bool(
+            cfg["api_key"] and cfg["api_key"] != app.secrets.get("PHANTOM_NVIDIA_API_KEY"))
+        return {
+            "brain_id": bid,
+            "name": (brain or {}).get("name", bid),
+            "model": cfg["model"],
+            "base_url": cfg["base_url"],
+            "key_configured": key_configured,
+            "key_masked": mask_key(cfg["api_key"]) if cfg["api_key"] else "",
+            "key_env": key_envs["api_key_env"],
+            "provider": app.providers[bid].name,
+        }
+
+    @fastapi.put("/api/brains/{bid}/config")
+    async def brain_config_set(bid: str, body: dict):
+        if bid not in app.agents:
+            raise HTTPException(404, "unknown brain")
+        if body.get("api_key"):
+            # never logged; stored in chmod-600 secrets store
+            app.secrets.set(f"brain.{bid}.api_key", str(body["api_key"]).strip())
+        if body.get("delete_key"):
+            app.secrets.delete(f"brain.{bid}.api_key")
+        if body.get("model"):
+            await app.settings.set(f"brain.{bid}.model", str(body["model"]).strip(), "*")
+        if body.get("base_url"):
+            await app.settings.set(f"brain.{bid}.base_url", str(body["base_url"]).strip(), "*")
+        await app.rebuild_provider(bid)
+        await app.audit.record("user", "brain.config_changed", {"brain": bid})
+        return await brain_config(bid)
+
     @fastapi.delete("/api/brains/{bid}")
     async def delete_brain(bid: str):
         if bid in ("phantom", "coded", "evolution"):
@@ -776,13 +839,86 @@ def create_app(app: App) -> FastAPI:
         return app.wake.state_dict()
 
     @fastapi.post("/api/presence/wake")
-    async def presence_wake(body: dict):
-        """Activate an agent by wake word (client wake-word detector reports in)."""
-        agent = str(body.get("agent", "phantom"))
-        source = str(body.get("source", "wakeword"))
+    async def presence_wake_v2(request: Request):
+        """Wake with optional voice sample (raw body when it's a WAV, else JSON).
+        Speaker lock: a matching voiceprint is required when enabled+enrolled."""
+        ctype = request.headers.get("content-type", "")
+        agent = request.query_params.get("agent", "phantom") or "phantom"
+        wav_bytes = None
+        if "octet-stream" in ctype or "wav" in ctype:
+            wav_bytes = await request.body()
+        else:
+            body = await request.json()
+            agent = str(body.get("agent", agent))
+            import base64 as _b64
+
+            b64 = body.get("sample_wav")
+            if b64:
+                wav_bytes = _b64.b64decode(b64)
         if agent not in ("phantom", "coded"):
             raise HTTPException(400, "agent must be phantom or coded")
-        return await app.wake.wake(agent, source=source)
+        return await app.wake.wake(agent, source="wakeword", wav_bytes=wav_bytes)
+
+    # --------------------------------------------------------- voice enrollment
+    @fastapi.get("/api/voice/enroll/status")
+    async def enroll_status(agent: str = "phantom"):
+        return {
+            "agent": agent,
+            "enrolled": bool(await app.speaker.enrolled(agent)),
+            "speaker_lock": bool(await app.settings.get("wake.speaker_lock", "*", False)),
+            "engine": await app.speaker.available(),
+        }
+
+    @fastapi.post("/api/voice/enroll/sample")
+    async def enroll_sample(request: Request):
+        agent = request.query_params.get("agent", "phantom") or "phantom"
+        if agent not in ("phantom", "coded"):
+            raise HTTPException(400, "agent must be phantom or coded")
+        wav_bytes = await request.body()
+        if not wav_bytes or len(wav_bytes) < 100:
+            raise HTTPException(400, "empty audio sample")
+        try:
+            result = await app.speaker.enroll_sample(agent, wav_bytes)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except Exception as exc:  # noqa: BLE001 — engine/weights unavailable
+            raise HTTPException(503,
+                f"speaker engine unavailable: {exc}") from None
+        return result
+
+    @fastapi.post("/api/voice/enroll/clear")
+    async def enroll_clear(body: dict | None = None):
+        agent = (body or {}).get("agent", "phantom") or "phantom"
+        await app.speaker.clear(agent)
+        return {"ok": True}
+
+    @fastapi.put("/api/voice/enroll/speaker-lock")
+    async def enroll_speaker_lock(body: dict):
+        value = bool(body.get("enabled", True))
+        await app.wake.set_speaker_lock(value)
+        return {"speaker_lock": value}
+
+    @fastapi.post("/api/presence/wake")
+    async def presence_wake(request: Request):
+        """Wake with optional voice sample (raw WAV body or JSON with base64
+        sample_wav). Speaker lock: a matching voiceprint is required when
+        enabled and enrolled."""
+        ctype = request.headers.get("content-type", "")
+        agent = request.query_params.get("agent", "phantom") or "phantom"
+        wav_bytes = None
+        if "octet-stream" in ctype or "wav" in ctype:
+            wav_bytes = await request.body()
+        else:
+            import base64 as _b64
+
+            body = await request.json()
+            agent = str(body.get("agent", agent))
+            b64 = body.get("sample_wav")
+            if b64:
+                wav_bytes = _b64.b64decode(b64)
+        if agent not in ("phantom", "coded"):
+            raise HTTPException(400, "agent must be phantom or coded")
+        return await app.wake.wake(agent, source="wakeword", wav_bytes=wav_bytes)
 
     @fastapi.post("/api/presence/sleep")
     async def presence_sleep(body: dict | None = None):

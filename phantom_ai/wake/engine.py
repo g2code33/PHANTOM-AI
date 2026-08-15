@@ -66,18 +66,22 @@ class PresenceState:
 
 class WakeEngine:
     def __init__(self, settings: Any, audit: Any, events: Any,
-                 killswitch: Any) -> None:
+                 killswitch: Any, verifier: Any = None) -> None:
         self.settings = settings
         self.audit = audit
         self.events = events
         self.killswitch = killswitch
+        self.verifier = verifier
         self._state = PresenceState()
         self._idle_task: Optional[asyncio.Task] = None
         self._enabled = True
+        self._speaker_lock = False
 
     # ------------------------------------------------------------------
     async def start(self) -> None:
         self._enabled = bool(await self.settings.get("wake.enabled", "*", True))
+        self._speaker_lock = bool(await self.settings.get(
+            "wake.speaker_lock", "*", False))
         self._state.idle_minutes = int(await self.settings.get(
             "wake.idle_minutes", "*", 60))
         # on restart, presence starts sleeping (no fake "always awake")
@@ -87,12 +91,44 @@ class WakeEngine:
         await self.events.publish("presence.state", self._state.to_dict())
 
     # ------------------------------------------------------------------
-    async def wake(self, agent: str, source: str = "wakeword") -> dict:
-        """Activate an agent. Returns the new presence state."""
+    async def wake(self, agent: str, source: str = "wakeword",
+                   wav_bytes: Optional[bytes] = None) -> dict:
+        """Activate an agent by wake word.
+
+        Speaker lock: when enabled AND an enrollment exists, the wake must be
+        accompanied by a voice sample that matches JOOJO's voiceprint. If the
+        sample is missing, returns need_verification=True so the client sends
+        one; a mismatched voice is refused (no fake wake).
+        """
         if not self._enabled or self.killswitch.is_engaged():
-            return self._state.to_dict()
+            return {"woken": False, "reason": "disabled or killed",
+                    **self._state.to_dict()}
         if agent not in AGENTS:
             agent = "phantom"
+
+        if self._speaker_lock and self.verifier is not None:
+            try:
+                enrolled = await self.verifier.enrolled(agent)
+            except Exception:  # noqa: BLE001
+                enrolled = False
+            if enrolled:
+                if not wav_bytes:
+                    await self.events.publish("wake.need_verification",
+                                              {"agent": agent})
+                    return {"woken": False, "need_verification": True,
+                            "reason": "speaker lock — voice sample required",
+                            **self._state.to_dict()}
+                try:
+                    check = await self.verifier.verify(agent, wav_bytes)
+                except Exception as exc:  # noqa: BLE001
+                    return {"woken": False, "reason": f"verifier error: {exc}",
+                            **self._state.to_dict()}
+                if not check.get("verified"):
+                    await self.events.publish("wake.denied", {
+                        "agent": agent, "reason": check.get("reason")})
+                    return {"woken": False, "reason": check.get("reason"),
+                            "score": check.get("score"), **self._state.to_dict()}
+
         was_sleeping = self._state.state in ("sleeping", "silenced")
         self._state.state = "waking"
         self._state.active_agent = agent
@@ -109,7 +145,7 @@ class WakeEngine:
         self._state.state = "listening"
         await self.publish()
         self._schedule_idle()
-        return self._state.to_dict()
+        return {"woken": True, **self._state.to_dict()}
 
     async def touch(self) -> None:
         """Reset the idle timer on any interaction (chat, voice, etc.)."""
@@ -165,6 +201,11 @@ class WakeEngine:
         await self.settings.set("wake.enabled", self._enabled, "*")
         if not self._enabled:
             await self.sleep(reason="disabled")
+        return self._state.to_dict()
+
+    async def set_speaker_lock(self, value: bool) -> dict:
+        self._speaker_lock = bool(value)
+        await self.settings.set("wake.speaker_lock", self._speaker_lock, "*")
         return self._state.to_dict()
 
     async def set_idle_minutes(self, minutes: int) -> dict:

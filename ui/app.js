@@ -87,6 +87,31 @@ voice.onError = (msg) => {
   if (h) h.textContent = "⚠️ " + msg;
 };
 
+/* wake word heard while Phantom is sleeping → capture + verify + wake */
+voice.onWakeWord = async (agent) => {
+  if (state.killEngaged) return;
+  setPresence("WAKING", `“${agent}” heard — verifying…`);
+  const wav = await voice.captureWav(2);
+  if (!wav) { setPresence("IDLE", "Couldn't capture audio for verification"); return; }
+  const reader = new FileReader();
+  const b64 = await new Promise((res) => { reader.onload = () => res(String(reader.result).split(",")[1]); reader.readAsDataURL(wav); });
+  try {
+    const res = await api("/api/presence/wake", { body: { agent, sample_wav: b64 } });
+    if (res.woken) {
+      voice.playReadyCue();
+      setPresence("LISTENING", (agent === "coded" ? "Coded" : "Phantom") + " is ready — speak");
+      if (state.voiceOn) voice.speak("Yes, " + (state.userName || "JOOJO") + "?");
+    } else if (res.need_verification) {
+      setPresence("IDLE", "Voice sample needed — try again");
+    } else {
+      setPresence("IDLE", "Voice not recognized — only JOOJO can wake me");
+      addActivity("wake", "🔇 wake denied: " + (res.reason || "voice mismatch"), "tool-err");
+    }
+  } catch (e) {
+    setPresence("IDLE", "Wake failed: " + e.message);
+  }
+};
+
 /* ============================== WS ============================== */
 let ws = null;
 function connectWS() {
@@ -775,6 +800,23 @@ async function loadSettings() {
         <input id="schedPrompt" placeholder="prompt" style="flex:1">
         <button class="btn btn-primary" onclick="addSchedule()">Add</button></div>
     </div>
+    <div class="settings-section"><h3>🔊 Voice enrollment (speaker lock)</h3>
+      <p class="muted small">Only your voice should wake Phantom and Coded. Record 3 short phrases (2s each) for each agent.</p>
+      <div class="row"><label>Enroll Phantom</label>
+        <span id="enrollPhantomStatus" class="muted">…</span>
+        <button id="enrollPhantomBtn" class="btn">🎙 Enroll</button></div>
+      <div class="row"><label>Enroll Coded</label>
+        <span id="enrollCodedStatus" class="muted">…</span>
+        <button id="enrollCodedBtn" class="btn">🎙 Enroll</button></div>
+      <div class="row"><label>Speaker lock</label>
+        <input type="checkbox" id="speakerLockCb"> <span class="muted small">only my voice wakes them</span></div>
+      <div class="row"><label>Clear enrollment</label>
+        <button id="enrollClearBtn" class="btn btn-danger">Clear</button></div>
+    </div>
+    <div class="settings-section"><h3>🧠 Brains & API keys</h3>
+      <p class="muted small">Each of the 31 specialist brains can have its OWN API key + model for efficient routing. Leave a key empty to share Phantom's.</p>
+      <div id="brainKeys"></div>
+    </div>
     <div class="settings-section"><h3>⬆ App updates</h3>
       <div class="row"><label>Desktop app</label><span id="updateState" class="muted">checking…</span>
         <button id="updateCheckBtn" class="btn">Check now</button>
@@ -799,8 +841,100 @@ async function loadSettings() {
   $("ttsProvider").value = vc.tts?.provider || "browser";
   $("voiceModeSel").value = vc.mode || "conversation";
   $("proactiveSel").value = vc.proactive_speech ? "1" : "0";
+  await Promise.all([loadBrainKeys(), loadEnrollStatus()]);
   await loadSchedules();
 }
+
+/* brains & API keys */
+async function loadBrainKeys() {
+  const res = await api("/api/brains/configs").catch(() => ({ brains: [] }));
+  const el = $("brainKeys");
+  el.innerHTML = "";
+  const rows = res.brains || [];
+  if (!rows.length) { el.innerHTML = `<div class="card muted">No brains.</div>`; return; }
+  for (const b of rows) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <div class="card-title">🧩 ${esc(b.name)} <span class="muted small">${esc(b.brain_id)}</span>
+        <span class="pill ${b.key_configured ? "ok" : "info"}">${b.key_configured ? "own key" : "shared"}</span></div>
+      <div class="memory-controls" style="margin:6px 0">
+        <input type="password" id="bkey-${esc(b.brain_id)}" placeholder="${b.key_configured ? "configured (" + esc(b.key_masked) + ") — type to replace" : "own API key (empty = share Phantom's)"}" style="flex:1">
+        <input type="text" id="bmodel-${esc(b.brain_id)}" value="${esc(b.model)}" placeholder="model" style="width:230px">
+        <button class="btn" onclick="saveBrainKey('${esc(b.brain_id)}')">Save</button>
+        ${b.key_configured ? `<button class="btn btn-danger" onclick="clearBrainKey('${esc(b.brain_id)}')">Remove key</button>` : ""}
+      </div>`;
+    el.appendChild(card);
+  }
+}
+window.saveBrainKey = async (bid) => {
+  const key = $(`bkey-${bid}`).value.trim();
+  const model = $(`bmodel-${bid}`).value.trim();
+  const body = {};
+  if (key) body.api_key = key;
+  if (model) body.model = model;
+  if (!Object.keys(body).length) return;
+  await api(`/api/brains/${bid}/config`, { body });
+  $(`bkey-${bid}`).value = "";
+  toast(`Saved config for ${bid}`);
+  loadBrainKeys();
+};
+window.clearBrainKey = async (bid) => {
+  await api(`/api/brains/${bid}/config`, { body: { delete_key: true } });
+  toast(`Removed own key for ${bid} — now shares Phantom's`);
+  loadBrainKeys();
+};
+
+/* voice enrollment */
+async function loadEnrollStatus() {
+  const [p, c] = await Promise.all([
+    api("/api/voice/enroll/status?agent=phantom"),
+    api("/api/voice/enroll/status?agent=coded"),
+  ]);
+  $("enrollPhantomStatus").textContent = p.enrolled ? "✅ enrolled" : (p.engine.available ? "not enrolled" : "engine unavailable: " + (p.engine.reason || "").slice(0, 60));
+  $("enrollCodedStatus").textContent = c.enrolled ? "✅ enrolled" : (c.engine.available ? "not enrolled" : "engine unavailable");
+  $("speakerLockCb").checked = p.speaker_lock;
+}
+async function enrollVoice(agent) {
+  toast(`🎙 Speak 3 short phrases for ${agent}…`);
+  for (let i = 1; i <= 3; i++) {
+    $("voiceHint").textContent = `Enrollment ${i}/3 — speak now…`;
+    const wav = await voice.captureWav(2);
+    if (!wav) { toast("mic capture failed"); return; }
+    const reader = new FileReader();
+    const b64 = await new Promise((res) => { reader.onload = () => res(String(reader.result).split(",")[1]); reader.readAsDataURL(wav); });
+    const res = await api(`/api/voice/enroll/sample?agent=${agent}`, {
+      headers: { "Content-Type": "application/octet-stream" },
+      method: "POST",
+      body: b64 ? atob(b64) : "",
+    }).catch((e) => ({ error: e.message }));
+    if (res.error) { toast("Enroll failed: " + res.error); return; }
+    if (res.enrolled) { toast(`✅ ${agent} voice enrolled`); break; }
+  }
+  $("voiceHint").textContent = "";
+  loadEnrollStatus();
+}
+window.enrollVoice = enrollVoice;
+
+/* wake detection from settings */
+window.addEventListener("DOMContentLoaded", () => {
+  const enrollPhantom = $("enrollPhantomBtn");
+  const enrollCoded = $("enrollCodedBtn");
+  if (enrollPhantom) enrollPhantom.onclick = () => enrollVoice("phantom");
+  if (enrollCoded) enrollCoded.onclick = () => enrollVoice("coded");
+  const clearBtn = $("enrollClearBtn");
+  if (clearBtn) clearBtn.onclick = async () => {
+    await api("/api/voice/enroll/clear", { body: { agent: "phantom" } });
+    await api("/api/voice/enroll/clear", { body: { agent: "coded" } });
+    toast("Enrollments cleared");
+    loadEnrollStatus();
+  };
+  const lockCb = $("speakerLockCb");
+  if (lockCb) lockCb.onchange = async () => {
+    await api("/api/voice/enroll/speaker-lock", { body: { enabled: lockCb.checked } });
+    toast(lockCb.checked ? "🔒 Speaker lock ON — only your voice wakes them" : "Speaker lock off");
+  };
+});
 async function saveSetting(agent, key, value) {
   await api("/api/settings", { body: { agent, key, value } });
 }

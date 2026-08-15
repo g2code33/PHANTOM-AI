@@ -58,6 +58,10 @@ class PhantomVoice {
     this.onSpeakStart = null;
     this.onSpeakEnd = null;
     this.onError = null;      // (message) => void
+    this.onWakeWord = null;   // (agent) => void — wake word heard while sleeping
+    this.wakeEngine = "browser";
+    this._wakeRec = null;
+    this._wakeActive = false;
   }
 
   // ---------------------------------------------------------------- config
@@ -484,7 +488,102 @@ class PhantomVoice {
     if (p.state === "sleeping" || p.state === "silenced") {
       this.stopAll();
       this.stopMic();
+      this._stopWakeDetection();
     }
+    if (p.state === "sleeping") this._startWakeDetection();
+  }
+
+  // ------------------------------------------- wake-word detection (client)
+  async _startWakeDetection() {
+    if (this._wakeActive || this.killEngaged || !this.micEnabled) return;
+    if (this.wakeEngine === "porcupine") {
+      // Picovoice Porcupine (offline, battery-light) — requires a free access
+      // key + "phantom"/"coded" wake-word models. Not yet configured: fall back.
+      this.wakeEngine = "browser";
+    }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+    this._wakeActive = true;
+    const rec = new SR();
+    rec.lang = "en-US";
+    rec.interimResults = true;
+    rec.continuous = true;
+    rec.onresult = (ev) => {
+      let text = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++)
+        text += ev.results[i][0].transcript;
+      const m = text.toLowerCase().match(/(^|\s)(phantom|coded)(\s|$|\.|,|!|\?)/);
+      if (m) this._handleWake(m[2].toLowerCase());
+    };
+    rec.onend = () => {
+      if (this._wakeActive && !this.killEngaged) {
+        try { rec.start(); } catch (e) {}
+      }
+    };
+    this._wakeRec = rec;
+    try { rec.start(); } catch (e) {}
+  }
+
+  _stopWakeDetection() {
+    this._wakeActive = false;
+    if (this._wakeRec) { try { this._wakeRec.onend = null; this._wakeRec.stop(); } catch (e) {} this._wakeRec = null; }
+  }
+
+  async _handleWake(word) {
+    if (!this._wakeActive) return;
+    this._stopWakeDetection();
+    this.onWakeWord?.(word);
+  }
+
+  // ------------------------------------------- capture + WAV encode
+  async captureWav(seconds = 2) {
+    await this.startMic();
+    return new Promise((resolve) => {
+      const ctx = this._audioCtx;
+      if (!ctx) return resolve(null);
+      const chunks = [];
+      const source = ctx.createMediaStreamSource(this._micStream);
+      const rec = ctx.createScriptProcessor(4096, 1, 1);
+      const start = ctx.currentTime;
+      rec.onaudioprocess = (ev) => {
+        if (ctx.currentTime - start >= seconds) {
+          source.disconnect(); rec.disconnect();
+          const len = chunks.reduce((a, c) => a + c.length, 0);
+          const merged = new Float32Array(len);
+          let off = 0;
+          for (const c of chunks) { merged.set(c, off); off += c.length; }
+          resolve(PhantomVoice.encodeWav(merged, ctx.sampleRate));
+          return;
+        }
+        chunks.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+      };
+      source.connect(rec);
+      rec.connect(ctx.destination);
+    });
+  }
+
+  static encodeWav(samples, sampleRate) {
+    // resample to 16 kHz mono PCM16 for the speaker verifier
+    const targetRate = 16000;
+    const ratio = sampleRate / targetRate;
+    const outLen = Math.floor(samples.length / ratio);
+    const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) out[i] = samples[Math.floor(i * ratio)];
+    const pcm = new Int16Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const s = Math.max(-1, Math.min(1, out[i]));
+      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    const buf = new ArrayBuffer(44 + pcm.length * 2);
+    const dv = new DataView(buf);
+    const wstr = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+    wstr(0, "RIFF"); dv.setUint32(4, 36 + pcm.length * 2, true); wstr(8, "WAVE");
+    wstr(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+    dv.setUint16(22, 1, true); dv.setUint32(24, targetRate, true);
+    dv.setUint32(28, targetRate * 2, true); dv.setUint16(32, 2, true);
+    dv.setUint16(34, 16, true); wstr(36, "data"); dv.setUint32(40, pcm.length * 2, true);
+    for (let i = 0; i < pcm.length; i++) dv.setInt16(44 + i * 2, pcm[i], true);
+    return new Blob([buf], { type: "audio/wav" });
   }
 
   async kill() {

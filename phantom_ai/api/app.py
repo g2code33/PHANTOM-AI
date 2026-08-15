@@ -47,6 +47,7 @@ from ..storage.ops import (
 from ..tasks.manager import TaskManager
 from ..tools import build_registry
 from ..tools.health_tools import HEALTH_TOOLS
+from ..voice.speaker import SpeakerVerifier
 from ..wake.engine import WakeEngine
 
 
@@ -99,6 +100,7 @@ class App:
         # Jarvis presence
         self.wake: WakeEngine | None = None
         self.profiles: ProfileStore | None = None
+        self.speaker: SpeakerVerifier | None = None
 
     # ------------------------------------------------------------------
     async def startup(self) -> None:
@@ -215,11 +217,12 @@ class App:
         self.tasks = TaskManager(TaskStore(self.db), self.settings, self.events,
                                  self.killswitch)
 
-        # ---- Jarvis presence (Phase 1) ------------------------------------
+        # ---- Jarvis presence (Phase 1 + Phase 2 speaker lock) -------------
         self.profiles = ProfileStore(self.db)
         await self.profiles.seed_joojo()
+        self.speaker = SpeakerVerifier(self.secrets, self.audit)
         self.wake = WakeEngine(self.settings, self.audit, self.events,
-                               self.killswitch)
+                               self.killswitch, verifier=self.speaker)
         await self.wake.start()
 
         self.scheduler = HeartbeatScheduler(
@@ -245,14 +248,13 @@ class App:
     # ------------------------------------------------------------------
     async def _create_agent_from_definition(self, definition: BrainDefinition) -> dict:
         """Create a live Agent for a brain definition (builtin or dynamic)."""
-        from ..config import DEFAULT_MODELS
+        from ..brains.config import resolve_brain_config
 
         agent_id = definition.brain_id
-        key = (self.secrets.get(definition.key_env or "") or
-               self.secrets.get(KEY_ENV.get(agent_id, "")) or
-               self.secrets.get(KEY_ENV["phantom"]))
-        model = definition.model or DEFAULT_MODELS.get(agent_id, DEFAULT_MODELS["phantom"])
-        provider = build_provider(agent_id, api_key=key or "", model=model)
+        cfg = await resolve_brain_config(agent_id, definition.to_dict(),
+                                         self.secrets, self.settings)
+        provider = build_provider(agent_id, api_key=cfg["api_key"], model=cfg["model"],
+                                  base_url=cfg["base_url"] or None)
 
         agent = Agent(
             agent_id=agent_id, provider=provider, registry=self.registry,
@@ -276,7 +278,7 @@ class App:
 
         self.providers[agent_id] = provider
         self.agents[agent_id] = agent
-        return {"id": agent_id, "model": model}
+        return {"id": agent_id, "model": cfg["model"]}
 
     async def _critic_verify(self, objective: str, produced: str) -> dict:
         agent = self.agents.get("phantom")
@@ -361,16 +363,17 @@ class App:
         return False
 
     async def rebuild_provider(self, agent_id: str) -> dict:
-        from ..config import DEFAULT_MODELS
+        from ..brains.config import resolve_brain_config
 
-        model = (await self.settings.get("model", agent_id, DEFAULT_MODELS.get(agent_id, DEFAULT_MODELS["phantom"])))
-        key = (self.secrets.get(KEY_ENV.get(agent_id, "")) or
-               self.secrets.get(KEY_ENV["phantom"]))
-        provider = build_provider(
-            agent_id,
-            api_key=key or "",
-            model=model or DEFAULT_MODELS.get(agent_id, DEFAULT_MODELS["phantom"]),
-        )
+        brain = None
+        if self.brains is not None:
+            brain = await self.brains.get(agent_id)
+        definition = dict(brain) if brain else {}
+        cfg = await resolve_brain_config(agent_id, definition, self.secrets,
+                                         self.settings)
+        provider = build_provider(agent_id, api_key=cfg["api_key"],
+                                  model=cfg["model"],
+                                  base_url=cfg["base_url"] or None)
         old = self.providers.get(agent_id)
         if old and getattr(old, "name", "") == "nvidia":
             close = getattr(old, "aclose", None)
