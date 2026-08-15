@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -12,10 +13,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..agents.identities import identity, identity_summary
-from ..config import AGENTS, KEY_ENV, UI_DIR, mask_key
+from ..config import (AGENTS, DEEPGRAM_BASE_URL, GROQ_BASE_URL, KEY_ENV,
+                      NVIDIA_BASE_URL, UI_DIR, SecretRedactor, mask_key)
 from ..permissions.policy import PermissionLevel
 from ..tools.base import ToolContext, ToolError
 from .app import App
+
+log = logging.getLogger("phantom.api")
 
 ACCESS_TOKEN = os.environ.get("PHAI_ACCESS_TOKEN", "")
 
@@ -25,6 +29,25 @@ def _check_token(request: Request) -> None:
         return
     if request.headers.get("X-Access-Token") != ACCESS_TOKEN:
         raise HTTPException(status_code=401, detail="missing or invalid access token")
+
+
+def _key_test_result(kind: str, resp) -> dict:
+    """Map a provider HTTP status to a friendly test result (never the key)."""
+    status = resp.status_code
+    kind_l = kind.lower()
+    if status == 200:
+        return {"ok": True, "kind": kind_l, "message": f"✓ {kind} key works"}
+    if status in (401, 403):
+        return {"ok": False, "kind": kind_l,
+                "message": f"✗ {kind} rejected the key (unauthorized)"}
+    if status == 402:
+        return {"ok": False, "kind": kind_l,
+                "message": f"✗ {kind}: no credits / quota exceeded"}
+    if status == 429:
+        return {"ok": False, "kind": kind_l,
+                "message": f"⚠️ {kind} is rate-limited — try again later"}
+    return {"ok": False, "kind": kind_l,
+            "message": f"✗ {kind} returned an error ({status}) — try again later"}
 
 
 # ---------------------------------------------------------------------------
@@ -329,26 +352,107 @@ def create_app(app: App) -> FastAPI:
     @fastapi.put("/api/settings")
     async def put_setting(body: SettingUpdate):
         if body.key == "nvidia_api_key":
-            if body.delete:
-                app.secrets.delete(KEY_ENV[body.agent])
-            elif body.value:
-                app.secrets.set(KEY_ENV[body.agent], str(body.value))
+            env = KEY_ENV.get(body.agent, KEY_ENV["phantom"])
+            try:
+                if body.delete:
+                    persisted = app.secrets.delete(env)
+                else:
+                    persisted = app.secrets.set(env, str(body.value or ""))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("settings save failed: %s", exc)
+                raise HTTPException(500, "Could not write the key to disk — "
+                                         "check the app data folder is writable") from None
+            rebuild_ok = True
             if body.agent in AGENTS:
-                await app.rebuild_provider(body.agent)
-            return {"ok": True}
-        if body.delete:
-            await app.settings.delete(body.key, body.agent)
-        else:
-            await app.settings.set(body.key, body.value, body.agent)
+                try:
+                    await app.rebuild_provider(body.agent)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("provider rebuild after key save failed: %s", exc)
+                    rebuild_ok = False
+            return {"ok": True, "saved": body.key, "agent": body.agent,
+                    "persisted": persisted,
+                    "masked": mask_key(app.secrets.get(env)),
+                    "rebuild": rebuild_ok}
+        try:
+            if body.delete:
+                await app.settings.delete(body.key, body.agent)
+            else:
+                await app.settings.set(body.key, body.value, body.agent)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("settings save failed: %s", exc)
+            raise HTTPException(500, "Could not save that setting") from None
         if body.agent in AGENTS and body.key in ("model", "model.temperature", "model.max_tokens"):
-            await app.rebuild_provider(body.agent)
-        return {"ok": True}
+            try:
+                await app.rebuild_provider(body.agent)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("provider rebuild after settings change failed: %s", exc)
+        return {"ok": True, "saved": body.key, "agent": body.agent, "persisted": True}
 
     @fastapi.post("/api/settings/rebuild-provider")
     async def rebuild_provider(body: AgentIdBody):
         if body.agent not in app.agents:
             raise HTTPException(400, "unknown agent")
         return await app.rebuild_provider(body.agent)
+
+    # ------------------------------------------------------------- key test
+    @fastapi.post("/api/keys/test")
+    async def keys_test(body: dict):
+        """Server-side live check of a stored key. The key itself never leaves
+        the backend; the UI only receives ok + a friendly message."""
+        import httpx as _httpx
+
+        kind = str(body.get("kind", "")).lower()
+        agent = str(body.get("agent", "phantom"))
+        if kind not in ("nvidia", "deepgram", "groq", "cloud"):
+            raise HTTPException(400, "unknown kind — use nvidia | deepgram | groq | cloud")
+        try:
+            async with _httpx.AsyncClient(timeout=20) as client:
+                if kind == "nvidia":
+                    env = KEY_ENV.get(agent, KEY_ENV["phantom"])
+                    key = app.secrets.get(env)
+                    if not key:
+                        raise HTTPException(400, f"No NVIDIA key stored for {agent} — save one first")
+                    resp = await client.get(
+                        os.environ.get("PHAI_NVIDIA_BASE_URL", NVIDIA_BASE_URL) + "/models",
+                        headers={"Authorization": f"Bearer {key}"})
+                    return _key_test_result("NVIDIA", resp)
+                if kind == "deepgram":
+                    key = app.secrets.get("DEEPGRAM_API_KEY")
+                    if not key:
+                        raise HTTPException(400, "No Deepgram key stored — save one first")
+                    resp = await client.get(
+                        os.environ.get("PHAI_DEEPGRAM_BASE_URL", DEEPGRAM_BASE_URL) + "/projects",
+                        headers={"Authorization": f"Token {key}"})
+                    return _key_test_result("Deepgram", resp)
+                if kind == "groq":
+                    key = app.secrets.get("GROQ_API_KEY")
+                    if not key:
+                        raise HTTPException(400, "No Groq key stored — save one first")
+                    resp = await client.get(
+                        os.environ.get("PHAI_GROQ_BASE_URL", GROQ_BASE_URL) + "/models",
+                        headers={"Authorization": f"Bearer {key}"})
+                    return _key_test_result("Groq", resp)
+                if kind == "cloud":
+                    url = app.cloudsync._url() if app.cloudsync else ""
+                    token = app.cloudsync._token() if app.cloudsync else ""
+                    if not url:
+                        raise HTTPException(400, "Portable Phantom URL not configured — save it first")
+                    if not token:
+                        raise HTTPException(400, "Portable Phantom token not configured — save it first")
+                    resp = await client.get(
+                        url + "/api/status",
+                        headers={"X-Access-Token": token})
+                    return _key_test_result("Portable Phantom", resp)
+        except HTTPException:
+            raise
+        except _httpx.TimeoutException:
+            raise HTTPException(502, f"{kind} test timed out — check your internet connection") from None
+        except _httpx.HTTPError as exc:
+            log.warning("key test (%s) connection failed: %s", kind,
+                        SecretRedactor.redact(str(exc)))
+            raise HTTPException(502, f"{kind} test could not connect — "
+                                     "check your internet connection and try again") from None
+        raise HTTPException(500, "unexpected key test failure")  # pragma: no cover
 
     # ------------------------------------------------------------ permissions
     @fastapi.get("/api/permissions")
@@ -548,6 +652,7 @@ def create_app(app: App) -> FastAPI:
         # per-persona voices (Phase 3): phantom & coded each have their own
         voices = await app.settings.get("voice.voices", "*", {})
         dg = app.secrets.get("DEEPGRAM_API_KEY") or ""
+        groq = app.secrets.get("GROQ_API_KEY") or ""
         return {
             "stt": {"provider": stt.get("provider", "browser"),
                     "model": stt.get("model", "")},
@@ -561,6 +666,8 @@ def create_app(app: App) -> FastAPI:
             "proactive_speech": bool(proactive),
             "deepgram_configured": bool(dg),
             "deepgram_masked": mask_key(dg),
+            "groq_configured": bool(groq),
+            "groq_masked": mask_key(groq),
         }
 
     @fastapi.get("/api/voice/voices")
@@ -585,28 +692,44 @@ def create_app(app: App) -> FastAPI:
 
     @fastapi.put("/api/voice/config")
     async def voice_config_set(body: dict):
-        if body.get("stt"):
-            await app.settings.set("voice.stt", body["stt"], "*")
-        if body.get("tts"):
-            await app.settings.set("voice.tts", body["tts"], "*")
-        if body.get("voices"):
-            existing = await app.settings.get("voice.voices", "*", {})
-            merged = {**(existing or {}), **body["voices"]}
-            await app.settings.set("voice.voices", merged, "*")
-        if body.get("mode") in ("private", "push", "conversation"):
-            await app.settings.set("voice.mode", body["mode"], "*")
-        if body.get("proactive_speech") is not None:
-            await app.settings.set("voice.proactive_speech",
-                                   bool(body["proactive_speech"]), "*")
+        persisted = True
+        try:
+            if body.get("stt"):
+                await app.settings.set("voice.stt", body["stt"], "*")
+            if body.get("tts"):
+                await app.settings.set("voice.tts", body["tts"], "*")
+            if body.get("voices"):
+                existing = await app.settings.get("voice.voices", "*", {})
+                merged = {**(existing or {}), **body["voices"]}
+                await app.settings.set("voice.voices", merged, "*")
+            if body.get("mode") in ("private", "push", "conversation"):
+                await app.settings.set("voice.mode", body["mode"], "*")
+            if body.get("proactive_speech") is not None:
+                await app.settings.set("voice.proactive_speech",
+                                       bool(body["proactive_speech"]), "*")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("voice settings save failed: %s", exc)
+            persisted = False
         if body.get("deepgram_api_key"):
             # never echoed back; stored server-side only
-            app.secrets.set("DEEPGRAM_API_KEY", str(body["deepgram_api_key"]).strip())
+            ok = app.secrets.set("DEEPGRAM_API_KEY", str(body["deepgram_api_key"]).strip())
+            persisted = persisted and ok
         if body.get("delete_deepgram_key"):
             app.secrets.delete("DEEPGRAM_API_KEY")
+        if body.get("groq_api_key"):
+            # stored server-side only; never returned to the UI
+            ok = app.secrets.set("GROQ_API_KEY", str(body["groq_api_key"]).strip())
+            persisted = persisted and ok
+        if body.get("delete_groq_key"):
+            app.secrets.delete("GROQ_API_KEY")
         await app.audit.record("user", "voice.config_changed",
                                {"keys": [k for k in ("stt", "tts", "voices", "mode",
-                                                     "proactive_speech") if k in body]})
-        return await voice_config()
+                                                     "proactive_speech",
+                                                     "deepgram_api_key",
+                                                     "groq_api_key") if k in body]})
+        cfg = await voice_config()
+        cfg["persisted"] = persisted
+        return cfg
 
     @fastapi.post("/api/voice/deepgram-token")
     async def deepgram_token():
@@ -723,18 +846,29 @@ def create_app(app: App) -> FastAPI:
     async def brain_config_set(bid: str, body: dict):
         if bid not in app.agents:
             raise HTTPException(404, "unknown brain")
-        if body.get("api_key"):
-            # never logged; stored in chmod-600 secrets store
-            app.secrets.set(f"brain.{bid}.api_key", str(body["api_key"]).strip())
-        if body.get("delete_key"):
-            app.secrets.delete(f"brain.{bid}.api_key")
-        if body.get("model"):
-            await app.settings.set(f"brain.{bid}.model", str(body["model"]).strip(), "*")
-        if body.get("base_url"):
-            await app.settings.set(f"brain.{bid}.base_url", str(body["base_url"]).strip(), "*")
-        await app.rebuild_provider(bid)
+        persisted = True
+        try:
+            if body.get("api_key"):
+                # never logged; stored in chmod-600 secrets store
+                ok = app.secrets.set(f"brain.{bid}.api_key", str(body["api_key"]).strip())
+                persisted = persisted and ok
+            if body.get("delete_key"):
+                app.secrets.delete(f"brain.{bid}.api_key")
+            if body.get("model"):
+                await app.settings.set(f"brain.{bid}.model", str(body["model"]).strip(), "*")
+            if body.get("base_url"):
+                await app.settings.set(f"brain.{bid}.base_url", str(body["base_url"]).strip(), "*")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("brain config save failed: %s", exc)
+            persisted = False
+        try:
+            await app.rebuild_provider(bid)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("brain provider rebuild failed: %s", exc)
         await app.audit.record("user", "brain.config_changed", {"brain": bid})
-        return await brain_config(bid)
+        result = await brain_config(bid)
+        result["persisted"] = persisted
+        return result
 
     @fastapi.delete("/api/brains/{bid}")
     async def delete_brain(bid: str):

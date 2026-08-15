@@ -463,8 +463,8 @@ async function saveBriefingTime() {
   const t = $("briefingTime").value;
   if (!t) return;
   try {
-    const res = await api("/api/briefing/config", { body: { time: t } });
-    toast(`Briefing moved to ${res.time} — schedules updated`);
+    const res = await api("/api/briefing/config", { method: "PUT", body: { time: t } });
+    toast(`✓ Briefing moved to ${res.time} — schedules updated`, "ok");
     loadToday();
   } catch (e) { toast("Error: " + e.message); }
 }
@@ -831,8 +831,11 @@ async function loadPermissions() {
   list.querySelectorAll(".perm-override").forEach((sel) => {
     sel.onchange = async () => {
       const tool = sel.dataset.tool, level = sel.value;
-      if (!level) await api("/api/permissions", { body: { agent, tool, delete: true } });
-      else await api("/api/permissions", { body: { agent, tool, level } });
+      try {
+        if (!level) await api("/api/permissions", { method: "PUT", body: { agent, tool, delete: true } });
+        else await api("/api/permissions", { method: "PUT", body: { agent, tool, level } });
+        toast("✓ Permission saved", "ok");
+      } catch (e) { toast("✗ " + e.message, "err"); }
       loadPermissions();
     };
   });
@@ -849,8 +852,9 @@ async function loadSettings() {
     sections.push(`
       <div class="settings-section"><h3>${meta.emoji} ${meta.name} — AI</h3>
         <div class="row"><label>NVIDIA API key (${esc(k.env || "")})</label>
-          <input type="password" id="key-${agentId}" placeholder="${k.configured ? "configured — type to replace" : "not set"}">
+          <input type="password" id="key-${agentId}" placeholder="${k.configured ? `configured (${esc(k.masked || "")}) — type to replace` : "not set"}">
           <button class="btn" onclick="saveKey('${agentId}')">Save</button>
+          <button class="btn" onclick="testKey('nvidia', '${agentId}')">Test</button>
           ${k.configured ? `<span class="muted small">${esc(k.masked || "")}</span>` : ""}</div>
         <div class="row"><label>Model</label><input type="text" id="model-${agentId}"></div>
         <div class="row"><label>Temperature</label><input type="text" id="temp-${agentId}" style="width:80px"></div>
@@ -871,9 +875,16 @@ async function loadSettings() {
       <div class="row"><label>Proactive speech</label>
         <select id="proactiveSel"><option value="0">off</option><option value="1">on</option></select></div>
       <div class="row"><label>Deepgram API key</label>
-        <input type="password" id="deepgramKey" placeholder="${res.voice?.deepgram_masked ? "configured — type to replace" : "not set"}">
-        <button class="btn" onclick="saveDeepgram()">Save</button></div>
-      <p class="muted small">The Deepgram key stays server-side; the UI only ever gets a short-lived token. Browser voices are your OS voices; Deepgram aura voices need a key.</p>
+        <input type="password" id="deepgramKey" placeholder="${res.voice?.deepgram_masked ? `configured (${esc(res.voice.deepgram_masked)}) — type to replace` : "not set"}">
+        <button class="btn" onclick="saveDeepgram()">Save</button>
+        <button class="btn" onclick="testKey('deepgram')">Test</button>
+        ${res.voice?.deepgram_masked ? `<span class="muted small">${esc(res.voice.deepgram_masked)}</span>` : ""}</div>
+      <div class="row"><label>Groq API key (Whisper STT)</label>
+        <input type="password" id="groqKey" placeholder="${res.voice?.groq_masked ? `configured (${esc(res.voice.groq_masked)}) — type to replace` : "not set (free at groq.com)"}">
+        <button class="btn" onclick="saveGroq()">Save</button>
+        <button class="btn" onclick="testKey('groq')">Test</button>
+        ${res.voice?.groq_masked ? `<span class="muted small">${esc(res.voice.groq_masked)}</span>` : ""}</div>
+      <p class="muted small">Keys stay server-side (chmod-600 file); the UI never sees the full value — only a masked hint like <span class="mono">dg_••••</span>. Deepgram aura voices need a Deepgram key; Groq Whisper gives a fast cloud STT fallback.</p>
     </div>
     <div class="settings-section"><h3>🔁 Heartbeat & quiet hours</h3>
       <div class="row"><label>Quiet hours start (UTC)</label><input id="quietStart" placeholder="22:00"></div>
@@ -920,6 +931,8 @@ async function loadSettings() {
         then add the cloud NVIDIA/Deepgram keys here (stored in Cloudflare's secret store, masked, never shown).</p>
       <div class="row"><label>Worker URL</label><input type="text" id="cloudUrl" placeholder="https://phantom-portable.xxx.workers.dev"></div>
       <div class="row"><label>Cloud token 🔒</label><input type="password" id="cloudToken" placeholder="the PHANTOM_CLOUD_TOKEN you set at deploy"></div>
+      <div class="row"><label>Test connection</label><button class="btn" onclick="testKey('cloud')">Test</button>
+        <span class="muted small">checks the worker is reachable and the token works</span></div>
       <div class="row"><label>Cloud NVIDIA key</label><input type="password" id="cloudNvidia" placeholder="paste key → Save (cloud only)"></div>
       <div class="row"><label>Cloud Deepgram key</label><input type="password" id="cloudDeepgram" placeholder="paste key → Save (cloud only)"></div>
       <div class="row">
@@ -1015,15 +1028,19 @@ window.saveBrainKey = async (bid) => {
   if (key) body.api_key = key;
   if (model) body.model = model;
   if (!Object.keys(body).length) return;
-  await api(`/api/brains/${bid}/config`, { body });
-  $(`bkey-${bid}`).value = "";
-  toast(`Saved config for ${bid}`);
-  loadBrainKeys();
+  try {
+    const r = await api(`/api/brains/${bid}/config`, { method: "PUT", body });
+    $(`bkey-${bid}`).value = "";
+    toast(r.persisted ? `✓ Saved config for ${bid}` : "⚠️ Could not write to disk", r.persisted ? "ok" : "err");
+    loadBrainKeys();
+  } catch (e) { toast("✗ Save failed: " + e.message, "err"); }
 };
 window.clearBrainKey = async (bid) => {
-  await api(`/api/brains/${bid}/config`, { body: { delete_key: true } });
-  toast(`Removed own key for ${bid} — now shares Phantom's`);
-  loadBrainKeys();
+  try {
+    const r = await api(`/api/brains/${bid}/config`, { method: "PUT", body: { delete_key: true } });
+    toast(r.persisted !== false ? `✓ Removed own key for ${bid} — now shares Phantom's` : "⚠️ Could not update disk", r.persisted !== false ? "ok" : "err");
+    loadBrainKeys();
+  } catch (e) { toast("✗ " + e.message, "err"); }
 };
 
 /* voice enrollment */
@@ -1072,24 +1089,56 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   const lockCb = $("speakerLockCb");
   if (lockCb) lockCb.onchange = async () => {
-    await api("/api/voice/enroll/speaker-lock", { body: { enabled: lockCb.checked } });
-    toast(lockCb.checked ? "🔒 Speaker lock ON — only your voice wakes them" : "Speaker lock off");
+    try {
+      await api("/api/voice/enroll/speaker-lock", { method: "PUT", body: { enabled: lockCb.checked } });
+      toast(lockCb.checked ? "🔒 Speaker lock ON — only your voice wakes them" : "Speaker lock off", "ok");
+    } catch (e) { toast("✗ " + e.message, "err"); }
   };
 });
 async function saveSetting(agent, key, value) {
-  await api("/api/settings", { body: { agent, key, value } });
+  await api("/api/settings", { method: "PUT", body: { agent, key, value } });
 }
 window.saveKey = async (agentId) => {
-  const val = $(`key-${agentId}`).value.trim();
+  const input = $(`key-${agentId}`);
+  const val = input.value.trim();
   if (!val) return;
-  await api("/api/settings", { body: { agent: agentId, key: "nvidia_api_key", value: val } });
-  $(`key-${agentId}`).value = ""; toast("Key saved"); loadSettings(); loadStatus();
+  try {
+    const r = await api("/api/settings", { method: "PUT",
+      body: { agent: agentId, key: "nvidia_api_key", value: val } });
+    input.value = "";
+    toast(r.persisted ? "✓ Saved — key stored safely" : "⚠️ Could not write to disk", r.persisted ? "ok" : "err");
+    loadSettings(); loadStatus();
+  } catch (e) { toast("✗ Save failed: " + e.message, "err"); }
 };
 window.saveDeepgram = async () => {
-  const val = $("deepgramKey").value.trim();
+  const input = $("deepgramKey");
+  const val = input.value.trim();
   if (!val) return;
-  await api("/api/voice/config", { body: { deepgram_api_key: val } });
-  $("deepgramKey").value = ""; toast("Deepgram key saved (server-side)"); loadSettings();
+  try {
+    const r = await api("/api/voice/config", { method: "PUT", body: { deepgram_api_key: val } });
+    input.value = "";
+    toast(r.persisted ? "✓ Deepgram key saved (server-side)" : "⚠️ Could not write to disk", r.persisted ? "ok" : "err");
+    loadSettings();
+  } catch (e) { toast("✗ Save failed: " + e.message, "err"); }
+};
+window.saveGroq = async () => {
+  const input = $("groqKey");
+  const val = input.value.trim();
+  if (!val) return;
+  try {
+    const r = await api("/api/voice/config", { method: "PUT", body: { groq_api_key: val } });
+    input.value = "";
+    toast(r.persisted ? "✓ Groq key saved (server-side)" : "⚠️ Could not write to disk", r.persisted ? "ok" : "err");
+    loadSettings();
+  } catch (e) { toast("✗ Save failed: " + e.message, "err"); }
+};
+window.testKey = async (kind, agent) => {
+  const label = { nvidia: "NVIDIA", deepgram: "Deepgram", groq: "Groq", cloud: "Portable Phantom" }[kind] || kind;
+  toast(`⏳ Testing ${label}…`);
+  try {
+    const r = await api("/api/keys/test", { body: { kind, agent: agent || "phantom" } });
+    toast(r.message, r.ok ? "ok" : "err");
+  } catch (e) { toast("✗ " + e.message, "err"); }
 };
 async function loadSchedules() {
   const res = await api("/api/schedules");
@@ -1115,7 +1164,7 @@ window.addSchedule = async () => {
     loadSchedules();
   } catch (e) { toast("Error: " + e.message); }
 };
-window.toggleSchedule = async (id, on) => { await api(`/api/schedules/${id}`, { body: { enabled: !!on } }); loadSchedules(); };
+window.toggleSchedule = async (id, on) => { await api(`/api/schedules/${id}`, { method: "PUT", body: { enabled: !!on } }); toast("✓ Schedule updated", "ok"); loadSchedules(); };
 window.deleteSchedule = async (id) => { await api(`/api/schedules/${id}`, { method: "DELETE" }); loadSchedules(); };
 window.saveApiBase = () => {
   localStorage.setItem("phai.apiBase", $("apiBase").value.trim());
@@ -1123,10 +1172,10 @@ window.saveApiBase = () => {
 };
 window.saveCloud = async () => {
   try {
-    const r = await api("/api/cloud/config", { body: {
+    const r = await api("/api/cloud/config", { method: "PUT", body: {
       url: $("cloudUrl").value.trim(), token: $("cloudToken").value.trim() } });
     $("cloudToken").value = "";
-    toast("Portable Phantom saved");
+    toast("✓ Portable Phantom saved", "ok");
     $("cloudStatus").textContent = `☁️ ${r.url_masked}${r.token_configured ? " (token set)" : ""}`;
   } catch (e) { toast("Error: " + e.message); }
 };
@@ -1145,9 +1194,11 @@ window.saveCloudKeys = async () => {
   } catch (e) { toast("Error: " + e.message); }
 };
 window.clearCloud = async () => {
-  await api("/api/cloud/config", { body: { clear: true } });
-  $("cloudUrl").value = ""; $("cloudStatus").textContent = "not configured";
-  toast("Cloud config cleared");
+  try {
+    await api("/api/cloud/config", { method: "PUT", body: { clear: true } });
+    $("cloudUrl").value = ""; $("cloudStatus").textContent = "not configured";
+    toast("✓ Cloud config cleared", "ok");
+  } catch (e) { toast("✗ " + e.message, "err"); }
 };
 window.cloudSyncAll = async () => {
   try {
@@ -1333,7 +1384,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const voiceSel = $("onbVoice").value;
     const proactive = $("onbProactive").value === "1";
     try {
-      await api("/api/voice/config", { body: {
+      await api("/api/voice/config", { method: "PUT", body: {
         stt: { provider: voiceSel }, tts: { provider: voiceSel },
         proactive_speech: proactive } });
     } catch (e) {}
@@ -1346,10 +1397,11 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 /* ============================== INIT ============================== */
-function toast(msg) {
+function toast(msg, type = "") {
   const t = $("toast");
   t.textContent = msg;
-  t.classList.remove("hidden");
+  t.classList.remove("hidden", "toast-ok", "toast-err");
+  if (type) t.classList.add("toast-" + type);
   clearTimeout(toast._timer);
   toast._timer = setTimeout(() => t.classList.add("hidden"), 3500);
 }
@@ -1396,7 +1448,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const order = ["conversation", "push", "private"];
     const next = order[(order.indexOf(voice.mode) + 1) % order.length];
     voice.setMode(next);
-    await api("/api/voice/config", { body: { mode: next } });
+    try { await api("/api/voice/config", { method: "PUT", body: { mode: next } }); }
+    catch (e) { toast("✗ " + e.message, "err"); }
     toast(`voice mode: ${next}`);
     $("voiceModeBtn").classList.toggle("active", next !== "private");
   };
@@ -1448,19 +1501,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     if (id === "quietStart") saveSetting("*", "quiet.start", ev.target.value.trim());
     if (id === "quietEnd") saveSetting("*", "quiet.end", ev.target.value.trim());
-    if (id === "sttProvider") api("/api/voice/config", { body: { stt: { provider: ev.target.value } } });
-    if (id === "ttsProvider") api("/api/voice/config", { body: { tts: { provider: ev.target.value } } });
-    if (id === "voiceModeSel") { voice.setMode(ev.target.value); api("/api/voice/config", { body: { mode: ev.target.value } }); }
-    if (id === "proactiveSel") api("/api/voice/config", { body: { proactive_speech: ev.target.value === "1" } });
+    if (id === "sttProvider") api("/api/voice/config", { method: "PUT", body: { stt: { provider: ev.target.value } } }).then(() => toast("✓ STT provider saved", "ok")).catch((e) => toast("✗ " + e.message, "err"));
+    if (id === "ttsProvider") api("/api/voice/config", { method: "PUT", body: { tts: { provider: ev.target.value } } }).then(() => toast("✓ TTS provider saved", "ok")).catch((e) => toast("✗ " + e.message, "err"));
+    if (id === "voiceModeSel") { voice.setMode(ev.target.value); api("/api/voice/config", { method: "PUT", body: { mode: ev.target.value } }); }
+    if (id === "proactiveSel") api("/api/voice/config", { method: "PUT", body: { proactive_speech: ev.target.value === "1" } });
     if (id === "themeSel") applyTheme(ev.target.value);
     if (id === "voicePhantom") {
       voice.voices.phantom = ev.target.value;
-      api("/api/voice/config", { body: { voices: { phantom: ev.target.value } } });
+      api("/api/voice/config", { method: "PUT", body: { voices: { phantom: ev.target.value } } }).then(() => toast("✓ Phantom voice saved", "ok")).catch((e) => toast("✗ " + e.message, "err"));
       if (state.agent === "phantom") voice.ttsVoice = ev.target.value;
     }
     if (id === "voiceCoded") {
       voice.voices.coded = ev.target.value;
-      api("/api/voice/config", { body: { voices: { coded: ev.target.value } } });
+      api("/api/voice/config", { method: "PUT", body: { voices: { coded: ev.target.value } } }).then(() => toast("✓ Coded voice saved", "ok")).catch((e) => toast("✗ " + e.message, "err"));
       if (state.agent === "coded") voice.ttsVoice = ev.target.value;
     }
   });
