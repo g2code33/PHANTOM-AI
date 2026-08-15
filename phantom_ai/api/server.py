@@ -1133,6 +1133,48 @@ def create_app(app: App) -> FastAPI:
             raise HTTPException(503, "portable Phantom URL not configured")
         return {"memories": await app.cloudsync.list_cloud_memories()}
 
+    @fastapi.post("/api/cloud/keys")
+    async def cloud_keys(body: dict):
+        """Forward cloud NVIDIA/Deepgram keys to the Worker secret store (the
+        PC app's Settings → Portable Phantom). Masked, never returned."""
+        import httpx as _httpx
+
+        if not await app.cloudsync.configured():
+            from fastapi import HTTPException
+
+            raise HTTPException(503, "portable Phantom URL not configured")
+        payload = {}
+        if body.get("nvidia_key"):
+            payload["nvidia_key"] = str(body["nvidia_key"]).strip()
+        if body.get("deepgram_key"):
+            payload["deepgram_key"] = str(body["deepgram_key"]).strip()
+        if body.get("clear_nvidia"):
+            payload["clear_nvidia"] = True
+        if body.get("clear_deepgram"):
+            payload["clear_deepgram"] = True
+        if not payload:
+            from fastapi import HTTPException
+
+            raise HTTPException(400, "no keys provided")
+        headers = {"Content-Type": "application/json"}
+        token = app.cloudsync._token()
+        if token:
+            headers["X-Access-Token"] = token
+        url = app.cloudsync._url() + "/api/config/keys"
+        try:
+            async with _httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code >= 400:
+                    raise RuntimeError(f"cloud rejected keys: {resp.status_code}")
+                data = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            from fastapi import HTTPException
+
+            raise HTTPException(502, f"could not save cloud keys: {exc}") from None
+        await app.audit.record("user", "cloud.keys_updated",
+                               {"masked": data.get("masked")})
+        return data
+
     @fastapi.post("/api/cloud/save")
     async def cloud_save(body: dict):
         """'Save this specifically to cloud' — explicit, audited."""

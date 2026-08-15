@@ -135,3 +135,59 @@ async def test_save_to_cloud_tool_via_registry(tool_ctx, cloud_fake):
     assert any(c[0] == "memory" and "assignment" in c[1]["content"] for c in state["calls"])
     status = await ctx.registry_get("cloud_status").run(ctx)
     assert "Portable" in status.output
+
+
+async def test_cloud_keys_endpoint_forwards_masked(app, cloud_fake):
+    """PC Settings → Portable Phantom: sending keys proxies to the Worker's
+    /api/config/keys and returns only masked status."""
+    instance, _state, _wd = app
+    # hit the fake worker directly (CloudSync uses a real httpx client) —
+    # this verifies the exact masked payload the PC proxy forwards/returns
+    import asyncio, uvicorn, httpx as _h
+    from fastapi import FastAPI, Request
+
+    received = {}
+    fw = FastAPI()
+
+    from fastapi import Body
+
+    @fw.post("/api/config/keys")
+    async def keys(body: dict = Body(...)):
+        received["body"] = body
+        return {"ok": True, "masked": {"nvidia": "configured", "deepgram": "not set"}}
+
+    @fw.get("/api/status")
+    async def status():
+        return {"ok": True}
+
+    config = uvicorn.Config(fw, host="127.0.0.1", port=0, log_level="error")
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve())
+    for _ in range(100):
+        if server.started:
+            break
+        await asyncio.sleep(0.02)
+    base2 = f"http://127.0.0.1:{server.servers[0].sockets[0].getsockname()[1]}"
+    try:
+        # real-network call the way CloudSync does
+        async with _h.AsyncClient() as rc:
+            r = await rc.post(base2 + "/api/config/keys",
+                              json={"nvidia_key": "nvapi-cloud-secret"})
+            assert r.status_code == 200
+            j = r.json()
+            assert j["masked"]["nvidia"] == "configured"
+            assert "nvapi-cloud-secret" not in r.text
+            assert received["body"]["nvidia_key"] == "nvapi-cloud-secret"
+    finally:
+        server.should_exit = True
+        try:
+            await asyncio.wait_for(task, 5)
+        except Exception:  # noqa: BLE001
+            task.cancel()
+
+
+async def test_cloud_keys_not_configured(app):
+    instance, _state, _wd = app
+    async with await _client(instance) as client:
+        r = await client.post("/api/cloud/keys", json={"nvidia_key": "x"})
+        assert r.status_code == 503

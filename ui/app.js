@@ -913,16 +913,20 @@ async function loadSettings() {
         <button id="updateInstallBtn" class="btn btn-primary hidden">Restart &amp; install</button></div>
     </div>
     <div class="settings-section"><h3>☁️ Portable Phantom (cloud)</h3>
-      <p class="muted small">The always-on cloud Phantom for when your PC is off. Set your Worker URL (from
-        <code>cloud/worker</code> deploy) — it shares profile + memory ("save to cloud").</p>
+      <p class="muted small">The always-on cloud Phantom for when your PC is off. Set your Worker URL + Cloud token,
+        then add the cloud NVIDIA/Deepgram keys here (stored in Cloudflare's secret store, masked, never shown).</p>
       <div class="row"><label>Worker URL</label><input type="text" id="cloudUrl" placeholder="https://phantom-portable.xxx.workers.dev"></div>
-      <div class="row"><label>Cloud token (optional)</label><input type="password" id="cloudToken" placeholder="token"></div>
+      <div class="row"><label>Cloud token 🔒</label><input type="password" id="cloudToken" placeholder="the PHANTOM_CLOUD_TOKEN you set at deploy"></div>
+      <div class="row"><label>Cloud NVIDIA key</label><input type="password" id="cloudNvidia" placeholder="paste key → Save (cloud only)"></div>
+      <div class="row"><label>Cloud Deepgram key</label><input type="password" id="cloudDeepgram" placeholder="paste key → Save (cloud only)"></div>
       <div class="row">
-        <button class="btn" onclick="saveCloud()">Save</button>
+        <button class="btn" onclick="saveCloud()">Save config</button>
+        <button class="btn" onclick="saveCloudKeys()">Save keys</button>
         <button class="btn" onclick="cloudSyncAll()">Sync now</button>
         <button class="btn btn-danger" onclick="clearCloud()">Clear</button>
         <span id="cloudStatus" class="muted small"></span>
       </div>
+      <p class="muted small">Key fields are sent straight to the Worker over https with your cloud token — never stored in the app, never shown back.</p>
     </div>
     <div class="settings-section"><h3>📱 Mobile / remote backend</h3>
       <div class="row"><label>Backend URL</label><input type="text" id="apiBase" placeholder="http://192.168.1.50:8000">
@@ -1119,6 +1123,20 @@ window.saveCloud = async () => {
     $("cloudToken").value = "";
     toast("Portable Phantom saved");
     $("cloudStatus").textContent = `☁️ ${r.url_masked}${r.token_configured ? " (token set)" : ""}`;
+  } catch (e) { toast("Error: " + e.message); }
+};
+window.saveCloudKeys = async () => {
+  const nv = $("cloudNvidia").value.trim();
+  const dg = $("cloudDeepgram").value.trim();
+  const body = {};
+  if (nv) body.nvidia_key = nv;
+  if (dg) body.deepgram_key = dg;
+  if (!Object.keys(body).length) { toast("Paste a key first"); return; }
+  try {
+    const r = await api("/api/cloud/keys", { body });
+    $("cloudNvidia").value = ""; $("cloudDeepgram").value = "";
+    toast("Cloud keys saved (masked) — " + JSON.stringify(r.masked || {}));
+    loadSettings();
   } catch (e) { toast("Error: " + e.message); }
 };
 window.clearCloud = async () => {

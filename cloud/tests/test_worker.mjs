@@ -21,6 +21,7 @@ function makeKV() {
   return {
     async get(k) { const v = m.get(k); return v === undefined ? null : JSON.parse(v); },
     async put(k, v) { m.set(k, JSON.stringify(v)); },
+    async delete(k) { m.delete(k); },
     _raw: m,
   };
 }
@@ -34,6 +35,7 @@ function makeEnv() {
     PHANTOM_MEMORY: makeKV(),
     PHANTOM_PROFILE: makeKV(),
     PHANTOM_REMINDERS: makeKV(),
+    PHANTOM_KEYS: makeKV(),
     NVIDIA_API_KEY: "nvapi-test",
     DEEPGRAM_API_KEY: "dg-test",
     PHANTOM_CLOUD_TOKEN: "",
@@ -170,3 +172,50 @@ await t("voice stt transcribes via Deepgram", async () => {
 });
 
 console.log(`\n${passed} portable-worker checks passed.`);
+
+
+// config/keys: set keys from the app, masked status
+await t("config/keys sets + masks cloud keys", async () => {
+  const e = makeEnv();
+  const r = await handle(req("https://phantom.local/api/config/keys",
+    { method: "POST", body: { nvidia_key: "nvapi-cloud-123", deepgram_key: "dg-cloud-456" } }), e);
+  const j = await r.json();
+  assert.equal(j.ok, true);
+  assert.deepEqual(j.masked, { nvidia: "configured", deepgram: "configured" });
+  const st = await handle(req("https://phantom.local/api/status"), e);
+  const sj = await st.json();
+  assert.equal(sj.keys.nvidia, "configured");
+  assert.equal(sj.keys.deepgram, "configured");
+  // clear nvidia
+  const c = await handle(req("https://phantom.local/api/config/keys",
+    { method: "POST", body: { clear_nvidia: true } }), e);
+  const cj = await c.json();
+  assert.equal(cj.masked.nvidia, "not set");
+  assert.equal(cj.masked.deepgram, "configured");
+});
+
+await t("config/keys auth enforced when token set", async () => {
+  const e = makeEnv(); e.PHANTOM_CLOUD_TOKEN = "secret123";
+  const r = await handle(req("https://phantom.local/api/config/keys",
+    { method: "POST", body: { nvidia_key: "x" } }), e);
+  assert.equal(r.status, 401);
+});
+
+await t("chat uses app-stored nvidia key", async () => {
+  const e = makeEnv();
+  await handle(req("https://phantom.local/api/config/keys",
+    { method: "POST", body: { nvidia_key: "nvapi-from-app" } }), e);
+  let used = "";
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("integrate.api.nvidia.com")) {
+      used = (init.headers || {}).Authorization || "";
+      return new Response(JSON.stringify({ choices: [{ message: { content: "hi" } }] }));
+    }
+    return realFetch(url, init);
+  };
+  try {
+    await handle(req("https://phantom.local/api/chat", { method: "POST", body: { text: "hi" } }), e);
+    assert.match(used, /nvapi-from-app/);
+  } finally { globalThis.fetch = realFetch; }
+});

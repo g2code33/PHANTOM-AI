@@ -127,7 +127,7 @@ async function chatOnce(messages, tools, env) {
   if (tools && tools.length) body.tools = tools;
   const resp = await fetch(NVDIA_BASE + "/chat/completions", {
     method: "POST",
-    headers: { Authorization: "Bearer " + (env.NVIDIA_API_KEY || ""),
+    headers: { Authorization: "Bearer " + ((env.PHANTOM_KEYS && (await env.PHANTOM_KEYS.get("nvidia"))) || env.NVIDIA_API_KEY || ""),
                "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -184,12 +184,35 @@ async function handle(request, env) {
   if (request.method === "OPTIONS") return json({ ok: true });
   if (!authOk(request, env)) return json({ error: "unauthorized" }, 401);
 
-  // ---- status ----
+  // ---- config/keys: set/update/clear cloud keys from the app (secrets) ----
+  if (path === "/api/config/keys" && request.method === "POST") {
+    // needs a body with optional keys; requires cloud token when set (authOk)
+    const body = await request.json();
+    const nv = String(body.nvidia_key || "").trim();
+    const dg = String(body.deepgram_key || "").trim();
+    const clearNv = !!body.clear_nvidia;
+    const clearDg = !!body.clear_deepgram;
+    let changes = [];
+    if (nv) { await env.PHANTOM_KEYS.put("nvidia", nv); changes.push("nvidia"); }
+    if (dg) { await env.PHANTOM_KEYS.put("deepgram", dg); changes.push("deepgram"); }
+    if (clearNv) { await env.PHANTOM_KEYS.delete("nvidia"); changes.push("nvidia(cleared)"); }
+    if (clearDg) { await env.PHANTOM_KEYS.delete("deepgram"); changes.push("deepgram(cleared)"); }
+    return json({ ok: true, updated: changes, masked: {
+      nvidia: (await env.PHANTOM_KEYS.get("nvidia")) ? "configured" : "not set",
+      deepgram: (await env.PHANTOM_KEYS.get("deepgram")) ? "configured" : "not set",
+    } });
+  }
+  // status now reports which keys are configured (masked only)
   if (path === "/api/status" && request.method === "GET") {
     const profile = await kvGet(env.PHANTOM_PROFILE, "profile", null);
     return json({ ok: true, mode: "portable", cloud: true,
                   profile_name: (profile && profile.display_name) || "User",
-                  has_nvidia: !!env.NVIDIA_API_KEY, has_deepgram: !!env.DEEPGRAM_API_KEY });
+                  has_nvidia: !!env.NVIDIA_API_KEY,
+                  has_deepgram: !!env.DEEPGRAM_API_KEY,
+                  keys: {
+                    nvidia: (await env.PHANTOM_KEYS.get("nvidia")) ? "configured" : "not set",
+                    deepgram: (await env.PHANTOM_KEYS.get("deepgram")) ? "configured" : "not set",
+                  } });
   }
 
   // ---- chat (with cloud tool loop, max 4 iterations) ----
@@ -221,13 +244,14 @@ async function handle(request, env) {
 
   // ---- voice STT (Deepgram, server-side) ----
   if (path === "/api/voice/stt" && request.method === "POST") {
-    if (!env.DEEPGRAM_API_KEY) return json({ error: "Deepgram not configured on the cloud side" }, 503);
+    const dgKey = (env.PHANTOM_KEYS && (await env.PHANTOM_KEYS.get("deepgram"))) || env.DEEPGRAM_API_KEY || "";
+    if (!dgKey) return json({ error: "Deepgram not configured on the cloud side" }, 503);
     const audio = await request.arrayBuffer();
     if (!audio.byteLength) return json({ error: "empty audio" }, 400);
     const form = new FormData();
     form.append("audio", new Blob([audio], { type: "audio/wav" }), "voice.wav");
     const resp = await fetch("https://api.deepgram.com/v1/listen?model=nova-2&punctuate=true",
-      { method: "POST", headers: { Authorization: "Token " + env.DEEPGRAM_API_KEY },
+      { method: "POST", headers: { Authorization: "Token " + dgKey },
         body: form });
     if (!resp.ok) return json({ error: "Deepgram STT failed " + resp.status }, 502);
     const data = await resp.json();
