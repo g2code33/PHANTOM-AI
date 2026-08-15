@@ -117,6 +117,8 @@ class App:
         self.clouddeploy: CloudDeploy | None = None
         # Multi-provider voice engine (STT/TTS failover chains)
         self.voice_mgr: Any = None
+        # Real-telemetry HUD sampler (psutil deltas)
+        self.hud: Any = None
 
     # ------------------------------------------------------------------
     async def startup(self) -> None:
@@ -269,6 +271,11 @@ class App:
 
         self.voice_mgr = VoiceManager(self.secrets, self.settings, self.db,
                                       data_dir=str(self.data_dir))
+
+        # ---- real-telemetry HUD sampler -------------------------------------
+        from ..hud.sampler import HudSampler
+
+        self.hud = HudSampler()
         await self._seed_briefing_schedule()
 
         self.scheduler = HeartbeatScheduler(

@@ -123,6 +123,8 @@ function initUpdater() {
     autoUpdater.quitAndInstall();
     return { state: "installing" };
   });
+
+  ipcMain.handle("update:version", () => app.getVersion());
 }
 
 // --------------------------------------------------------------------------

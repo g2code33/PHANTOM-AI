@@ -46,6 +46,9 @@ class PhantomVoice {
     this._srvProc = null;
     this._srvFlushing = false;
     this._serverAudio = null;
+    // TTS playback analyser — real audio data for the HUD spectrum (speaking)
+    this._ttsAnalyser = null;
+    this.ttsSpectrumAvailable = false;
 
     this._micStream = null;
     this._audioCtx = null;
@@ -158,6 +161,51 @@ class PhantomVoice {
     this._audioCtx = null;
     this._analyser = null;
     if (this._vadRaf) cancelAnimationFrame(this._vadRaf);
+  }
+
+  // ------------------------------------------------ HUD spectrum (real data)
+  // Returns the raw frequency-domain bytes from the LIVE mic analyser
+  // (same MediaStream — no second mic stream) or null when not capturing.
+  getMicSpectrum(n = 64) {
+    if (!this._analyser) return null;
+    const data = new Uint8Array(this._analyser.frequencyBinCount);
+    this._analyser.getByteFrequencyData(data);
+    return Array.from(data);
+  }
+
+  // Returns the frequency-domain bytes of the TTS playback audio (server or
+  // Deepgram TTS routes through an AnalyserNode) or null when unavailable
+  // (e.g. system speechSynthesis voices cannot be tapped — honest "no data").
+  getTtsSpectrum(n = 64) {
+    if (!this._ttsAnalyser || !this.ttsSpectrumAvailable) return null;
+    const data = new Uint8Array(this._ttsAnalyser.frequencyBinCount);
+    this._ttsAnalyser.getByteFrequencyData(data);
+    return Array.from(data);
+  }
+
+  // Route a TTS audio element through an AnalyserNode so the HUD can draw
+  // the REAL spectrum of what Phantom/Coded is saying.
+  _wireTtsAnalyser(audio) {
+    this.ttsSpectrumAvailable = false;
+    try {
+      if (this._audioCtx && this._audioCtx.state === "closed") this._audioCtx = null;
+      if (!this._audioCtx) {
+        this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (this._audioCtx.state === "suspended") this._audioCtx.resume().catch(() => {});
+      const ctx = this._audioCtx;
+      this._ttsAnalyser = ctx.createAnalyser();
+      this._ttsAnalyser.fftSize = 512;
+      this._ttsAnalyser.smoothingTimeConstant = 0.8;
+      const src = ctx.createMediaElementSource(audio);
+      src.connect(this._ttsAnalyser);
+      this._ttsAnalyser.connect(ctx.destination);
+      this.ttsSpectrumAvailable = true;
+    } catch (e) {
+      // element-source failed — play plainly; HUD shows "system voice" honestly
+      this._ttsAnalyser = null;
+      this.ttsSpectrumAvailable = false;
+    }
   }
 
   _vadLoop() {
@@ -473,6 +521,9 @@ class PhantomVoice {
   }
 
   _speakBrowser(text) {
+    // system voices can't be tapped by an AnalyserNode — honest "no spectrum"
+    this._ttsAnalyser = null;
+    this.ttsSpectrumAvailable = false;
     const synth = window.speechSynthesis;
     if (!synth) {
       this.onError?.("speech synthesis not supported");
@@ -515,6 +566,7 @@ class PhantomVoice {
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       this._serverAudio = audio;
+      this._wireTtsAnalyser(audio); // real spectrum for the HUD while speaking
       audio.onended = () => { URL.revokeObjectURL(url); this._serverAudio = null; this._speakDone(); };
       audio.onerror = () => { URL.revokeObjectURL(url); this._serverAudio = null; this._fallbackBrowserTTS(text); };
       await audio.play();
@@ -580,7 +632,13 @@ class PhantomVoice {
       const audioBuf = await this._audioCtx.decodeAudioData(buf);
       const src = this._audioCtx.createBufferSource();
       src.buffer = audioBuf;
-      src.connect(this._audioCtx.destination);
+      // tap the real playback audio for the HUD spectrum
+      this._ttsAnalyser = this._audioCtx.createAnalyser();
+      this._ttsAnalyser.fftSize = 512;
+      this._ttsAnalyser.smoothingTimeConstant = 0.8;
+      src.connect(this._ttsAnalyser);
+      this._ttsAnalyser.connect(this._audioCtx.destination);
+      this.ttsSpectrumAvailable = true;
       src.onended = () => {
         if (this._dgAudioQueue.length) this._playDeepgramAudio();
         else { this._dgPlaying = false; this._speakDone(); }
@@ -596,6 +654,7 @@ class PhantomVoice {
   _speakDone() {
     this._speaking = false;
     this._utterance = null;
+    this.ttsSpectrumAvailable = false;
     this.onSpeakEnd?.();
     if (this._dgSpeakWs) { try { this._dgSpeakWs.close(); } catch (e) {} this._dgSpeakWs = null; }
     if (this._speakQueue.length) {
@@ -614,6 +673,7 @@ class PhantomVoice {
     if (this._serverAudio) { try { this._serverAudio.pause(); } catch (e) {} this._serverAudio = null; }
     this._speaking = false;
     this._utterance = null;
+    this.ttsSpectrumAvailable = false;
     this.onSpeakEnd?.();
   }
 

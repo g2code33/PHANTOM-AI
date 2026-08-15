@@ -825,6 +825,16 @@ def create_app(app: App) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"Deepgram token failed: {exc}") from None
 
+    # ------------------------------------------------------------- HUD (real)
+    @fastapi.get("/api/hud")
+    async def hud_telemetry():
+        """Real system telemetry for the HUD: per-core CPU, disk/net I/O rates,
+        battery, top CPU process. Nothing is simulated; unreadable values
+        report available=false."""
+        if app.hud is None:
+            raise HTTPException(503, "hud not ready")
+        return await app.hud.snapshot()
+
     # ------------------------------------------- multi-provider voice engine
     @fastapi.get("/api/voice/status")
     async def voice_status():

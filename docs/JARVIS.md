@@ -43,3 +43,34 @@ Verified at checkpoint `db38235` (96 tests passing, 87 tools):
 - No component is rewritten because of style preference — only the UI shell and the voice layer are new; everything else is preserved and extended.
 - No fake capabilities: the orb reflects real states (mic/stream/tool events); if the browser lacks mic/TTS, the UI says so.
 - Barge-in and kill switch are hard requirements, not decorative.
+
+## HUD (real telemetry, tiered rendering)
+
+The presence orb + gauges (added with the v0.4.8 HUD pass) follow these rules:
+
+- **One state machine, two rendering tiers.** The tier is derived ONLY from the
+  existing voice/presence state (`body[data-state]` + `body.presence-sleeping`)
+  via the pure `hudTier()` helper in `ui/hud.js` — there is no second state
+  system. Sleeping/silenced → **low tier**: the canvas redraw loop stops
+  entirely (one static dim frame), CSS ring/sweep animations are paused, and
+  the gauges poll every 8 s. Awake/listening/speaking → **full tier**: canvas
+  loop active, gauges every 2 s.
+- **Spectrum analyzer = real audio.** While listening, the canvas draws the
+  frequency data from an AnalyserNode tapped off the *existing* mic stream
+  (`PhantomVoice._analyser` — no second getUserMedia). While speaking, it
+  draws the TTS playback audio routed through an AnalyserNode (server-TTS and
+  Deepgram-TTS both; system speechSynthesis voices cannot be tapped, so the
+  HUD honestly shows "system voice" instead of faking bars).
+- **Layered orb, no WebGL.** Concentric counter-rotating CSS rings, a radial
+  glow layer whose opacity follows state, one-time static SVG tick marks, and
+  a conic-gradient radar sweep — all paused in the low tier.
+- **Telemetry (`GET /api/hud`, `phantom_ai/hud/sampler.py`) — all psutil, no
+  fakes.** Per-core CPU (`cpu_percent(percpu=True)`), disk I/O and network
+  byte-rate deltas between polls, battery (`sensors_battery()`; reports
+  "unavailable" honestly on desktops), and the top process by *measured* CPU
+  between samples. The foreground/focused window is NOT reported: the existing
+  psutil-based tools can't see it on Linux without adding X11 utilities, and
+  per the guardrails we skip rather than add invasive new access.
+- Every gauge shows a real reading or an honest "unavailable" — never a
+  simulated number. Verified by `node scripts/test-hud.mjs` (pure helpers)
+  and `tests/test_hud.py` (sampler contract + endpoint).

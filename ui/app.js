@@ -61,6 +61,7 @@ function setPresence(pstate, sub) {
   if (label) label.textContent = s;
   const subEl = $("stateSub");
   if (subEl) subEl.textContent = sub || STATE_TEXT[s] || "";
+  if (typeof hudApplyTier === "function") hudApplyTier();
 }
 
 voice.onState = (s) => {
@@ -947,9 +948,15 @@ async function loadSettings() {
         </select></div>
     </div>
     <div class="settings-section"><h3>⬆ App updates</h3>
-      <div class="row"><label>Desktop app</label><span id="updateState" class="muted">checking…</span>
-        <button id="updateCheckBtn" class="btn">Check now</button>
-        <button id="updateInstallBtn" class="btn btn-primary hidden">Restart &amp; install</button></div>
+      <div class="row"><label>Desktop app</label>
+        <span id="updateVer" class="muted small"></span>
+        <span id="updateState" class="muted">not checked</span></div>
+      <div class="row">
+        <button id="updateCheckBtn" class="btn" onclick="checkForUpdates()">Check for updates</button>
+        <button id="updateDownloadBtn" class="btn hidden" onclick="updaterDownload()">⬇ Download</button>
+        <button id="updateInstallBtn" class="btn btn-primary hidden" onclick="updaterInstall()">Restart &amp; install</button>
+        <button id="updateReleaseBtn" class="btn hidden" onclick="updaterOpenReleases()">Open releases page</button>
+      </div>
     </div>
     <div class="settings-section"><h3>☁️ Portable Phantom (cloud)</h3>
       <p class="muted small">The always-on cloud Phantom for when your PC is off. Set your Worker URL + Cloud token,
@@ -1333,29 +1340,50 @@ document.addEventListener("cloud-deploy-log", (ev) => {
 /* ============================== UPDATER ============================== */
 const updater = window.phaiUpdater || null;
 let updaterState = { state: "idle" };
+let updaterVersion = "";
 function renderUpdater() {
-  const installBtn = $("updateInstallBtn"); const stateEl = $("updateState");
-  if (!updater) { if (stateEl) stateEl.textContent = "packaged app only"; return; }
+  const installBtn = $("updateInstallBtn"); const downloadBtn = $("updateDownloadBtn");
+  const releaseBtn = $("updateReleaseBtn"); const stateEl = $("updateState");
+  const verEl = $("updateVer");
+  if (verEl) verEl.textContent = updaterVersion ? `Phantom v${updaterVersion}` : "";
+  if (!updater) { if (stateEl) stateEl.textContent = "updates are for the desktop app (browser mode)"; return; }
   const s = updaterState;
-  let text = "not checked";
-  if (s.state === "checking") text = "checking…";
-  else if (s.state === "up-to-date") text = `up to date (v${s.version})`;
-  else if (s.state === "available") text = `update available: v${s.version} — downloading…`;
-  else if (s.state === "ready") text = `update ready: v${s.version} — restart to install`;
-  else if (s.state === "downloading") text = `downloading… ${s.percent || 0}%`;
+  let text = "not checked — press “Check for updates”";
+  let downloadVisible = false, installVisible = false, releaseVisible = false;
+  if (s.state === "checking") text = "checking for updates…";
+  else if (s.state === "up-to-date") text = `✓ you're on the latest version — v${s.version || updaterVersion}`;
+  else if (s.state === "available") text = `⬆ update available: v${s.version} — downloading…`;
+  else if (s.state === "downloading") text = `⬇ downloading… ${s.percent || 0}%`;
+  else if (s.state === "ready") { text = `⬆ update ready: v${s.version} — restart to install`; installVisible = true; releaseVisible = true; }
   else if (s.state === "error") {
-    text = `update error: ${s.message || ""}`;
+    text = `update check failed: ${s.message || ""}`;
+    releaseVisible = true;
     // deb installs live in root-owned /opt — electron-updater can't write there.
     const msg = String(s.message || "").toLowerCase();
     if (msg.includes("eacces") || msg.includes("permission") || msg.includes("denied")) {
-      text += " — .deb installs need sudo: use the AppImage, or run the update script from Settings.";
+      text += " — the .deb install needs sudo. Use the AppImage, or grab the new .deb from the releases page.";
     }
-  } else if (s.state === "dev") text = "dev mode";
+  } else if (s.state === "dev") text = "dev mode — updates only in the packaged app";
   if (stateEl) stateEl.textContent = text;
-  if (installBtn) installBtn.classList.toggle("hidden", s.state !== "ready");
+  if (installBtn) installBtn.classList.toggle("hidden", !installVisible);
+  if (downloadBtn) downloadBtn.classList.toggle("hidden", !downloadVisible);
+  if (releaseBtn) releaseBtn.classList.toggle("hidden", !releaseVisible);
 }
-async function checkForUpdates() {
+window.updaterDownload = () => {
   if (!updater) return;
+  updaterState = { state: "downloading", percent: 0 }; renderUpdater();
+  toast("⬇ Downloading update…");
+  updater.download();
+};
+window.updaterInstall = () => { if (updater) updater.install(); };
+window.updaterOpenReleases = () => {
+  try { window.open("https://github.com/g2code33/PHANTOM-AI/releases"); } catch (e) {}
+};
+async function checkForUpdates() {
+  if (!updater) { toast("Updates are for the desktop app — you're in a browser", "err"); return; }
+  if (!updaterVersion) {
+    try { updaterVersion = (await updater.getVersion()) || ""; } catch (e) {}
+  }
   updaterState = { state: "checking" }; renderUpdater();
   const res = await updater.check().catch((e) => ({ state: "error", message: String(e) }));
   updaterState = res || {}; renderUpdater();
@@ -1364,6 +1392,10 @@ async function checkForUpdates() {
     updater.download();
   } else if (updaterState.state === "ready") {
     toast(`⬆ Update v${updaterState.version} ready — restart to install`);
+  } else if (updaterState.state === "up-to-date") {
+    toast(`✓ You're on the latest version — v${updaterState.version || updaterVersion}`, "ok");
+  } else if (updaterState.state === "error") {
+    toast("⬆ Update check failed: " + (updaterState.message || ""), "err");
   }
 }
 window.checkForUpdates = checkForUpdates;
@@ -1425,49 +1457,96 @@ async function toggleKill() {
 $("disengageBtn") && ($("disengageBtn").onclick = () => api("/api/killswitch/disengage").then(loadStatus));
 
 /* ============================== CORE CANVAS ============================== */
+/* JARVIS HUD — real spectrum, tiered rendering.
+ * - Tier comes from the existing state machine only (voice state + presence
+ *   sleeping class); sleeping = low tier = NO continuous redraw loop.
+ * - Bars are driven by REAL audio data (mic analyser while listening, TTS
+ *   analyser while speaking). No sine-wave "telemetry".
+ * - Gauges below poll /api/hud: per-core CPU, disk/net I/O, battery, top CPU
+ *   process — every value real, "unavailable" shown honestly. */
 const coreCanvas = $("coreCanvas");
 const ctx = coreCanvas && coreCanvas.getContext("2d");
 let rafId = null;
-function drawCore(ts) {
+let hudLoopActive = false;
+const hudGauges = window.PhantomHud ? new window.PhantomHud.HudGauges() : null;
+
+function hudTierNow() {
+  const sleeping = document.body.classList.contains("presence-sleeping");
+  const state = document.body.dataset.state || "idle";
+  return window.PhantomHud ? window.PhantomHud.hudTier(state, sleeping) : (sleeping ? "low" : "full");
+}
+
+function hudApplyTier() {
+  const tier = hudTierNow();
+  document.body.classList.toggle("hud-low", tier === "low");
+  if (hudGauges) hudGauges.setTier(tier);
+  if (tier === "low") {
+    hudStopLoop();
+    drawCoreFrame(0);            // one dim static frame — no continuous redraw
+  } else {
+    hudStartLoop();
+  }
+}
+
+function hudStartLoop() {
+  if (hudLoopActive || !ctx) return;
+  hudLoopActive = true;
+  rafId = requestAnimationFrame(drawCoreFrame);
+}
+function hudStopLoop() {
+  hudLoopActive = false;
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+}
+
+function drawCoreFrame(ts) {
   if (!ctx || !coreCanvas) return;
   const w = coreCanvas.width = coreCanvas.clientWidth || 320;
   const h = coreCanvas.height = coreCanvas.clientHeight || 320;
   const cx = w / 2, cy = h / 2;
   ctx.clearRect(0, 0, w, h);
   const st = document.body.dataset.state;
-  const level = micLevelTarget || 0;
-  const bars = 40;
-  const baseR = 62;
+  const sleeping = document.body.classList.contains("presence-sleeping");
+  // REAL spectrum: mic while listening, TTS playback while speaking.
+  let freq = null;
+  if (!sleeping) {
+    if (st === "listening" && voice.micEnabled) freq = voice.getMicSpectrum ? voice.getMicSpectrum(256) : null;
+    else if (st === "speaking") freq = voice.getTtsSpectrum ? voice.getTtsSpectrum(256) : null;
+  }
+  const bars = 48;
+  const bins = window.PhantomHud ? window.PhantomHud.avgBins(freq || [], bars) : [];
+  const baseR = 58;
+  const color = st === "error" ? "rgba(240,113,139,.6)" : "rgba(110,168,254,.5)";
+  ctx.lineWidth = 1.4;
+  ctx.strokeStyle = color;
   for (let i = 0; i < bars; i++) {
-    const a = (i / bars) * Math.PI * 2 + ts / 4000;
-    let amp = 0.5;
-    if (st === "listening") amp = 0.35 + level * 2.2;
-    else if (st === "speaking") amp = 0.5 + Math.abs(Math.sin(ts / 90 + i * 0.6)) * 0.9;
-    else if (st === "thinking" || st === "executing") amp = 0.4 + Math.abs(Math.sin(ts / 220 + i)) * 0.7;
-    else amp = 0.25 + Math.sin(ts / 900 + i * 0.3) * 0.12;
-    const r = baseR + amp * 16;
+    const a = (i / bars) * Math.PI * 2;
+    const amp = bins.length ? bins[i] / 255 : 0;
+    const r = baseR + amp * 26;
     const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
-    ctx.strokeStyle = st === "error" ? "rgba(240,113,139,.55)" : "rgba(110,168,254,.4)";
-    ctx.lineWidth = 1.4;
     ctx.beginPath();
-    ctx.moveTo(cx + Math.cos(a) * (baseR - 4), cy + Math.sin(a) * (baseR - 4));
+    ctx.moveTo(cx + Math.cos(a) * (baseR - 3), cy + Math.sin(a) * (baseR - 3));
     ctx.lineTo(x, y);
     ctx.stroke();
   }
-  // thinking: orbiting particles
-  if (st === "thinking" || st === "executing" || st === "verifying") {
-    for (let i = 0; i < 14; i++) {
-      const a = (i / 14) * Math.PI * 2 + ts / 600;
-      const r = 105 + Math.sin(ts / 500 + i) * 10;
-      ctx.fillStyle = "rgba(183,155,255,.5)";
-      ctx.beginPath();
-      ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1.8, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  rafId = requestAnimationFrame(drawCore);
+  if (hudLoopActive) rafId = requestAnimationFrame(drawCoreFrame);
 }
-rafId = requestAnimationFrame(drawCore);
+
+// static segmented ticks (built once — not re-rendered per frame)
+function buildOrbTicks() {
+  const svg = $("orbTicks");
+  if (!svg) return;
+  const N = 72, cx = 160, cy = 160;
+  let s = "";
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const big = i % 6 === 0;
+    const r1 = big ? 148 : 152, r2 = 158;
+    s += `<line x1="${(cx + Math.cos(a) * r1).toFixed(1)}" y1="${(cy + Math.sin(a) * r1).toFixed(1)}" x2="${(cx + Math.cos(a) * r2).toFixed(1)}" y2="${(cy + Math.sin(a) * r2).toFixed(1)}" stroke="rgba(110,168,254,.35)" stroke-width="${big ? 2 : 1}"/>`;
+  }
+  svg.innerHTML = s;
+}
+buildOrbTicks();
+hudApplyTier();
 
 /* ============================== ONBOARDING ============================== */
 function maybeOnboarding() {
@@ -1629,13 +1708,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  // updater
+  // updater — the buttons live in Settings (rendered later); inline onclick
+  // handlers cover clicks, so guard everything here. Never let a null deref
+  // kill the rest of startup (voice.init/WS/presence) again.
   if (updater) {
     updater.onStatus((s) => { updaterState = s || {}; renderUpdater(); });
-    $("updateCheckBtn").onclick = checkForUpdates;
-    $("updateInstallBtn").onclick = () => updater.install();
+    const chkBtn = $("updateCheckBtn"); if (chkBtn) chkBtn.onclick = checkForUpdates;
+    const instBtn = $("updateInstallBtn"); if (instBtn) instBtn.onclick = () => updater.install();
+    updater.getVersion().then((v) => { updaterVersion = v || ""; renderUpdater(); }).catch(() => {});
     renderUpdater();
-    setTimeout(checkForUpdates, 4000);
+    setTimeout(checkForUpdates, 4000); // auto-check shortly after launch
   }
 
   await voice.init();
