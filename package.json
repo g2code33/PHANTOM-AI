@@ -1,6 +1,6 @@
 {
   "name": "phantom",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Phantom \u2014 a personal AI computer companion (voice-first). Coded, Health and specialist brains live inside the same platform.",
   "author": "g2code33",
   "license": "MIT",
@@ -19,7 +19,10 @@
     "cap:sync": "npm run web:build && npx cap sync android",
     "cap:assets": "npx capacitor-assets generate --android",
     "smoke": ".venv/bin/python -m pytest tests/ -q",
-    "release:patch": "npm version patch --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require('./package.json').version\")\" && git push origin main"
+    "release:patch": "npm version patch --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require('./package.json').version\")\" && git push origin main",
+    "portable:deploy": "bash cloud/deploy.sh",
+    "tunnel:run": "bash scripts/tunnel-run.sh",
+    "tunnel:quick": "bash scripts/tunnel.sh"
   },
   "devDependencies": {
     "@capacitor/android": "^8.0.0",
