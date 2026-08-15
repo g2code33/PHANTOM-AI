@@ -127,6 +127,7 @@ function connectWS() {
 }
 function handle(ev) {
   if (ev.event === "presence.state") applyPresence(ev.data);
+  if (ev.event === "cloud.deploy_log") cloudLogLine(ev.data?.line || "");
   if (ev.event === "notification.new") refreshAll();
   if (ev.event === "confirmation.requested" || ev.event === "confirmation.decided") refreshAll();
   if (ev.event === "task.update") refreshAll();
@@ -301,7 +302,32 @@ $("mModeToggle").onclick = () => {
   toastMode("mode: " + S.mode);
 };
 
-/* kill switch */
+/* cloud keys + redeploy via the PC (phone → PC → Worker) */
+$("mCloudKeysBtn").onclick = async () => {
+  const nv = $("mCloudNvidia").value.trim();
+  const dg = $("mCloudDeepgram").value.trim();
+  const body = {};
+  if (nv) body.nvidia_key = nv;
+  if (dg) body.deepgram_key = dg;
+  if (!Object.keys(body).length) { $("mCloudLog").textContent = "Paste a key first."; return; }
+  try {
+    const r = await api("/api/cloud/keys", { body });
+    $("mCloudNvidia").value = ""; $("mCloudDeepgram").value = "";
+    $("mCloudLog").textContent = "Keys saved (masked): " + JSON.stringify(r.masked || {});
+  } catch (e) { $("mCloudLog").textContent = "✗ " + e.message; }
+};
+$("mRedeployBtn").onclick = async () => {
+  const log = $("mCloudLog");
+  log.textContent = "Redeploying via PC…";
+  try {
+    const r = await api("/api/cloud/deploy", { body: {} });
+    log.textContent = "Redeploy started on your PC — watch the PC app's log for details.";
+  } catch (e) { log.textContent = "✗ " + e.message; }
+};
+function cloudLogLine(line) {
+  const log = $("mCloudLog");
+  if (log && !log.classList.contains("hidden")) log.textContent += "\n" + line;
+}
 $("mKill").onclick = async () => {
   if (!confirm("Engage the PC kill switch? Stops voice, mic, tasks, all agents.")) return;
   try { await api("/api/killswitch/engage", { body: "{}", headers: { "Content-Type": "application/json" } }); alert("Kill switch engaged on PC"); } catch (e) { alert(e.message); }
