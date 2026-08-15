@@ -222,6 +222,9 @@ function handleEvent(payload) {
       else voice.setKill(false);
       break;
     case "heartbeat.run": addActivity("heartbeat", `💓 ${data.name}`, "tool-start"); break;
+    case "cloud.deploy_log":
+      document.dispatchEvent(new CustomEvent("cloud-deploy-log", { detail: data.line || "" }));
+      break;
     default: break;
   }
 }
@@ -913,16 +916,22 @@ async function loadSettings() {
         <button id="updateInstallBtn" class="btn btn-primary hidden">Restart &amp; install</button></div>
     </div>
     <div class="settings-section"><h3>☁️ Portable Phantom (cloud)</h3>
-      <p class="muted small">The always-on cloud Phantom for when your PC is off. Set your Worker URL (from
-        <code>cloud/worker</code> deploy) — it shares profile + memory ("save to cloud").</p>
+      <p class="muted small">The always-on cloud Phantom for when your PC is off. Set your Worker URL + Cloud token,
+        then add the cloud NVIDIA/Deepgram keys here (stored in Cloudflare's secret store, masked, never shown).</p>
       <div class="row"><label>Worker URL</label><input type="text" id="cloudUrl" placeholder="https://phantom-portable.xxx.workers.dev"></div>
-      <div class="row"><label>Cloud token (optional)</label><input type="password" id="cloudToken" placeholder="token"></div>
+      <div class="row"><label>Cloud token 🔒</label><input type="password" id="cloudToken" placeholder="the PHANTOM_CLOUD_TOKEN you set at deploy"></div>
+      <div class="row"><label>Cloud NVIDIA key</label><input type="password" id="cloudNvidia" placeholder="paste key → Save (cloud only)"></div>
+      <div class="row"><label>Cloud Deepgram key</label><input type="password" id="cloudDeepgram" placeholder="paste key → Save (cloud only)"></div>
       <div class="row">
-        <button class="btn" onclick="saveCloud()">Save</button>
+        <button class="btn" onclick="saveCloud()">Save config</button>
+        <button class="btn" onclick="saveCloudKeys()">Save keys</button>
+        <button class="btn" onclick="redeployCloud()">🔄 Redeploy cloud</button>
         <button class="btn" onclick="cloudSyncAll()">Sync now</button>
         <button class="btn btn-danger" onclick="clearCloud()">Clear</button>
         <span id="cloudStatus" class="muted small"></span>
       </div>
+      <pre id="cloudDeployLog" class="mono small hidden" style="max-height:220px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px;margin-top:8px"></pre>
+      <p class="muted small">Key fields are sent straight to the Worker over https with your cloud token — never stored in the app, never shown back.</p>
     </div>
     <div class="settings-section"><h3>📱 Mobile / remote backend</h3>
       <div class="row"><label>Backend URL</label><input type="text" id="apiBase" placeholder="http://192.168.1.50:8000">
@@ -1121,6 +1130,20 @@ window.saveCloud = async () => {
     $("cloudStatus").textContent = `☁️ ${r.url_masked}${r.token_configured ? " (token set)" : ""}`;
   } catch (e) { toast("Error: " + e.message); }
 };
+window.saveCloudKeys = async () => {
+  const nv = $("cloudNvidia").value.trim();
+  const dg = $("cloudDeepgram").value.trim();
+  const body = {};
+  if (nv) body.nvidia_key = nv;
+  if (dg) body.deepgram_key = dg;
+  if (!Object.keys(body).length) { toast("Paste a key first"); return; }
+  try {
+    const r = await api("/api/cloud/keys", { body });
+    $("cloudNvidia").value = ""; $("cloudDeepgram").value = "";
+    toast("Cloud keys saved (masked) — " + JSON.stringify(r.masked || {}));
+    loadSettings();
+  } catch (e) { toast("Error: " + e.message); }
+};
 window.clearCloud = async () => {
   await api("/api/cloud/config", { body: { clear: true } });
   $("cloudUrl").value = ""; $("cloudStatus").textContent = "not configured";
@@ -1132,6 +1155,30 @@ window.cloudSyncAll = async () => {
     toast(`Synced — profile ✓, reminders ${r.reminders?.pushed ?? 0}, memories ${r.memories?.mirrored_new ?? 0} new`);
   } catch (e) { toast("Sync failed: " + e.message); }
 };
+window.redeployCloud = async () => {
+  const logEl = $("cloudDeployLog");
+  logEl.classList.remove("hidden");
+  logEl.textContent = "Redeploying Portable Phantom… (this takes ~1 min)";
+  try {
+    const r = await api("/api/cloud/deploy", {
+      body: { nvidia_key: $("cloudNvidia").value.trim(),
+              deepgram_key: $("cloudDeepgram").value.trim(),
+              cloud_token: $("cloudToken").value.trim() } });
+    toast("Redeploy started — watch the log");
+    $("cloudNvidia").value = ""; $("cloudDeepgram").value = ""; $("cloudToken").value = "";
+  } catch (e) {
+    logEl.textContent = "✗ " + e.message;
+    toast("Redeploy failed: " + e.message);
+  }
+};
+/* stream cloud.deploy_log events into the log box */
+document.addEventListener("cloud-deploy-log", (ev) => {
+  const logEl = $("cloudDeployLog");
+  if (logEl && !logEl.classList.contains("hidden")) {
+    logEl.textContent += "\n" + ev.detail;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+});
 
 /* ============================== UPDATER ============================== */
 const updater = window.phaiUpdater || null;

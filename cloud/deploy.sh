@@ -1,27 +1,34 @@
 #!/usr/bin/env bash
 # Phantom — one-shot deploy of the Portable Phantom (Cloudflare Worker).
 #
-# Automates: login → create KV namespaces (if needed) → fill wrangler.toml →
-# set secrets → deploy → print your worker URL. Free Cloudflare account.
+# Automates: login → create KV namespaces (if needed) → fill a GITIGNORED
+# local config (wrangler.local.toml) → set secrets → deploy → print URL.
+#
+# IMPORTANT: the repo's wrangler.toml keeps its KV placeholders. Real KV ids
+# are written to cloud/worker/wrangler.local.toml (gitignored), and wrangler
+# uses it via --config. So merging the repo NEVER conflicts with your deploy
+# ids, and redeploys keep working after merges.
 #
 # Usage:
 #   bash cloud/deploy.sh                 # interactive (asks for secrets)
-#   NVIDIA_API_KEY=... DEEPGRAM_API_KEY=... PHANTOM_CLOUD_TOKEN=... bash cloud/deploy.sh
-#   CLOUD_TOKEN="" bash cloud/deploy.sh  # no auth token (not recommended)
-#
-# After deploy, paste the printed URL (+ token) into:
-#   PC app → Settings → Portable Phantom (cloud) → Sync now
-#   Phone app → connect screen → Portable URL/token
+#   NONINTERACTIVE=1 NVIDIA_API_KEY=... DEEPGRAM_API_KEY=... PHANTOM_CLOUD_TOKEN=... bash cloud/deploy.sh
 
 set -euo pipefail
-# Resolve the script's own directory so this works from ANY cwd:
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-wr() { ( cd "$WORKER_DIR" && npx wrangler "$@" ); }
-# the worker config lives in cloud/worker/
 WORKER_DIR="$SCRIPT_DIR/worker"
 TOML="$WORKER_DIR/wrangler.toml"
+LOCAL_CFG="$WORKER_DIR/wrangler.local.toml"
+
+# wrangler wrapper: use the local override when present
+wr() {
+  local cfg=""
+  if [ -f "$LOCAL_CFG" ]; then
+    cfg="--config $LOCAL_CFG"
+  fi
+  ( cd "$WORKER_DIR" && npx wrangler $cfg "$@" )
+}
 
 echo "────────────────────────────────────────────────────────────"
 echo " Phantom — Portable Worker deploy (Cloudflare)"
@@ -37,33 +44,47 @@ if [ ! -d "$WORKER_DIR/node_modules/wrangler" ] && ! (cd "$WORKER_DIR" && npx --
   (cd "$WORKER_DIR" && npm install --no-save wrangler) >/dev/null 2>&1 || npm i -g wrangler
 fi
 
-# 1) login (with a clear error if auth can't be established)
-echo " Step 1 — Cloudflare login (browser opens; free account is fine)…"
+# 1) login
+echo " Step 1 — Cloudflare login check…"
 if ! wr whoami >/dev/null 2>&1; then
-  wr login || { echo "❌ Could not log in to Cloudflare. Run 'bash cloud/deploy.sh' on your own machine (browser login) or set CLOUDFLARE_API_TOKEN." >&2; exit 1; }
+  if [ "${NONINTERACTIVE:-}" = "1" ]; then
+    echo "❌ Not logged in to Cloudflare. Open the app on a machine where you've run 'wrangler login', or set CLOUDFLARE_API_TOKEN." >&2
+    exit 1
+  fi
+  wr login || { echo "❌ Could not log in to Cloudflare." >&2; exit 1; }
   wr whoami >/dev/null 2>&1 || { echo "❌ Login did not complete." >&2; exit 1; }
 fi
 echo " ✓ logged in"
 
-# 2) KV namespaces (create only those still using the placeholder)
+# seed the local override from the repo toml (first run)
+if [ ! -f "$LOCAL_CFG" ]; then
+  cp "$TOML" "$LOCAL_CFG"
+fi
+
+# 2) KV namespaces
 echo " Step 2 — KV namespaces…"
-create_kv() {
+placeholder_of() {
+  case "$1" in
+    PHANTOM_MEMORY)   echo "REPLACE_WITH_KV_NAMESPACE_ID" ;;
+    PHANTOM_PROFILE)  echo "REPLACE_WITH_KV_PROFILE_ID" ;;
+    PHANTOM_REMINDERS) echo "REPLACE_WITH_KV_REMINDERS_ID" ;;
+    PHANTOM_KEYS)     echo "REPLACE_WITH_KV_KEYS_ID" ;;
+    *) echo "" ;;
+  esac
+}
+set_kv_id() {
   local binding="$1"
   local placeholder
-  case "$binding" in
-    PHANTOM_MEMORY)   placeholder="REPLACE_WITH_KV_NAMESPACE_ID" ;;
-    PHANTOM_PROFILE)  placeholder="REPLACE_WITH_KV_PROFILE_ID" ;;
-    PHANTOM_REMINDERS) placeholder="REPLACE_WITH_KV_REMINDERS_ID" ;;
-    *) echo "   ? unknown binding $binding"; return ;;
-  esac
-  # pull the id from the toml block for this binding (capture between quotes)
+  placeholder=$(placeholder_of "$binding")
+  [ -n "$placeholder" ] || return 0
+  # read id from the local override
   local id
-  id=$(awk -v b="\"$binding\"" '$0 ~ "binding = " b {f=1; next} f && /id = / {match($0, /"[a-f0-9]+"/); print substr($0, RSTART+1, RLENGTH-2); exit}' "$TOML")
-  if [ -z "$id" ] || [ "$id" = "$placeholder" ] || [ "$id" = "REPLACE_WITH_KV" ]; then
+  id=$(awk -v b="\"$binding\"" '$0 ~ "binding = " b {f=1; next} f && /id = / {match($0, /"[a-f0-9]+"/); print substr($0, RSTART+1, RLENGTH-2); exit}' "$LOCAL_CFG")
+  if [ -z "$id" ] || [ "$id" = "$placeholder" ]; then
     echo "   creating $binding…"
     local out
     out=$(wr kv namespace create "$binding" 2>&1 || true)
-    id=$(echo "$out" | python3 -c "import sys,json;
+    id=$(echo "$out" | python3 -c "import sys,json
 try: print(json.load(sys.stdin)['id'])
 except Exception: print('')" 2>/dev/null || true)
     if [ -z "$id" ]; then
@@ -73,12 +94,16 @@ except Exception: print('')" 2>/dev/null || true)
       echo "   ❌ could not create $binding (wrangler said: $out)" >&2
       exit 1
     fi
-    # replace the placeholder with the real id
-    python3 - "$TOML" "$placeholder" "$id" <<'PY'
+    # write real id into the gitignored local override
+    python3 - "$LOCAL_CFG" "$placeholder" "$id" <<'PY'
 import sys
 p, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
 s = open(p).read()
-s = s.replace('id = "' + old + '"', 'id = "' + new + '"', 1)
+if ('id = "' + old + '"') in s:
+    s = s.replace('id = "' + old + '"', 'id = "' + new + '"', 1)
+else:
+    # append the binding if missing
+    s += '\n[[kv_namespaces]]\nbinding = "' + 'X' + '"\nid = "' + new + '"\n'
 open(p, "w").write(s)
 PY
     echo "   ✓ $binding = $id"
@@ -86,16 +111,17 @@ PY
     echo "   $binding already set ($id)"
   fi
 }
-create_kv PHANTOM_MEMORY
-create_kv PHANTOM_PROFILE
-create_kv PHANTOM_REMINDERS
+set_kv_id PHANTOM_MEMORY
+set_kv_id PHANTOM_PROFILE
+set_kv_id PHANTOM_REMINDERS
+set_kv_id PHANTOM_KEYS
 
-# 3) secrets (env vars win; else prompt)
+# 3) secrets (env wins; prompt interactively unless NONINTERACTIVE)
 echo " Step 3 — secrets…"
 set_secret() {
   local name="$1"
   local val="${!name:-}"
-  if [ -z "$val" ]; then
+  if [ -z "$val" ] && [ "${NONINTERACTIVE:-}" != "1" ]; then
     read -r -s -p "   ${name}: " val; echo
   fi
   if [ -n "$val" ]; then
@@ -106,16 +132,14 @@ set_secret() {
 }
 set_secret NVIDIA_API_KEY
 set_secret DEEPGRAM_API_KEY
-if [ "${CLOUD_TOKEN_SET:-}" != "skip" ]; then
-  set_secret PHANTOM_CLOUD_TOKEN
-fi
+set_secret PHANTOM_CLOUD_TOKEN
 
 # 4) deploy
 echo " Step 4 — deploying…"
 DEPLOY_OUT=$(wr deploy 2>&1 | tee /tmp/phantom-deploy.log)
 echo "$DEPLOY_OUT"
 
-# 5) print the URL (wrangler prints https://<name>.<sub>.workers.dev)
+# 5) print the URL
 echo "────────────────────────────────────────────────────────────"
 URL=$(grep -oE 'https://[a-z0-9-]+\.workers\.dev' /tmp/phantom-deploy.log | head -1 || true)
 if [ -z "$URL" ]; then
