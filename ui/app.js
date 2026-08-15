@@ -452,7 +452,22 @@ async function loadToday(force) {
     renderBriefing(briefing);
     const monitor = await api("/api/monitor");
     renderMonitor(monitor);
+    const cfg = await api("/api/briefing/config").catch(() => null);
+    if (cfg && $("briefingTime")) $("briefingTime").value = cfg.time;
   } catch (e) { /* backend not ready yet */ }
+}
+async function saveBriefingTime() {
+  const t = $("briefingTime").value;
+  if (!t) return;
+  try {
+    const res = await api("/api/briefing/config", { body: { time: t } });
+    toast(`Briefing moved to ${res.time} — schedules updated`);
+    loadToday();
+  } catch (e) { toast("Error: " + e.message); }
+}
+function applyTheme(theme) {
+  document.body.dataset.theme = theme === "yellow" ? "yellow" : "midnight";
+  localStorage.setItem("phantom.theme", theme === "yellow" ? "yellow" : "midnight");
 }
 function renderBriefing(b) {
   const top = $("briefingTop");
@@ -885,6 +900,13 @@ async function loadSettings() {
       <p class="muted small">Each of the 31 specialist brains can have its OWN API key + model for efficient routing. Leave a key empty to share Phantom's.</p>
       <div id="brainKeys"></div>
     </div>
+    <div class="settings-section"><h3>🎨 Appearance</h3>
+      <div class="row"><label>Theme</label>
+        <select id="themeSel">
+          <option value="midnight">Midnight (default)</option>
+          <option value="yellow">JOOJO Yellow #FFD600</option>
+        </select></div>
+    </div>
     <div class="settings-section"><h3>⬆ App updates</h3>
       <div class="row"><label>Desktop app</label><span id="updateState" class="muted">checking…</span>
         <button id="updateCheckBtn" class="btn">Check now</button>
@@ -1247,6 +1269,10 @@ function toast(msg) {
 window.toast = toast;
 
 document.addEventListener("DOMContentLoaded", async () => {
+  // apply saved theme (JOOJO yellow or midnight)
+  applyTheme(localStorage.getItem("phantom.theme") || "midnight");
+  const themeSel = $("themeSel");
+  if (themeSel) themeSel.value = localStorage.getItem("phantom.theme") || "midnight";
   // top bar
   document.querySelectorAll(".seg").forEach((b) => b.onclick = () => switchPersona(b.dataset.persona));
   $("drawerBtn").onclick = () => $("drawer").classList.contains("hidden") ? openDrawer() : closeDrawer();
@@ -1339,6 +1365,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (id === "ttsProvider") api("/api/voice/config", { body: { tts: { provider: ev.target.value } } });
     if (id === "voiceModeSel") { voice.setMode(ev.target.value); api("/api/voice/config", { body: { mode: ev.target.value } }); }
     if (id === "proactiveSel") api("/api/voice/config", { body: { proactive_speech: ev.target.value === "1" } });
+    if (id === "themeSel") applyTheme(ev.target.value);
     if (id === "voicePhantom") {
       voice.voices.phantom = ev.target.value;
       api("/api/voice/config", { body: { voices: { phantom: ev.target.value } } });

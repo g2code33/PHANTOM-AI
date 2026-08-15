@@ -332,7 +332,10 @@ class App:
                 await schedules.update(sched["id"], next_run_at=next_run_at(expression))
 
     async def _seed_briefing_schedule(self) -> None:
-        """Morning briefing schedule (07:30) for Phantom — speaks + caches."""
+        """Morning briefing schedule for Phantom — time is configurable via
+        the briefing.time setting (default 07:30), changeable anytime."""
+        time_setting = await self.settings.get("briefing.time", "*", "07:30")
+        expression = _daily_expression(time_setting)
         schedules = ScheduleStore(self.db)
         existing = await schedules.list("phantom")
         if not any(s["name"] == "Daily briefing" for s in existing):
@@ -340,15 +343,45 @@ class App:
                       "summary. Then send a concise NON-SENSITIVE notification "
                       "with today's top priorities.")
             sched = await schedules.create(
-                "phantom", "Daily briefing", "daily at 07:30", prompt,
+                "phantom", "Daily briefing", expression, prompt,
                 quiet_start="22:00", quiet_end="07:00")
             from ..heartbeat.scheduler import next_run_at
 
-            await schedules.update(sched["id"], next_run_at=next_run_at("daily at 07:30"))
+            await schedules.update(sched["id"], next_run_at=next_run_at(expression))
+        else:
+            # keep the existing schedule in sync with the setting
+            for s in existing:
+                if s["name"] == "Daily briefing":
+                    await schedules.update(s["id"], expression=expression,
+                                           next_run_at=_next(expression))
+
+    async def set_briefing_time(self, hhmm: str) -> dict:
+        """Change the daily briefing time (anytime). Updates all briefing
+        schedules (Phantom daily briefing + Health briefing)."""
+        hhmm = hhmm.strip()
+        try:
+            hour, minute = (int(x) for x in hhmm.split(":"))
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError
+            hhmm = f"{hour:02d}:{minute:02d}"
+        except (ValueError, AttributeError):
+            raise ValueError("briefing time must be HH:MM (24h)")
+        await self.settings.set("briefing.time", hhmm, "*")
+        expression = _daily_expression(hhmm)
+        schedules = ScheduleStore(self.db)
+        for sched in await schedules.list():
+            if sched["name"] in ("Daily briefing", "Daily health briefing"):
+                await schedules.update(sched["id"], expression=expression,
+                                       next_run_at=_next(expression))
+        await self.audit.record("user", "briefing.time_changed", {"time": hhmm})
+        return {"time": hhmm, "expression": expression,
+                "updated_schedules": ["Daily briefing", "Daily health briefing"]}
 
     async def _seed_health_schedules(self) -> None:
         """Daily health briefing for the Health brain (idempotent, quiet-hours
-        aware, non-sensitive by default)."""
+        aware, non-sensitive by default). Time follows briefing.time."""
+        time_setting = await self.settings.get("briefing.time", "*", "07:30")
+        expression = _daily_expression(time_setting)
         schedules = ScheduleStore(self.db)
         existing = await schedules.list("health")
         names = {s["name"] for s in existing}
@@ -358,11 +391,16 @@ class App:
                       "user (medication names/appointment details only if the user opted in via "
                       "health privacy settings). Follow all health safety and privacy rules.")
             sched = await schedules.create(
-                "health", "Daily health briefing", "daily at 07:30", prompt,
+                "health", "Daily health briefing", expression, prompt,
                 quiet_start="22:00", quiet_end="07:00")
             from ..heartbeat.scheduler import next_run_at
 
-            await schedules.update(sched["id"], next_run_at=next_run_at("daily at 07:30"))
+            await schedules.update(sched["id"], next_run_at=next_run_at(expression))
+        else:
+            for s in existing:
+                if s["name"] == "Daily health briefing":
+                    await schedules.update(s["id"], expression=expression,
+                                           next_run_at=_next(expression))
 
     # ------------------------------------------------------------------
     async def _run_agent(self, agent_id: str, conversation_id: str, user_text: str,
@@ -449,3 +487,17 @@ def _new_run_id() -> str:
     import uuid
 
     return uuid.uuid4().hex
+
+
+def _daily_expression(hhmm: str) -> str:
+    try:
+        hour, minute = (int(x) for x in str(hhmm).split(":"))
+    except (ValueError, AttributeError):
+        return "daily at 07:30"
+    return f"daily at {hour:02d}:{minute:02d}"
+
+
+def _next(expression: str) -> str:
+    from ..heartbeat.scheduler import next_run_at
+
+    return next_run_at(expression)

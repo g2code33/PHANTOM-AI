@@ -103,6 +103,8 @@
       <div class="panel-head-row">
         <h3>☀️ Today</h3>
         <div class="memory-controls" style="margin:0">
+          <label class="muted small">Briefing at</label>
+          <input type="time" id="briefingTime" value="07:30" onchange="saveBriefingTime()">
           <button id="briefingRefresh" class="btn mini-btn" onclick="loadToday(true)">Refresh</button>
           <button class="mini-btn" onclick="speakBriefing()">🗣 Speak</button>
         </div>

@@ -1028,6 +1028,24 @@ def create_app(app: App) -> FastAPI:
     async def briefing_refresh():
         return await app.briefing.refresh()
 
+    @fastapi.get("/api/briefing/config")
+    async def briefing_config():
+        return {
+            "time": await app.settings.get("briefing.time", "*", "07:30"),
+            "schedules": [
+                {"name": s["name"], "agent": s["agent"], "expression": s["expression"]}
+                for s in await app.scheduler.store.list()
+                if s["name"] in ("Daily briefing", "Daily health briefing")
+            ],
+        }
+
+    @fastapi.put("/api/briefing/config")
+    async def briefing_config_set(body: dict):
+        try:
+            return await app.set_briefing_time(str(body["time"]))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
     @fastapi.get("/api/monitor")
     async def monitor_get():
         return await app.monitor.snapshot()
