@@ -21,6 +21,10 @@ body { background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, 
 .mPill.on { color: var(--green); border-color: rgba(127,214,160,.4); }
 .mPill.warn { color: var(--yellow); border-color: rgba(255,214,0,.4); }
 .mKill { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--red); background: rgba(240,113,139,.12); color: var(--red); font-size: 15px; }
+.mMode { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 15px; }
+.mMode.active { border-color: var(--yellow); color: var(--yellow); }
+.mBanner { text-align: center; font-size: 11px; letter-spacing: 1px; color: var(--accent); padding: 4px 0 8px; }
+.mBanner.portable { color: var(--yellow); }
 .mKill:active { background: var(--red); color: #1a0a10; }
 
 /* screens */

@@ -912,6 +912,18 @@ async function loadSettings() {
         <button id="updateCheckBtn" class="btn">Check now</button>
         <button id="updateInstallBtn" class="btn btn-primary hidden">Restart &amp; install</button></div>
     </div>
+    <div class="settings-section"><h3>☁️ Portable Phantom (cloud)</h3>
+      <p class="muted small">The always-on cloud Phantom for when your PC is off. Set your Worker URL (from
+        <code>cloud/worker</code> deploy) — it shares profile + memory ("save to cloud").</p>
+      <div class="row"><label>Worker URL</label><input type="text" id="cloudUrl" placeholder="https://phantom-portable.xxx.workers.dev"></div>
+      <div class="row"><label>Cloud token (optional)</label><input type="password" id="cloudToken" placeholder="token"></div>
+      <div class="row">
+        <button class="btn" onclick="saveCloud()">Save</button>
+        <button class="btn" onclick="cloudSyncAll()">Sync now</button>
+        <button class="btn btn-danger" onclick="clearCloud()">Clear</button>
+        <span id="cloudStatus" class="muted small"></span>
+      </div>
+    </div>
     <div class="settings-section"><h3>📱 Mobile / remote backend</h3>
       <div class="row"><label>Backend URL</label><input type="text" id="apiBase" placeholder="http://192.168.1.50:8000">
         <button class="btn" onclick="saveApiBase()">Save</button></div>
@@ -929,6 +941,11 @@ async function loadSettings() {
   $("quietStart").value = g["quiet.start"] || "";
   $("quietEnd").value = g["quiet.end"] || "";
   $("apiBase").value = localStorage.getItem("phai.apiBase") || "";
+  try {
+    const cc = await api("/api/cloud/config");
+    $("cloudUrl").value = cc.url_masked || "";
+    $("cloudStatus").textContent = cc.url ? `☁️ ${cc.url_masked}${cc.token_configured ? " (token set)" : ""}` : "not configured";
+  } catch (e) {}
   const vc = res.voice || {};
   $("sttProvider").value = vc.stt?.provider || "browser";
   $("ttsProvider").value = vc.tts?.provider || "browser";
@@ -1094,6 +1111,26 @@ window.deleteSchedule = async (id) => { await api(`/api/schedules/${id}`, { meth
 window.saveApiBase = () => {
   localStorage.setItem("phai.apiBase", $("apiBase").value.trim());
   toast("Backend URL saved — reloading…"); setTimeout(() => location.reload(), 600);
+};
+window.saveCloud = async () => {
+  try {
+    const r = await api("/api/cloud/config", { body: {
+      url: $("cloudUrl").value.trim(), token: $("cloudToken").value.trim() } });
+    $("cloudToken").value = "";
+    toast("Portable Phantom saved");
+    $("cloudStatus").textContent = `☁️ ${r.url_masked}${r.token_configured ? " (token set)" : ""}`;
+  } catch (e) { toast("Error: " + e.message); }
+};
+window.clearCloud = async () => {
+  await api("/api/cloud/config", { body: { clear: true } });
+  $("cloudUrl").value = ""; $("cloudStatus").textContent = "not configured";
+  toast("Cloud config cleared");
+};
+window.cloudSyncAll = async () => {
+  try {
+    const r = await api("/api/cloud/sync", { method: "POST" });
+    toast(`Synced — profile ✓, reminders ${r.reminders?.pushed ?? 0}, memories ${r.memories?.mirrored_new ?? 0} new`);
+  } catch (e) { toast("Sync failed: " + e.message); }
 };
 
 /* ============================== UPDATER ============================== */

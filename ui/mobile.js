@@ -4,6 +4,9 @@
 const S = {
   base: localStorage.getItem("phai.companion.url") || "",
   token: localStorage.getItem("phai.companion.token") || "",
+  cloudBase: localStorage.getItem("phai.companion.cloud") || "",
+  cloudToken: localStorage.getItem("phai.companion.cloudtoken") || "",
+  mode: "auto",            // auto | pc | portable
   agent: "phantom",
   ws: null,
   connected: false,
@@ -16,15 +19,81 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 async function api(path, opts = {}) {
+  const base = effectiveBase();
   const headers = { ...(opts.headers || {}) };
-  if (S.token) headers["X-Access-Token"] = S.token;
-  const res = await fetch(S.base + path, { headers, method: opts.method || (opts.body ? "POST" : "GET"), body: opts.body });
+  const tok = effectiveToken();
+  if (tok) headers["X-Access-Token"] = tok;
+  if (S.mode === "portable" && opts.raw) {
+    // raw body (voice) to the portable worker
+    const res = await fetch(base + path, { headers, method: opts.method || "POST", body: opts.body });
+    return res;
+  }
+  const res = await fetch(base + path, { headers, method: opts.method || (opts.body ? "POST" : "GET"), body: opts.body });
   if (!res.ok) {
     let d = res.statusText;
     try { const j = await res.json(); d = j.detail || j.error || d; } catch (e) {}
     throw new Error(d || `HTTP ${res.status}`);
   }
   return res.json();
+}
+function effectiveBase() { return S.mode === "portable" ? S.cloudBase : S.base; }
+function effectiveToken() { return S.mode === "portable" ? S.cloudToken : S.token; }
+
+/* mode: auto / pc / portable */
+function applyMode() {
+  const banner = $("mModeBanner");
+  const isPortable = S.mode === "portable";
+  banner.textContent = isPortable ? "☁️ portable mode" : S.mode === "auto" ? "🔄 auto — PC preferred" : "🖥️ pc mode";
+  banner.className = "mBanner" + (isPortable ? " portable" : "");
+  $("mModeToggle").classList.toggle("active", S.mode === "portable");
+}
+async function detectAndConnect() {
+  // auto: try PC first, fall back to portable
+  if (S.mode === "auto") {
+    if (S.base) {
+      try { await api("/api/companion/status"); S.mode = "pc"; }
+      catch (e) { S.mode = S.cloudBase ? "portable" : "pc"; }
+    } else if (S.cloudBase) { S.mode = "portable"; }
+    else { S.mode = "pc"; }
+  }
+  if (S.mode === "portable" && !S.cloudBase) { toastMode("No portable URL — connect your PC"); return; }
+  applyMode();
+  if (S.mode === "pc") { connectPC(); }
+  else { connectPortable(); }
+}
+function toastMode(t) { const h = $("mVoiceHint"); if (h) h.textContent = t; setTimeout(() => { if (h) h.textContent = ""; }, 3500); }
+
+/* portable mode: cloud API (no WS; poll briefing/status) */
+let portableTimer = null;
+async function connectPortable() {
+  setStatus(S.cloudBase ? "connected" : "disconnected");
+  refreshPortable();
+  if (portableTimer) clearInterval(portableTimer);
+  portableTimer = setInterval(refreshPortable, 20000);
+}
+async function refreshPortable() {
+  try {
+    const st = await api("/api/status");
+    $("mPresence").textContent = "☁️ portable";
+    $("mPresence").className = "mPill on";
+    const b = await api("/api/briefing");
+    renderBriefing({ spoken: b.spoken });
+    const r = await api("/api/reminders");
+    renderNotifs((r.reminders || []).map((x) => ({ title: "⏰ Reminder", body: x.text })));
+    renderConfirmations([]);
+    renderTasks([]);
+  } catch (e) { setStatus("disconnected"); }
+}
+function connectPC() {
+  if (portableTimer) { clearInterval(portableTimer); portableTimer = null; }
+  connectWS();
+  refreshAll();
+}
+async function portableChat(text) {
+  try {
+    const j = await api("/api/chat", { body: { text } });
+    return { reply: j.reply, mode: "portable" };
+  } catch (e) { throw e; }
 }
 
 /* ---------- connect ---------- */
@@ -34,19 +103,16 @@ function showMain() { $("mConnect").classList.add("hidden"); $("mMain").classLis
 async function connect() {
   S.base = $("mUrl").value.trim().replace(/\/+$/, "");
   S.token = $("mToken").value.trim();
-  if (!S.base) { $("mConnErr").textContent = "Enter your PC's address"; $("mConnErr").classList.remove("hidden"); return; }
+  S.cloudBase = $("mCloud").value.trim().replace(/\/+$/, "");
+  S.cloudToken = $("mCloudToken").value.trim();
   localStorage.setItem("phai.companion.url", S.base);
   localStorage.setItem("phai.companion.token", S.token);
-  try {
-    const st = await api("/api/companion/status");
-    showMain();
-    $("mConnErr").classList.add("hidden");
-    connectWS();
-    refreshAll();
-  } catch (e) {
-    $("mConnErr").textContent = "Can't reach your PC: " + e.message;
-    $("mConnErr").classList.remove("hidden");
-  }
+  localStorage.setItem("phai.companion.cloud", S.cloudBase);
+  localStorage.setItem("phai.companion.cloudtoken", S.cloudToken);
+  if (!S.base && !S.cloudBase) { $("mConnErr").textContent = "Enter your PC and/or portable URL"; $("mConnErr").classList.remove("hidden"); return; }
+  showMain();
+  $("mConnErr").classList.add("hidden");
+  detectAndConnect();
 }
 $("mConnectBtn").onclick = connect;
 
@@ -181,6 +247,24 @@ async function stopRec() {
 async function sendVoice(blob) {
   try {
     const buf = await blob.arrayBuffer();
+    const isPortable = S.mode === "portable";
+    // portable: STT on the cloud worker, then cloud chat
+    if (isPortable) {
+      const res = await api("/api/voice/stt", {
+        method: "POST", raw: true,
+        headers: { "Content-Type": "application/octet-stream" },
+        body: buf });
+      const j = await res.json();
+      if (!res.ok) { $("mVoiceBtn").classList.remove("sending"); $("mVoiceHint").textContent = "✗ " + (j.error || "STT failed"); return; }
+      const text = j.transcript || "";
+      if (!text) { $("mVoiceBtn").classList.remove("sending"); $("mVoiceHint").textContent = "no speech detected"; return; }
+      $("mVoiceHint").textContent = "“" + text + "”";
+      const chat = await portableChat(text);
+      speakReply(chat.reply);
+      setTimeout(() => { $("mVoiceHint").textContent = ""; }, 6000);
+      return;
+    }
+    // pc mode: full companion voice (PC transcribes + runs the agent)
     const res = await fetch(S.base + `/api/companion/voice?agent=${S.agent}`, {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream", ...(S.token ? { "X-Access-Token": S.token } : {}) },
@@ -190,12 +274,15 @@ async function sendVoice(blob) {
     $("mVoiceBtn").classList.remove("sending");
     if (!res.ok) { $("mVoiceHint").textContent = "✗ " + (j.detail || j.error || "error"); return; }
     $("mVoiceHint").textContent = "“" + j.text + "”";
-    try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(String(j.reply || "").replace(/[#*`_>]/g, "").slice(0, 600))); } catch (e) {}
+    speakReply(j.reply);
     setTimeout(() => { $("mVoiceHint").textContent = ""; }, 6000);
   } catch (e) {
     $("mVoiceBtn").classList.remove("sending");
     $("mVoiceHint").textContent = "✗ " + e.message;
   }
+}
+function speakReply(txt) {
+  try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(String(txt || "").replace(/[#*`_>]/g, "").slice(0, 600))); } catch (e) {}
 }
 $("mVoiceBtn").onclick = () => S.recording ? stopRec() : startRec();
 
@@ -204,6 +291,15 @@ document.querySelectorAll(".mAgent").forEach((b) => b.onclick = () => {
   S.agent = b.dataset.a;
   document.querySelectorAll(".mAgent").forEach((x) => x.classList.toggle("active", x === b));
 });
+
+/* mode toggle: auto → pc → portable → auto */
+$("mModeToggle").onclick = () => {
+  const order = ["auto", "pc", "portable"];
+  S.mode = order[(order.indexOf(S.mode) + 1) % order.length];
+  localStorage.setItem("phai.companion.mode", S.mode);
+  detectAndConnect();
+  toastMode("mode: " + S.mode);
+};
 
 /* kill switch */
 $("mKill").onclick = async () => {
@@ -217,6 +313,14 @@ $("mKill").onclick = async () => {
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   }
-  if (S.base) { $("mUrl").value = S.base; $("mToken").value = S.token; connect(); }
-  else showConnect();
+  // restore saved mode + cloud url
+  S.mode = localStorage.getItem("phai.companion.mode") || "auto";
+  S.cloudBase = localStorage.getItem("phai.companion.cloud") || "";
+  S.cloudToken = localStorage.getItem("phai.companion.cloudtoken") || "";
+  if (S.base || S.cloudBase) {
+    $("mUrl").value = S.base;
+    $("mToken").value = S.token;
+    showMain();
+    detectAndConnect();
+  } else showConnect();
 })();
