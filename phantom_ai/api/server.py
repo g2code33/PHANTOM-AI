@@ -112,7 +112,27 @@ def create_app(app: App) -> FastAPI:
     async def token_middleware(request: Request, call_next):
         if request.url.path.startswith(("/api/", "/ws")):
             _check_token(request)
-        return await call_next(request)
+        response = await call_next(request)
+        # Allow the Cloudflare-tunnel PWA origin (https) to call this backend
+        # (the PWA may be served from the tunnel URL, not 127.0.0.1).
+        origin = request.headers.get("origin", "")
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Access-Token"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        elif request.method == "OPTIONS":
+            response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
+
+    @fastapi.options("/{path:path}")
+    async def preflight(path: str):
+        from fastapi.responses import Response
+
+        return Response(status_code=200,
+                        headers={"Access-Control-Allow-Origin": "*",
+                                 "Access-Control-Allow-Headers": "Content-Type, X-Access-Token",
+                                 "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS"})
 
     # ------------------------------------------------------------------ status
     @fastapi.get("/api/status")

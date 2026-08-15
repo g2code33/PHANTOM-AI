@@ -915,6 +915,9 @@ async function loadSettings() {
     <div class="settings-section"><h3>📱 Mobile / remote backend</h3>
       <div class="row"><label>Backend URL</label><input type="text" id="apiBase" placeholder="http://192.168.1.50:8000">
         <button class="btn" onclick="saveApiBase()">Save</button></div>
+      <p class="muted small">On your iPhone (no App Store): run <code>bash scripts/tunnel.sh</code> on your PC,
+        open the <code>https://…trycloudflare.com</code> URL in Safari, then <b>Share → Add to Home Screen</b>.
+        If you set an access token, enter it in the phone's connection screen.</p>
     </div>`);
   body.innerHTML = sections.join("");
   for (const agentId of ["phantom", "coded", "health"]) {
