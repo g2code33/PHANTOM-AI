@@ -130,3 +130,37 @@ class ProfileStore:
             fields=JOOJO_SEED,
         )
         return profile  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------
+    def compact(self, profile: dict[str, Any], max_chars: int = 1600) -> str:
+        """Build a compact, readable profile block for context injection."""
+        fields = profile.get("fields") or {}
+        lines = [f"{profile.get('display_name') or profile.get('name') or 'User'}"]
+        ordered_keys = [
+            "nickname", "location", "university", "school", "program", "level",
+            "clinical_context", "identity", "organizations", "projects",
+            "study_topics", "learning_style", "design_preferences", "goals",
+            "communication", "working_style",
+        ]
+        used = set()
+        for key in ordered_keys:
+            val = fields.get(key)
+            if val is None or key in used:
+                continue
+            used.add(key)
+            if isinstance(val, list):
+                val = ", ".join(str(v) for v in val[:8])
+            if isinstance(val, str) and val.strip():
+                lines.append(f"{key.replace('_', ' ').title()}: {val.strip()[:300]}")
+        # any extra custom fields the user/agent added
+        for key, val in fields.items():
+            if key in used or key in ("name", "display_name"):
+                continue
+            if isinstance(val, list):
+                val = ", ".join(str(v) for v in val[:8])
+            if isinstance(val, str) and val.strip():
+                lines.append(f"{key.replace('_', ' ').title()}: {val.strip()[:300]}")
+        text = "\n".join(lines)
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n…(profile truncated)"
+        return text

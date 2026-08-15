@@ -103,7 +103,7 @@ async def tool_ctx(app):
             proposals=instance.proposals, snapshots=instance.snapshots,
             loop_engine=instance.loops, verifier=instance.verifier,
             analyst=instance.analyst, agent_ids=("phantom", "coded", "evolution"),
-            health=instance.health,
+            health=instance.health, profiles=instance.profiles,
         ))
 
     yield factory

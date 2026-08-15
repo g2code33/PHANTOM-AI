@@ -220,6 +220,9 @@ class App:
         # ---- Jarvis presence (Phase 1 + Phase 2 speaker lock) -------------
         self.profiles = ProfileStore(self.db)
         await self.profiles.seed_joojo()
+        # wire the profile store into every agent (built earlier in startup)
+        for agent in self.agents.values():
+            agent.profiles = self.profiles
         self.speaker = SpeakerVerifier(self.secrets, self.audit)
         self.wake = WakeEngine(self.settings, self.audit, self.events,
                                self.killswitch, verifier=self.speaker)
@@ -275,6 +278,7 @@ class App:
         agent.loop_engine = self.loops
         agent.analyst = self.analyst
         agent.health = self.health
+        agent.profiles = self.profiles
 
         self.providers[agent_id] = provider
         self.agents[agent_id] = agent

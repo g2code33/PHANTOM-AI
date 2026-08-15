@@ -91,6 +91,8 @@ class ToolContext:
     agent_ids: tuple = ("phantom", "coded")
     # --- Health Brain services ---
     health: Any = None
+    # --- Profile sheet ---
+    profiles: Any = None
 
 
 async def _run_with_timeout(coro: Awaitable, timeout: float, ctx: ToolContext) -> Any:
