@@ -14,45 +14,71 @@
 #   Phone app → connect screen → Portable URL/token
 
 set -euo pipefail
-cd "$(dirname "$0")"
+# Resolve the script's own directory so this works from ANY cwd:
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-WR="npx wrangler"
-TOML="wrangler.toml"
+wr() { ( cd "$WORKER_DIR" && npx wrangler "$@" ); }
+# the worker config lives in cloud/worker/
+WORKER_DIR="$SCRIPT_DIR/worker"
+TOML="$WORKER_DIR/wrangler.toml"
 
 echo "────────────────────────────────────────────────────────────"
 echo " Phantom — Portable Worker deploy (Cloudflare)"
 echo "────────────────────────────────────────────────────────────"
 
 # 0) deps
+( cd "$WORKER_DIR" && [ -d node_modules ] || npm install --no-save >/dev/null 2>&1 ) || true
 if ! command -v npx >/dev/null 2>&1; then
   echo "❌ node/npx not found — install Node.js first."; exit 1
 fi
-if [ ! -d node_modules/wrangler ] && ! npx --no-install wrangler --version >/dev/null 2>&1; then
+if [ ! -d "$WORKER_DIR/node_modules/wrangler" ] && ! (cd "$WORKER_DIR" && npx --no-install wrangler --version >/dev/null 2>&1); then
   echo " Installing wrangler…"
-  npm install --no-save wrangler >/dev/null 2>&1 || npm i -g wrangler
+  (cd "$WORKER_DIR" && npm install --no-save wrangler) >/dev/null 2>&1 || npm i -g wrangler
 fi
 
-# 1) login
+# 1) login (with a clear error if auth can't be established)
 echo " Step 1 — Cloudflare login (browser opens; free account is fine)…"
-$WR whoami >/dev/null 2>&1 || $WR login
+if ! wr whoami >/dev/null 2>&1; then
+  wr login || { echo "❌ Could not log in to Cloudflare. Run 'bash cloud/deploy.sh' on your own machine (browser login) or set CLOUDFLARE_API_TOKEN." >&2; exit 1; }
+  wr whoami >/dev/null 2>&1 || { echo "❌ Login did not complete." >&2; exit 1; }
+fi
+echo " ✓ logged in"
 
 # 2) KV namespaces (create only those still using the placeholder)
 echo " Step 2 — KV namespaces…"
 create_kv() {
   local binding="$1"
+  local placeholder
+  case "$binding" in
+    PHANTOM_MEMORY)   placeholder="REPLACE_WITH_KV_NAMESPACE_ID" ;;
+    PHANTOM_PROFILE)  placeholder="REPLACE_WITH_KV_PROFILE_ID" ;;
+    PHANTOM_REMINDERS) placeholder="REPLACE_WITH_KV_REMINDERS_ID" ;;
+    *) echo "   ? unknown binding $binding"; return ;;
+  esac
+  # pull the id from the toml block for this binding (capture between quotes)
   local id
-  id=$(grep -A2 "binding = \"$binding\"" "$TOML" | grep "id = " | head -1 | sed 's/.*id = "\(.*\)".*/\1/')
-  if [ "$id" = "REPLACE_WITH_KV_NAMESPACE_ID" ] || [ "$id" = "REPLACE_WITH_KV_PROFILE_ID" ] || [ "$id" = "REPLACE_WITH_KV_REMINDERS_ID" ]; then
+  id=$(awk -v b="\"$binding\"" '$0 ~ "binding = " b {f=1; next} f && /id = / {match($0, /"[a-f0-9]+"/); print substr($0, RSTART+1, RLENGTH-2); exit}' "$TOML")
+  if [ -z "$id" ] || [ "$id" = "$placeholder" ] || [ "$id" = "REPLACE_WITH_KV" ]; then
     echo "   creating $binding…"
-    id=$($WR kv namespace create "$binding" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" || \
-         $WR kv namespace create "$binding" 2>&1 | grep -oE '"id":\s*"[a-f0-9]+"' | head -1 | sed 's/.*"\([a-f0-9]*\)".*/\1/')
-    python3 - "$TOML" "$binding" "$id" <<'PY'
+    local out
+    out=$(wr kv namespace create "$binding" 2>&1 || true)
+    id=$(echo "$out" | python3 -c "import sys,json;
+try: print(json.load(sys.stdin)['id'])
+except Exception: print('')" 2>/dev/null || true)
+    if [ -z "$id" ]; then
+      id=$(echo "$out" | grep -oE '[a-f0-9]{32}' | head -1 || true)
+    fi
+    if [ -z "$id" ]; then
+      echo "   ❌ could not create $binding (wrangler said: $out)" >&2
+      exit 1
+    fi
+    # replace the placeholder with the real id
+    python3 - "$TOML" "$placeholder" "$id" <<'PY'
 import sys
-p, b, i = sys.argv[1], sys.argv[2], sys.argv[3]
+p, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
 s = open(p).read()
-s = s.replace('id = "REPLACE_WITH_KV_NAMESPACE_ID"', 'id = "' + i + '"', 1) if b == "PHANTOM_MEMORY" else s
-s = s.replace('id = "REPLACE_WITH_KV_PROFILE_ID"', 'id = "' + i + '"', 1) if b == "PHANTOM_PROFILE" else s
-s = s.replace('id = "REPLACE_WITH_KV_REMINDERS_ID"', 'id = "' + i + '"', 1) if b == "PHANTOM_REMINDERS" else s
+s = s.replace('id = "' + old + '"', 'id = "' + new + '"', 1)
 open(p, "w").write(s)
 PY
     echo "   ✓ $binding = $id"
@@ -73,7 +99,7 @@ set_secret() {
     read -r -s -p "   ${name}: " val; echo
   fi
   if [ -n "$val" ]; then
-    echo "$val" | $WR secret put "$name" >/dev/null 2>&1 && echo "   ✓ ${name} set"
+    echo "$val" | wr secret put "$name" >/dev/null 2>&1 && echo "   ✓ ${name} set"
   else
     echo "   ⚠ ${name} empty — skipped"
   fi
@@ -86,7 +112,7 @@ fi
 
 # 4) deploy
 echo " Step 4 — deploying…"
-DEPLOY_OUT=$($WR deploy 2>&1 | tee /tmp/phantom-deploy.log)
+DEPLOY_OUT=$(wr deploy 2>&1 | tee /tmp/phantom-deploy.log)
 echo "$DEPLOY_OUT"
 
 # 5) print the URL (wrangler prints https://<name>.<sub>.workers.dev)
