@@ -29,6 +29,7 @@ from ..loops.engine import LoopEngine
 from ..memory.retriever import MemoryRetriever
 from ..permissions.confirm import ConfirmationManager
 from ..permissions.policy import PermissionManager
+from ..profile.store import ProfileStore
 from ..providers import build_provider, create_provider
 from ..providers.base import ModelProvider
 from ..providers.router import ModelRouter
@@ -46,6 +47,7 @@ from ..storage.ops import (
 from ..tasks.manager import TaskManager
 from ..tools import build_registry
 from ..tools.health_tools import HEALTH_TOOLS
+from ..wake.engine import WakeEngine
 
 
 class App:
@@ -94,6 +96,9 @@ class App:
         self.health_vault: HealthVault | None = None
         # Voice
         self._provider_cache: dict[str, tuple[float, dict]] = {}
+        # Jarvis presence
+        self.wake: WakeEngine | None = None
+        self.profiles: ProfileStore | None = None
 
     # ------------------------------------------------------------------
     async def startup(self) -> None:
@@ -197,8 +202,26 @@ class App:
             agent.verifier = self.verifier
             agent.loop_engine = self.loops
 
+        # wake engine reacts to kill switch
+        async def _ks_watch():
+            while True:
+                if self.killswitch.is_engaged() and self.wake is not None:
+                    await self.wake.on_killswitch()
+                    return
+                await asyncio.sleep(1)
+
+        asyncio.ensure_future(_ks_watch())
+
         self.tasks = TaskManager(TaskStore(self.db), self.settings, self.events,
                                  self.killswitch)
+
+        # ---- Jarvis presence (Phase 1) ------------------------------------
+        self.profiles = ProfileStore(self.db)
+        await self.profiles.seed_joojo()
+        self.wake = WakeEngine(self.settings, self.audit, self.events,
+                               self.killswitch)
+        await self.wake.start()
+
         self.scheduler = HeartbeatScheduler(
             store=ScheduleStore(self.db), settings=self.settings,
             task_manager=self.tasks, agent_runner=self._run_agent, events=self.events,

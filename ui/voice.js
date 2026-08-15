@@ -458,6 +458,35 @@ class PhantomVoice {
     this._speakQueue = [];
   }
 
+  // ------------------------------------------------- presence (Jarvis wake)
+  playReadyCue() {
+    // Siri-style ready chime + visual handled by the UI (this is the audio part)
+    try {
+      const ACtx = window.AudioContext || window.webkitAudioContext;
+      const ctx = this._audioCtx || new ACtx();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.setValueAtTime(880, ctx.currentTime);
+      o.frequency.exponentialRampToValueAtTime(1320, ctx.currentTime + 0.12);
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.4);
+      o.connect(g).connect(ctx.destination);
+      o.start();
+      o.stop(ctx.currentTime + 0.45);
+    } catch (e) { /* no audio ctx — fine */ }
+  }
+
+  setPresenceState(p) {
+    // called from WS presence.state events
+    if (p.kill_engaged) { this.killEngaged = true; this.stopAll(); }
+    if (p.state === "sleeping" || p.state === "silenced") {
+      this.stopAll();
+      this.stopMic();
+    }
+  }
+
   async kill() {
     this.killEngaged = true;
     this.stopAll();

@@ -13,7 +13,7 @@
  * follow-up; until then the packaged app needs a Python 3.10+ on the machine.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from "electron";
 import { ChildProcess, spawn } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
@@ -27,6 +27,8 @@ let backend: ChildProcess | null = null;
 let backendPort = 0;
 let mainWindow: BrowserWindow | null = null;
 let updateStatus: Record<string, unknown> = { state: "idle" };
+let tray: Tray | null = null;
+let isQuitting = false;
 
 // --------------------------------------------------------------------------
 // Linux sandbox fallback
@@ -264,6 +266,89 @@ function stopBackend() {
 // window
 // --------------------------------------------------------------------------
 
+function backendUrl(pathname = "") {
+  return `http://127.0.0.1:${backendPort}${pathname}`;
+}
+
+// --------------------------------------------------------------------------
+// system tray presence (Jarvis: the app lives in the tray, not as a window)
+// --------------------------------------------------------------------------
+
+function createTray() {
+  const iconPath = path.join(resourceRoot(), "build", "icon.png");
+  const icon = fs.existsSync(iconPath)
+    ? nativeImage.createFromPath(iconPath).resize({ width: 22, height: 22 })
+    : nativeImage.createEmpty();
+  tray = new Tray(icon);
+  tray.setToolTip("Phantom — sleeping");
+
+  const wake = async (agent: string) => {
+    try {
+      await fetch(backendUrl("/api/presence/wake"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent, source: "tray" }),
+      });
+      showWindow();
+    } catch (e) {
+      console.error("[tray] wake failed", e);
+    }
+  };
+
+  const rebuildMenu = () => {
+    tray?.setContextMenu(Menu.buildFromTemplate([
+      { label: "Open Phantom", click: showWindow },
+      { type: "separator" },
+      { label: "👻 Wake Phantom", click: () => wake("phantom") },
+      { label: "💻 Wake Coded", click: () => wake("coded") },
+      { label: "🔇 Stay silent", click: () => {
+          try { fetch(backendUrl("/api/presence/stay-silent"), { method: "POST" }); } catch {}
+        } },
+      { type: "separator" },
+      { label: "⏻ Kill switch", click: () => {
+          try { fetch(backendUrl("/api/killswitch/engage"), { method: "POST",
+            headers: { "Content-Type": "application/json" }, body: "{}" }); } catch {}
+        } },
+      { label: "Quit", click: () => { isQuitting = true; app.quit(); } },
+    ]));
+  };
+  rebuildMenu();
+  tray.on("click", showWindow);
+}
+
+function showWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+  } else {
+    mainWindow.show();
+    mainWindow.focus();
+  }
+}
+
+// auto-start at login (Windows/macOS native; Linux via XDG autostart)
+function enableAutoStart() {
+  try {
+    if (process.platform === "linux") {
+      const autostartDir = path.join(os.homedir(), ".config", "autostart");
+      fs.mkdirSync(autostartDir, { recursive: true });
+      const desktop = [
+        "[Desktop Entry]",
+        "Type=Application",
+        `Name=Phantom`,
+        `Exec=${process.execPath} --hidden`,
+        "X-GNOME-Autostart-enabled=true",
+        "Comment=Phantom personal AI companion",
+      ].join("\n");
+      fs.writeFileSync(path.join(autostartDir, "phantom.desktop"), desktop);
+    } else {
+      app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
+    }
+    console.log("[tray] auto-start enabled");
+  } catch (e) {
+    console.warn("[tray] auto-start failed", e);
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1380,
@@ -296,10 +381,15 @@ function createWindow() {
   });
 
   mainWindow.loadURL(`http://127.0.0.1:${backendPort}`);
+  // Jarvis behavior: closing the window hides to tray; the agent stays alive.
+  mainWindow.on("close", (ev) => {
+    if (!isQuitting) {
+      ev.preventDefault();
+      mainWindow?.hide();
+    }
+  });
   mainWindow.on("closed", () => {
     mainWindow = null;
-    stopBackend();
-    app.quit();
   });
 }
 
@@ -319,16 +409,20 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
-  createWindow();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  createTray();
+  enableAutoStart();
+  // Jarvis: launch into the tray; open the window unless --hidden (autostart).
+  if (!process.argv.includes("--hidden")) {
+    createWindow();
+  }
+  app.on("activate", () => showWindow());
 });
 
 app.on("window-all-closed", () => {
-  app.quit();
+  // Jarvis: keep running in the tray; quit only via tray "Quit" or kill.
 });
 
 app.on("before-quit", () => {
+  isQuitting = true;
   stopBackend();
 });

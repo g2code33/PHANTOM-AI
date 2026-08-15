@@ -161,6 +161,16 @@ function handleEvent(payload) {
         addActivity("voice", `🗣 ${(data.text || "").slice(0, 120)}`, "delegation");
       }
       break;
+    case "presence.state":
+      handlePresence(data);
+      break;
+    case "wake.detected":
+      addActivity("wake", `🔔 ${data.agent === "coded" ? "Coded" : "Phantom"} woken (${data.source})`, "tool-ok");
+      break;
+    case "ready_cue":
+      voice.playReadyCue();
+      setPresence("LISTENING", (data.agent === "coded" ? "Coded" : "Phantom") + " is ready — speak");
+      break;
     case "voice.stop":
       voice.stopAll(); voice.stopMic(); setPresence("IDLE");
       break;
@@ -196,6 +206,35 @@ function resumeListeningAfterReply() {
   } else {
     setPresence("IDLE");
   }
+}
+
+function handlePresence(p) {
+  voice.setPresenceState(p);
+  document.body.classList.toggle("presence-sleeping", p.state === "sleeping" || p.state === "silenced");
+  document.body.classList.toggle("presence-awake", p.state === "listening");
+  const agentName = p.active_agent === "coded" ? "Coded" : "Phantom";
+  const pill = $("presencePill");
+  if (pill) {
+    pill.textContent = p.state === "listening"
+      ? `🟢 ${agentName} awake`
+      : p.state === "silenced" ? "🤫 silent" : "💤 sleeping";
+  }
+  if (p.state === "listening") {
+    setPresence("LISTENING", agentName + " is awake — listening for you");
+  } else if (p.state === "sleeping") {
+    setPresence("IDLE", "Phantom is here — say “Phantom” or “Coded” to wake me");
+  } else if (p.state === "silenced") {
+    setPresence("IDLE", "Staying silent — say my name to wake me");
+  } else if (p.state === "killed") {
+    setPresence("IDLE", "Kill switch engaged — everything stopped");
+  }
+}
+
+async function loadPresence() {
+  try {
+    const p = await api("/api/presence");
+    handlePresence(p);
+  } catch (e) {}
 }
 
 function setContextLine(data) {
@@ -991,6 +1030,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.querySelectorAll(".panel-btn").forEach((b) => b.onclick = () => switchPanel(b.dataset.panel));
   $("killSwitch").onclick = toggleKill;
 
+  // presence (wake / silent)
+  $("presencePill").onclick = () => {
+    // click pill = wake phantom (or the active agent's opposite if asleep)
+    api("/api/presence/wake", { body: { agent: state.agent, source: "ui" } }).then(loadPresence);
+  };
+  $("silentBtn").onclick = () => {
+    api("/api/presence/stay-silent").then(loadPresence);
+    voice.stopAll(); voice.stopMic();
+    toast("🤫 Staying silent until you say the wake word");
+  };
+
   // voice controls
   $("micToggle").onclick = () => {
     voice.micEnabled = !voice.micEnabled;
@@ -1077,6 +1127,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   await voice.init();
+  await loadPresence();
   await loadStatus();
   await refreshNotifications();
   switchPersona("phantom");

@@ -770,6 +770,88 @@ def create_app(app: App) -> FastAPI:
         task = await app.tasks.launch(agent, f"Loop: {objective[:60]}", "loop", factory)
         return task
 
+    # ------------------------------------------------------------- presence
+    @fastapi.get("/api/presence")
+    async def presence():
+        return app.wake.state_dict()
+
+    @fastapi.post("/api/presence/wake")
+    async def presence_wake(body: dict):
+        """Activate an agent by wake word (client wake-word detector reports in)."""
+        agent = str(body.get("agent", "phantom"))
+        source = str(body.get("source", "wakeword"))
+        if agent not in ("phantom", "coded"):
+            raise HTTPException(400, "agent must be phantom or coded")
+        return await app.wake.wake(agent, source=source)
+
+    @fastapi.post("/api/presence/sleep")
+    async def presence_sleep(body: dict | None = None):
+        return await app.wake.sleep(reason=(body or {}).get("reason", "manual"))
+
+    @fastapi.post("/api/presence/stay-silent")
+    async def presence_stay_silent():
+        return await app.wake.stay_silent()
+
+    @fastapi.post("/api/presence/touch")
+    async def presence_touch():
+        await app.wake.touch()
+        return {"ok": True}
+
+    @fastapi.put("/api/presence/config")
+    async def presence_config(body: dict):
+        if body.get("enabled") is not None:
+            await app.wake.set_enabled(bool(body["enabled"]))
+        if body.get("idle_minutes") is not None:
+            await app.wake.set_idle_minutes(int(body["idle_minutes"]))
+        return app.wake.state_dict()
+
+    @fastapi.get("/api/presence/config")
+    async def presence_config_get():
+        return {
+            "enabled": bool(await app.settings.get("wake.enabled", "*", True)),
+            "idle_minutes": int(await app.settings.get("wake.idle_minutes", "*", 60)),
+            "engine": await app.settings.get("wake.engine", "*", "client"),
+            "words": {"phantom": "phantom", "coded": "coded"},
+        }
+
+    # -------------------------------------------------------------- profiles
+    @fastapi.get("/api/profiles")
+    async def profiles_list():
+        return {"profiles": await app.profiles.list()}
+
+    @fastapi.get("/api/profiles/default")
+    async def profiles_default():
+        profile = await app.profiles.default()
+        if not profile:
+            raise HTTPException(404, "no profile yet")
+        return profile
+
+    @fastapi.post("/api/profiles")
+    async def profiles_create(body: dict):
+        name = str(body.get("name", "")).strip()
+        if not name:
+            raise HTTPException(400, "name required")
+        profile = await app.profiles.create(
+            name, str(body.get("display_name", "")),
+            body.get("fields") or {})
+        await app.audit.record("user", "profile.created", {"profile": profile["id"]})
+        return profile
+
+    @fastapi.put("/api/profiles/{pid}")
+    async def profiles_update(pid: str, body: dict):
+        profile = await app.profiles.update(
+            pid, body.get("fields") or {}, display_name=body.get("display_name"))
+        if not profile:
+            raise HTTPException(404, "profile not found")
+        return profile
+
+    @fastapi.delete("/api/profiles/{pid}")
+    async def profiles_delete(pid: str):
+        ok = await app.profiles.delete(pid)
+        if not ok:
+            raise HTTPException(404, "profile not found")
+        return {"ok": True}
+
     # ---------------------------------------------------------------- health
     @fastapi.get("/api/health/status")
     async def health_status():
