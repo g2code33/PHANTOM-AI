@@ -1293,6 +1293,30 @@ def create_app(app: App) -> FastAPI:
         async def mobile_css():
             return FileResponse(UI_DIR / "mobile.css", media_type="text/css")
 
+        @fastapi.get("/manifest.webmanifest")
+        async def manifest():
+            return FileResponse(UI_DIR / "manifest.webmanifest",
+                                media_type="application/manifest+json")
+
+        @fastapi.get("/sw.js")
+        async def sw():
+            return FileResponse(UI_DIR / "sw.js", media_type="text/javascript")
+
+        @fastapi.get("/apple-touch-icon.png")
+        async def apple_icon():
+            return FileResponse(UI_DIR / "apple-touch-icon.png",
+                                media_type="image/png")
+
+        @fastapi.get("/icons/{fname}")
+        async def pwa_icon(fname: str):
+            name = Path(fname).name
+            if ".." in name or "/" in name:
+                raise HTTPException(400, "invalid icon")
+            path = UI_DIR / "icons" / name
+            if not path.exists():
+                raise HTTPException(404, "icon not found")
+            return FileResponse(path, media_type="image/png")
+
     return fastapi
 
 

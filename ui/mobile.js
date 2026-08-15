@@ -213,6 +213,10 @@ $("mKill").onclick = async () => {
 
 /* boot */
 (function boot() {
+  // PWA service worker (secure context only: https or localhost)
+  if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }
   if (S.base) { $("mUrl").value = S.base; $("mToken").value = S.token; connect(); }
   else showConnect();
 })();
