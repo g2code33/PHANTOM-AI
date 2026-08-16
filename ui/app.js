@@ -19,6 +19,10 @@ const state = {
   // exposed for HUD/session badge (module-scope const is not on window)
   agent: "phantom", conversations: [], currentConv: null,
   runId: null, running: false, killEngaged: false, voiceOn: true,
+  // MULTI-TASKING: per-agent run state — Phantom and Coded can work at the
+  // same time on separate tasks, and each can command the other.
+  runs: {},            // agent -> { runId, running }
+  convs: {},           // agent -> current conversation id
   pendingConfirmations: {}, userName: localStorage.getItem("phantom.userName") || "",
   micLevel: 0, transcript: [],
 };
@@ -126,8 +130,12 @@ voice.onWakeWord = async (agent) => {
     if (res.woken) {
       voice.currentAgent = agent;
       voice.playReadyCue();
-      setPresence("LISTENING", (agent === "coded" ? "Coded" : "Phantom") + " is ready — speak");
-      if (state.voiceOn) voice.speak("Yes, " + (state.userName || "JOOJO") + "?");
+      const name = state.userName || "JOOJO";
+      const greet = agent === "coded"
+        ? "Coded here. What are we building, " + name + "?"
+        : "I'm here, " + name + ". What do you need?";
+      setPresence("LISTENING", (agent === "coded" ? "Coded" : "Phantom") + " is awake — speak");
+      if (state.voiceOn) voice.speak(greet);
     } else if (res.need_verification) {
       setPresence("IDLE", "Voice sample needed — try again");
     } else {
@@ -205,42 +213,44 @@ function pushChunkToSpeech(text) {
 
 function handleEvent(payload) {
   const { event, data, agent, run_id } = payload;
+  // MULTI-TASK: events are routed per agent — both can stream at once.
+  const run = agentRun(agent);
+  const isFocused = agent === state.agent && run_id === state.runId;
   switch (event) {
     case "agent.chunk":
-      if (run_id === state.runId) {
-        appendChunk(data.text);
+      if (run_id === run.runId) {
+        if (isFocused) appendChunk(data.text);
         if (state.voiceOn) pushChunkToSpeech(data.text);
       }
       break;
     case "agent.run_started":
-      if (run_id === state.runId) {
-        state.running = true; setPresence("THINKING");
-        showRunIndicator(); setContextLine(data);
+      if (run_id === run.runId) {
+        setAgentRunning(agent, run_id);
+        if (isFocused) { setPresence("THINKING"); showRunIndicator(); setContextLine(data); }
       }
       break;
     case "tool.started":
-      if (run_id === state.runId) setPresence("EXECUTING");
+      if (isFocused) setPresence("EXECUTING");
       addToolCard(data, "started"); addActivity("tool", `🔧 ${data.name}`, "tool-start");
       break;
     case "tool.completed":
-      if (run_id === state.runId) setPresence("THINKING");
+      if (isFocused) setPresence("THINKING");
       updateToolCard(data, true);
       addActivity("tool", `✓ ${data.name} · ${(data.latency_ms || 0).toFixed(0)}ms`, "tool-ok");
       break;
     case "tool.error":
-      if (run_id === state.runId) setPresence("THINKING");
+      if (isFocused) setPresence("THINKING");
       updateToolCard(data, false);
       addActivity("tool", `✗ ${data.name}: ${data.message}`, "tool-err");
       break;
     case "agent.run_completed":
-      if (run_id === state.runId) {
-        state.running = false; hideRunIndicator(); setContextLine(null);
-        finalizeAssistantMessage(data);
-        loadConversations();
+      if (run_id === run.runId) {
+        setAgentDone(agent);
+        if (isFocused) { hideRunIndicator(); setContextLine(null); finalizeAssistantMessage(data); loadConversations(); }
         flushSpeech();
         if (data.status === "ok" && state.voiceOn && data.content && voice.mode !== "private") {
-          voice.speak(data.content); // full reply in case chunks were missed
-        } else {
+          voice.speak(data.content); // voice-first: both agents' replies are spoken
+        } else if (!anyRunning()) {
           resumeListeningAfterReply();
         }
       }
@@ -268,10 +278,12 @@ function handleEvent(payload) {
     case "confirmation.requested":
       if (data.confirmation) state.pendingConfirmations[data.confirmation.id] = data;
       showConfirmation(data);
+      loadApprovals();  // keep the Approvals tab in sync
       break;
     case "confirmation.decided":
       if (data.confirmation) delete state.pendingConfirmations[data.confirmation.id];
       hideConfirmation(data.confirmation && data.confirmation.id);
+      loadApprovals();
       break;
     case "notification.new":
       toast(`🔔 ${data.notification?.title || "Notification"}`);
@@ -303,8 +315,8 @@ function handleEvent(payload) {
 
 function resumeListeningAfterReply() {
   if (voice.mode === "conversation" && !state.killEngaged && voice.micEnabled) {
-    setTimeout(() => { if (!state.running) voice.startListening(); }, 350);
-  } else {
+    setTimeout(() => { if (!anyRunning()) voice.startListening(); }, 350);
+  } else if (!anyRunning()) {
     setPresence("IDLE");
   }
 }
@@ -464,27 +476,30 @@ function hideRunIndicator() {
 /* ============================== CHAT ============================== */
 async function sendMessage(text, opts = {}) {
   const clean = String(text || "").trim();
-  if (!clean || state.running) return;
+  // MULTI-TASK: only block if THIS agent is busy — Phantom can be working
+  // while you ask Coded something, and vice versa.
+  const target = (opts && opts.agent) || state.agent;
+  if (!clean || agentRun(target).running) return;
   if (state.killEngaged) { toast("⛔ Kill switch is engaged"); return; }
   if (opts.via === "voice") {
     voice.stopListening(); // pause recognition while thinking/replying
   }
-  addMessageEl("user", clean);
+  if (target === state.agent) addMessageEl("user", clean);
   setPresence("THINKING");
   try {
-    const res = await api(`/api/agents/${state.agent}/chat`, {
-      body: { text: clean, conversation_id: state.currentConv || "", session_id: "web" },
+    const convId = state.convs[target] || "";
+    const res = await api(`/api/agents/${target}/chat`, {
+      body: { text: clean, conversation_id: convId, session_id: "web" },
     });
-    state.runId = res.run_id;
-    state.currentConv = res.conversation_id;
+    state.convs[target] = res.conversation_id;
+    if (target === state.agent) state.currentConv = res.conversation_id;
     activeStreamEl = null;
     sentenceBuf = "";
     loadConversations();
   } catch (err) {
-    state.running = false;
-    addMessageEl("error", `Could not start: ${err.message}`);
-    setPresence("ERROR");
-    setTimeout(() => setPresence("IDLE"), 2500);
+    setAgentDone(target);
+    if (target === state.agent) { addMessageEl("error", `Could not start: ${err.message}`); setPresence("ERROR"); setTimeout(() => setPresence("IDLE"), 2500); }
+    else toast("✗ " + (AGENTS[target]?.name || target) + ": " + err.message, "err");
   }
 }
 
@@ -545,7 +560,7 @@ async function newConversation() {
 }
 
 function switchPersona(agent) {
-  if (state.running) { toast("Wait for the current run to finish"); return; }
+  if (agentRun(agent).running) { toast(`${AGENTS[agent]?.name || agent} is working — wait for it to finish`); return; }
   state.agent = agent;
   voice.currentAgent = agent;   // replies use this persona's voice
   document.querySelectorAll(".seg").forEach((b) => b.classList.toggle("active", b.dataset.persona === agent));
@@ -577,6 +592,7 @@ function switchPanel(panel) {
   if (panel === "tasks") loadTasks();
   if (panel === "audit") { loadAuditEvents(); loadAudit(); }
   if (panel === "permissions") loadPermissions();
+  if (panel === "approvals") loadApprovals();
   if (panel === "settings") loadSettings();
 }
 
@@ -941,6 +957,54 @@ async function loadAudit() {
   }
 }
 
+async function loadApprovals() {
+  try {
+    const res = await api("/api/confirmations");
+    const list = res.confirmations || [];
+    const badge = $("approvalsBadge");
+    if (badge) {
+      badge.textContent = list.length;
+      badge.classList.toggle("hidden", list.length === 0);
+    }
+    const el = $("approvalsList");
+    if (!el) return;
+    el.innerHTML = "";
+    if (!list.length) {
+      el.innerHTML = `<div class="muted small">No pending approvals — everything is decided. 🎉</div>`;
+      return;
+    }
+    for (const c of list) {
+      const card = document.createElement("div");
+      card.className = "card";
+      const agentEmoji = AGENTS[c.agent]?.emoji || "🤖";
+      const args = Object.entries(c.arguments || {}).slice(0, 4)
+        .map(([k, v]) => `<span class="muted small">${esc(k)}: ${esc(String(v).slice(0, 80))}</span>`).join(" · ");
+      card.innerHTML = `
+        <div class="card-title">${agentEmoji} ${esc(c.agent)} · <span class="pill warn">${esc(c.tool_name)}</span>
+          <span class="muted small">${timeAgo(c.requested_at)}</span></div>
+        <div class="muted small" style="margin:4px 0">${esc(c.reason || "")}</div>
+        ${args ? `<div class="muted small mono" style="margin:4px 0">${args}</div>` : ""}
+        <div class="muted small" style="margin:2px 0">Impact: ${esc(c.impact || "")} · Risk: ${esc(c.risk || "")}</div>
+        <div class="btnRow" style="margin-top:8px">
+          <button class="btn btn-primary" onclick="decideApproval('${c.id}', true)">Approve</button>
+          <button class="btn btn-danger" onclick="decideApproval('${c.id}', false)">Deny</button>
+        </div>`;
+      el.appendChild(card);
+    }
+  } catch (e) {
+    const el = $("approvalsList");
+    if (el) el.innerHTML = `<div class="muted small">Could not load approvals: ${esc(e.message)}</div>`;
+  }
+}
+window.decideApproval = async (cid, approve) => {
+  try {
+    await api(`/api/confirmations/${cid}/${approve ? "approve" : "deny"}`, { method: "POST", body: { decided_by: "user" } });
+    toast(approve ? "✓ Approved" : "✗ Denied", approve ? "ok" : "err");
+    loadApprovals();
+    hideConfirmation(cid);
+  } catch (e) { toast("✗ " + e.message, "err"); }
+};
+
 async function loadPermissions() {
   const agent = $("permAgent").value;
   const res = await api("/api/permissions");
@@ -989,9 +1053,19 @@ async function loadSettings() {
           <button class="btn" onclick="saveKey('${agentId}')">Save</button>
           <button class="btn" onclick="testKey('nvidia', '${agentId}')">Test</button>
           ${k.configured ? `<span class="muted small">${esc(k.masked || "")}</span>` : ""}</div>
-        <div class="row"><label>Model</label><input type="text" id="model-${agentId}" placeholder="meta/llama-3.3-70b-instruct (default)" title="NVIDIA model ID, e.g. meta/llama-3.3-70b-instruct or meta/llama-3.1-405b-instruct. Empty = default."></div>
+        <div class="row"><label>Model preset</label>
+          <select id="modelPreset-${agentId}" onchange="applyModelPreset('${agentId}')">
+            <option value="fast">⚡ Fast (8B — snappy)</option>
+            <option value="smart" selected>🧠 Smart (70B — default)</option>
+            <option value="custom">✏️ Custom</option>
+          </select>
+          <span class="muted small">Fast replies use meta/llama-3.1-8b-instruct</span></div>
+        <div class="row"><label>Model</label><input type="text" id="model-${agentId}" placeholder="custom model ID" title="NVIDIA model ID, e.g. meta/llama-3.3-70b-instruct or meta/llama-3.1-8b-instruct. Empty = default."></div>
         <div class="row"><label>Temperature</label><input type="text" id="temp-${agentId}" style="width:80px" title="Creativity/randomness of the model: 0 = strict &amp; factual, higher (up to 2) = more creative &amp; varied. Default 0.4 — a balanced, dependable personality."></div>
-      </div>`);
+      </div>
+      ${agentId === "phantom" ? `<div class="row" style="margin-top:6px"><label>⚡ General mode</label>
+        <select id="generalModeSel"><option value="0">off — ask before routine actions</option><option value="1">on — just do it (no confirm popups for routine things)</option></select>
+        <span class="muted small">Open apps/URLs, edit files, close processes without asking. Destructive actions stay protected.</span></div>` : ""}`);
   }
   sections.push(`
     <div class="settings-section"><h3>🎙️ Voice</h3>
@@ -1139,8 +1213,25 @@ async function loadSettings() {
   body.innerHTML = sections.join("");
   for (const agentId of ["phantom", "coded", "health"]) {
     const s = (res.settings && res.settings[agentId]) || {};
-    $("model-" + agentId).value = s.model || "";
+    const modelVal = s.model || "";
+    $("model-" + agentId).value = modelVal;
+    const preset = $(`modelPreset-${agentId}`);
+    if (preset) {
+      if (!modelVal) preset.value = "smart";
+      else if (modelVal.includes("8b")) preset.value = "fast";
+      else preset.value = "custom";
+    }
     $("temp-" + agentId).value = s["model.temperature"] ?? 0.4;
+  }
+  const gm = $("generalModeSel");
+  if (gm) {
+    const gv = (res.settings && res.settings["*"] && res.settings["*"]["permissions.general_mode"]) || false;
+    gm.value = gv ? "1" : "0";
+    gm.onchange = () => {
+      api("/api/settings", { method: "PUT", body: { agent: "*", key: "permissions.general_mode", value: gm.value === "1" } })
+        .then(() => toast(gm.value === "1" ? "⚡ General mode ON — I'll just do it" : "General mode off — I'll ask first", "ok"))
+        .catch((e) => toast("✗ " + e.message, "err"));
+    };
   }
   const g = res.settings && res.settings["*"] ? res.settings["*"] : {};
   $("quietStart").value = g["quiet.start"] || "";
@@ -1581,6 +1672,22 @@ window.addEventListener("DOMContentLoaded", () => {
 async function saveSetting(agent, key, value) {
   await api("/api/settings", { method: "PUT", body: { agent, key, value } });
 }
+window.applyModelPreset = async (agentId) => {
+  const preset = $(`modelPreset-${agentId}`)?.value;
+  const modelInput = $(`model-${agentId}`);
+  if (!modelInput) return;
+  if (preset === "fast") {
+    modelInput.value = "meta/llama-3.1-8b-instruct";
+    await api("/api/settings", { method: "PUT", body: { agent: agentId, key: "model", value: modelInput.value } });
+    toast("⚡ Fast mode — " + modelInput.value, "ok");
+  } else if (preset === "smart") {
+    modelInput.value = "";
+    await api("/api/settings", { method: "PUT", body: { agent: agentId, key: "model", value: "" } });
+    toast("🧠 Smart mode — default model", "ok");
+  }
+  loadStatus();
+};
+
 window.saveKey = async (agentId) => {
   const input = $(`key-${agentId}`);
   const val = input.value.trim();
@@ -1965,13 +2072,15 @@ function hudTierNow() {
 function hudApplyTier() {
   const tier = hudTierNow();
   document.body.classList.toggle("hud-low", tier === "low");
+  document.body.classList.toggle("hud-medium", tier === "medium");
   if (hudGauges) hudGauges.setTier(tier);
   if (spectrumStrip) spectrumStrip.setTier(tier);
-  if (tier === "low") {
-    hudStopLoop();
-    drawCoreFrame(0);            // one dim static frame — no continuous redraw
-  } else {
+  if (tier === "full") {
     hudStartLoop();
+  } else {
+    // low/medium: one static dim frame, no continuous redraw (big CPU save)
+    hudStopLoop();
+    drawCoreFrame(0);
   }
 }
 
@@ -2242,6 +2351,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadPresence();
   await loadStatus();
   if (typeof wireHudClickables === "function") wireHudClickables();  // home gauges clickable from first paint
+  loadApprovals();  // badge count on the drawer
   await refreshNotifications();
   switchPersona("phantom");
   newConversation();

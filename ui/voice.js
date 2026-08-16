@@ -264,14 +264,19 @@ class PhantomVoice {
     if (level > SPEECH) {
       this._vadBuf.push(Date.now());
       if (this._vadBuf.length > 30) this._vadBuf.shift();
-      // barge-in: user speaks while we speak → stop us immediately.
-      // Require 2 consecutive hot frames (~fast but not jitter-triggered).
+      // NAME-GATED INTERRUPT (JARVIS-style): while speaking, he KEEPS
+      // TALKING until he hears his own name — then he stops and listens for
+      // the redirect ("Phantom, actually open Spotify"). He never cuts off
+      // mid-sentence on random sound.
       if (this.state === "SPEAKING" && this.micEnabled) {
-        if (this._hotFrames === undefined) this._hotFrames = 0;
-        this._hotFrames += 1;
-        if (this._hotFrames >= 2) {
-          this._hotFrames = 0;
-          this.bargeIn();
+        const now = Date.now();
+        if (now >= (this._interruptCooldown || 0)) {
+          this._hotFrames = (this._hotFrames || 0) + 1;
+          if (this._hotFrames >= 8) {           // sustained speech while he talks
+            this._hotFrames = 0;
+            this._interruptCooldown = now + 5000;
+            this._checkInterruptByName();
+          }
         }
       }
     } else {
@@ -525,7 +530,7 @@ class PhantomVoice {
 
   speak(text, opts = {}) {
     if (this.muted || this.mode === "private" || this.killEngaged) return;
-    const clean = String(text || "").replace(/[#*`_>]/g, "").trim();
+    const clean = PhantomVoice._cleanSpeech(text);
     if (!clean) return;
     this._speakQueue.push({ text: clean, priority: opts.priority === "high" });
     this._drainQueue();
@@ -538,13 +543,26 @@ class PhantomVoice {
     this._speaking = true;
     this.setState("SPEAKING");
     this.onSpeakStart?.();
+    // FAST PATH: 'server' TTS without a Deepgram key would wait through a
+    // failing chain — speak instantly with system voices instead.
+    const wantsServer = (this.ttsProvider === "server" || this.ttsProvider === "deepgram") && this.deepgramConfigured;
     if (this.ttsProvider === "deepgram" && this.deepgramConfigured) {
       this._speakDeepgram(item.text);
-    } else if (this.ttsProvider === "server") {
+    } else if (wantsServer) {
       this._speakServer(item.text);
     } else {
       this._speakBrowser(item.text);
     }
+  }
+
+  // strip markdown/symbols so the voice reads clean, natural speech
+  static _cleanSpeech(text) {
+    return String(text || "")
+      .replace(/```[\s\S]*?```/g, " code block. ")
+      .replace(/`([^`]*)`/g, " $1 ")
+      .replace(/[*_~#>`]/g, "")
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, " $1 ")
+      .replace(/\s+/g, " ").trim();
   }
 
   _speakBrowser(text) {
@@ -558,9 +576,14 @@ class PhantomVoice {
       this.setState(this.mode === "conversation" ? "LISTENING" : "IDLE");
       return;
     }
+    const clean = PhantomVoice._cleanSpeech(text);
+    if (!clean) { this._speakDone(); return; }
     synth.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.04;
+    const u = new SpeechSynthesisUtterance(clean);
+    // slower + clearer = less choppy (browser voices stutter at 1.04)
+    u.rate = 0.95;
+    u.pitch = 1;
+    u.volume = 1;
     // per-persona voice: use the active agent's configured voice, else global
     const pref = this.voices[this.currentAgent] || this.ttsVoice || "";
     if (pref) {
@@ -578,10 +601,11 @@ class PhantomVoice {
     // Server-side TTS failover chain (Deepgram Aura -> cloud -> local).
     try {
       const voice = this.voices[this.currentAgent] || this.ttsVoice || "";
+      const clean = PhantomVoice._cleanSpeech(text);
       const res = await fetch("/api/voice/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, voice }),
+        body: JSON.stringify({ text: clean || text, voice }),
       });
       if (!res.ok) {
         let detail = res.statusText;
@@ -628,12 +652,15 @@ class PhantomVoice {
       // per-persona Deepgram aura voice (defaults: Phantom=orion, Coded=arcas)
       const dgVoice = this.voices[this.currentAgent] || this.ttsVoice ||
         (this.currentAgent === "coded" ? "aura-arcas-en" : "aura-orion-en");
+      // Deepgram Aura speak: model=aura-2-english + the chosen aura voice
+      // (previously the model param was set to the VOICE id — wrong, so the
+      // selected voice never applied and it fell back to defaults)
       const ws = new WebSocket(
-        `wss://api.deepgram.com/v1/speak?model=${encodeURIComponent(dgVoice)}`,
+        `wss://api.deepgram.com/v1/speak?model=aura-2-english&voice=${encodeURIComponent(dgVoice)}`,
         ["token", token],
       );
       this._dgSpeakWs = ws;
-      ws.onopen = () => ws.send(JSON.stringify({ type: "Speak", text }));
+      ws.onopen = () => ws.send(JSON.stringify({ type: "Speak", text: PhantomVoice._cleanSpeech(text) || text }));
       ws.onmessage = async (ev) => {
         if (typeof ev.data === "string") return;
         const blob = ev.data;
@@ -699,11 +726,11 @@ class PhantomVoice {
 
   stopSpeaking() {
     this._speakQueue = [];
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    if (window.speechSynthesis) { try { window.speechSynthesis.cancel(); } catch (e) {} }
     if (this._dgSpeakWs) { try { this._dgSpeakWs.close(); } catch (e) {} this._dgSpeakWs = null; }
     this._dgAudioQueue = [];
     this._dgPlaying = false;
-    if (this._serverAudio) { try { this._serverAudio.pause(); } catch (e) {} this._serverAudio = null; }
+    if (this._serverAudio) { try { this._serverAudio.pause(); this._serverAudio.src = ""; } catch (e) {} this._serverAudio = null; }
     this._speaking = false;
     this._utterance = null;
     this.ttsSpectrumAvailable = false;
@@ -779,39 +806,97 @@ class PhantomVoice {
   }
 
   // ------------------------------------------- wake-word detection (client)
+  // Electron has NO SpeechRecognition, so browser-STT wake never worked in
+  // the app. Real approach that works everywhere: while sleeping, watch mic
+  // energy (our VAD); when speech is detected, capture ~2.5s and run it
+  // through the SERVER STT chain (Deepgram->Groq->Local); if the transcript
+  // contains "phantom"/"coded" at a word boundary -> wake. STT only runs when
+  // you actually speak while it sleeps (cheap, and works offline with local).
   async _startWakeDetection() {
     if (this._wakeActive || this.killEngaged || !this.micEnabled) return;
-    if (this.wakeEngine === "porcupine") {
-      // Picovoice Porcupine (offline, battery-light) — requires a free access
-      // key + "phantom"/"coded" wake-word models. Not yet configured: fall back.
-      this.wakeEngine = "browser";
-    }
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
     this._wakeActive = true;
-    const rec = new SR();
-    rec.lang = "en-US";
-    rec.interimResults = true;
-    rec.continuous = true;
-    rec.onresult = (ev) => {
-      let text = "";
-      for (let i = ev.resultIndex; i < ev.results.length; i++)
-        text += ev.results[i][0].transcript;
-      const m = text.toLowerCase().match(/(^|\s)(phantom|coded)(\s|$|\.|,|!|\?)/);
-      if (m) this._handleWake(m[2].toLowerCase());
-    };
-    rec.onend = () => {
-      if (this._wakeActive && !this.killEngaged) {
-        try { rec.start(); } catch (e) {}
+    this._wakeVadBuf = [];
+    this._wakeSpeechFrames = 0;
+    this._wakeCooldownUntil = 0;
+    // lightweight mic stream for energy detection (shared analyser pattern)
+    try {
+      if (!this._micStream) await this.startMic();
+    } catch (e) { this._wakeActive = false; return; }
+    this._wakeEnergyLoop();
+  }
+
+  _wakeEnergyLoop() {
+    if (!this._wakeActive) return;
+    const tick = () => {
+      if (!this._wakeActive) return;
+      if (this._analyser) {
+        const buf = new Float32Array(this._analyser.fftSize);
+        this._analyser.getFloatTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        const rms = Math.sqrt(sum / buf.length);
+        const now = Date.now();
+        if (rms > 0.045) {
+          this._wakeSpeechFrames += 1;
+          if (this._wakeSpeechFrames >= 14 && now >= this._wakeCooldownUntil) {
+            this._wakeSpeechFrames = 0;
+            this._wakeCooldownUntil = now + 6000;  // cooldown after each attempt
+            this._checkWakeByStt();
+          }
+        } else {
+          this._wakeSpeechFrames = 0;
+        }
       }
+      if (this._wakeActive) this._wakeRaf = requestAnimationFrame(tick);
     };
-    this._wakeRec = rec;
-    try { rec.start(); } catch (e) {}
+    this._wakeRaf = requestAnimationFrame(tick);
+  }
+
+  // While speaking, listen for his own name; when heard, stop and let the
+  // user redirect (server STT — works in Electron, no SpeechRecognition).
+  async _checkInterruptByName() {
+    try {
+      const wav = await this.captureWav(2.5);
+      if (!wav) return;
+      const fd = new FormData();
+      fd.append("audio", wav, "int.wav");
+      fd.append("language", "en");
+      const res = await fetch("/api/voice/stt", { method: "POST", body: fd });
+      if (!res.ok) return;
+      const j = await res.json();
+      const text = String(j.text || "").toLowerCase();
+      const mine = this.currentAgent === "coded" ? "coded" : "phantom";
+      const m = text.match(/(^|\s)(phantom|coded)(\s|$|\.|,|!|\?)/);
+      if (m && m[2] === mine) {
+        this.bargeIn();               // stop speaking, return to listening
+        this.onInterrupt?.();
+      }
+    } catch (e) { /* transient */ }
+  }
+
+  async _checkWakeByStt() {
+    // capture ~2.5s of audio and check for the wake word via server STT
+    try {
+      const wav = await this.captureWav(2.5);
+      if (!wav) return;
+      const fd = new FormData();
+      fd.append("audio", wav, "wake.wav");
+      fd.append("language", "en");
+      const res = await fetch("/api/voice/stt", { method: "POST", body: fd });
+      if (!res.ok) return;
+      const j = await res.json();
+      const text = String(j.text || "").toLowerCase();
+      const m = text.match(/(^|\s)(phantom|coded)(\s|$|\.|,|!|\?)/);
+      if (m) this._handleWake(m[2].toLowerCase());
+    } catch (e) { /* transient — try again next speech */ }
   }
 
   _stopWakeDetection() {
     this._wakeActive = false;
+    if (this._wakeRaf) { cancelAnimationFrame(this._wakeRaf); this._wakeRaf = null; }
     if (this._wakeRec) { try { this._wakeRec.onend = null; this._wakeRec.stop(); } catch (e) {} this._wakeRec = null; }
+    this._wakeVadBuf = [];
+    this._wakeSpeechFrames = 0;
   }
 
   async _handleWake(word) {

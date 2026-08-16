@@ -111,3 +111,55 @@ async def test_approval_is_scoped_to_single_action(app, workdir):
             "phantom", "delete_file", {"path": f2}, "c", "s",
             interactive=False, confirm_timeout=0.001)
     assert os.path.exists(f2)
+
+
+async def _perm_client(app):
+    import httpx
+    from phantom_ai.api.server import create_app
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(app)),
+                             base_url="http://test")
+
+
+async def test_pending_confirmations_list_and_decide_later(app):
+    """Skipped approvals persist — they can be listed and decided later."""
+    instance, _state, _wd = app
+    # create a pending confirmation directly via the manager
+    row = await instance.confirmations.create(
+        agent="phantom", conversation_id="c1", tool_name="write_file",
+        arguments={"path": "/tmp/x.txt"}, reason="test",
+        impact="writes a file", risk="high")
+    # list across agents (the Approvals tab)
+    async with await _perm_client(instance) as c:
+        res = await c.get("/api/confirmations")
+        ids = [x["id"] for x in res.json()["confirmations"]]
+        assert row["id"] in ids
+        # decide it later
+        r = await c.post(f"/api/confirmations/{row['id']}/approve",
+                         json={"decided_by": "user"})
+        assert r.status_code == 200
+        res2 = await c.get("/api/confirmations")
+        assert row["id"] not in [x["id"] for x in res2.json()["confirmations"]]
+
+
+async def test_general_mode_lowers_routine_confirmations(app):
+    """General mode: routine actions (write_file, close_process) become
+    safe-action (no confirm); delete_file stays protected."""
+    instance, _state, _wd = app
+    # default: write_file needs confirm
+    lvl, src, _ = await instance.permissions.effective_level("phantom", "write_file", {})
+    assert lvl == PermissionLevel.CONFIRM_REQUIRED
+    # enable general mode
+    await instance.settings.set("permissions.general_mode", True, "*")
+    lvl2, src2, _ = await instance.permissions.effective_level("phantom", "write_file", {})
+    assert lvl2 == PermissionLevel.SAFE_ACTION
+    assert src2 == "general-mode"
+    lvl3, _, _ = await instance.permissions.effective_level("phantom", "close_process", {})
+    assert lvl3 == PermissionLevel.SAFE_ACTION
+    # destructive stays protected
+    lvl4, _, _ = await instance.permissions.effective_level("phantom", "delete_file", {})
+    assert lvl4 == PermissionLevel.CONFIRM_REQUIRED
+    # open_application is already safe
+    lvl5, _, _ = await instance.permissions.effective_level("phantom", "open_application", {})
+    assert lvl5 == PermissionLevel.SAFE_ACTION
+    # cleanup
+    await instance.settings.set("permissions.general_mode", False, "*")

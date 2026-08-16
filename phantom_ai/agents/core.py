@@ -160,19 +160,35 @@ class Agent:
         self.tool_allowlist: Optional[set] = None
 
     async def ensure_model(self, task_text: str, mode: str = "chat") -> str:
-        """Intelligent model selection: pick a model for this task via the
-        router and rebuild the provider if the chosen model differs."""
+        """Intelligent model selection — BUT respect an explicit user choice.
+
+        If the user (or a brain config) set a custom model, use it and skip
+        the router entirely — otherwise the router swaps models per task and
+        replies feel incoherent/off-topic ('out of the league')."""
+        try:
+            custom = await self.settings.get(f"brain.{self.agent_id}.model", "*", "")
+            if custom:
+                if custom != self.provider.model:
+                    await self._swap_provider(custom)
+                return custom
+        except Exception:  # noqa: BLE001
+            pass
         if self.router is None:
             return self.provider.model
         chosen = await self.router.choose(self.agent_id, task_text,
                                           has_tools=mode != "delegation")
         if chosen and chosen != self.provider.model:
-            from ..providers import build_provider
-            from ..config import KEY_ENV
+            await self._swap_provider(chosen)
+        return self.provider.model
 
+    async def _swap_provider(self, model: str) -> None:
+        from ..providers import build_provider
+        from ..config import KEY_ENV
+
+        try:
             key = self.secrets.get(KEY_ENV.get(self.agent_id, "")) or \
                 self.secrets.get(KEY_ENV.get("phantom", ""))
-            provider = build_provider(self.agent_id, api_key=key or "", model=chosen)
+            provider = build_provider(self.agent_id, api_key=key or "", model=model)
             if provider.has_key:
                 old = self.provider
                 self.provider = provider
@@ -182,7 +198,8 @@ class Agent:
                         await close()
                     except Exception:  # noqa: BLE001
                         pass
-        return self.provider.model
+        except Exception:  # noqa: BLE001
+            pass
 
     async def verify(self, objective: str, produced: str) -> dict[str, Any]:
         """Independent verification (critic-style) using this brain's provider."""
@@ -247,6 +264,28 @@ class Agent:
             limit = int(await self.settings.get("agent.max_concurrent_runs", self.agent_id, 2))
             self._run_semaphore = asyncio.Semaphore(max(1, limit))
         return self._run_semaphore
+
+    def _is_casual(self, user_text: str) -> bool:
+        """Small talk / greetings should NEVER trigger tool calls — reply
+        directly (fast + human). Heuristic + length guard."""
+        t = (user_text or "").strip().lower()
+        if not t or len(t) > 90:
+            return False
+        casual = (
+            "how are you", "how r u", "how's it going", "how is it going",
+            "what's up", "whats up", "wassup", "sup ", "hi", "hii", "hello",
+            "hey", "yo", "good morning", "good afternoon", "good evening",
+            "good night", "thanks", "thank you", "thx", "ty", "ok", "okay",
+            "yes", "no", "lol", "haha", "nice", "cool", "great", "awesome",
+            "what do you do", "who are you", "how are you doing", "how are u",
+            "how are you today", "are you there", "you there", "are you alive",
+        )
+        if any(t == c or t.startswith(c + " ") or t.startswith(c + ",") or t.startswith(c + "!") or t.startswith(c + "?") for c in casual):
+            return True
+        # very short pure-greeting punctuation
+        if t in ("?", "!", "..."):
+            return True
+        return False
 
     async def _run_locked(self, conversation_id, user_text, session_id, mode, run_id,
                           cancel_event, permissions_override, started) -> AgentRunResult:
@@ -326,6 +365,11 @@ class Agent:
             tools = [t for t in tools if t["function"]["name"] in self.tool_allowlist]
         if permissions_override:
             tools = [t for t in tools if t["function"]["name"] in permissions_override]
+        # SMALL-TALK GATE: greetings/casual chat never call tools — reply
+        # directly, fast and human (a greeting must not fire system_info!).
+        if mode == "chat" and self._is_casual(user_text):
+            tools = []
+            protocol = "text"
         tool_calls_made = 0
         content_out = ""
         final = None
@@ -386,6 +430,9 @@ class Agent:
             content_out = assistant_content
 
             if not tool_calls:
+                if not (assistant_content or "").strip():
+                    # never leave the user with a blank reply
+                    assistant_content = "I'm here — what would you like to do?"
                 final = AgentRunResult(
                     run_id=run_id, conversation_id=conversation_id, agent=agent,
                     content=assistant_content or "", tool_calls_made=tool_calls_made,
@@ -456,7 +503,10 @@ class Agent:
                 messages,
                 tools=tools,
                 temperature=float(await self.settings.get("model.temperature", agent, 0.4)),
-                max_tokens=int(await self.settings.get("model.max_tokens", agent, 2048)),
+                # JARVIS SPEED: 800 tokens default (was 2048) — NVIDIA's free
+                # endpoint latency scales with max_tokens; 800 covers 99% of
+                # replies and returns ~2-3x faster. Configurable in settings.
+                max_tokens=int(await self.settings.get("model.max_tokens", agent, 800)),
             ):
                 if cancel_event.is_set():
                     raise ProviderError("cancelled", "cancelled by user")

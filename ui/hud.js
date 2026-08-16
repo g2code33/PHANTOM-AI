@@ -17,9 +17,13 @@
 (function () {
   "use strict";
 
-  // Sleeping (or silenced) → low-power tier; everything else → full tier.
+  // Tiers: low (sleeping/silenced) = near-static; medium (awake idle) =
+  // static canvas + slow gauges (saves CPU); full (listening/speaking/
+  // thinking/executing) = live canvas + spectrum + fast gauges.
   function hudTier(state, sleeping) {
-    return sleeping ? "low" : "full";
+    if (sleeping) return "low";
+    const active = ["listening", "speaking", "thinking", "executing", "verifying", "waking"];
+    return active.includes(String(state || "").toLowerCase()) ? "full" : "medium";
   }
 
   // Average a real frequency-domain byte array (0..255) into `outCount` bars.
@@ -110,7 +114,7 @@
 
     _reschedule() {
       if (this._timer) { clearInterval(this._timer); this._timer = null; }
-      const ms = this.tier === "low" ? 8000 : 3000;
+      const ms = this.tier === "low" ? 8000 : this.tier === "medium" ? 5000 : 3000;
       this._poll();
       this._timer = setInterval(() => this._poll(), ms);
     }
@@ -400,8 +404,8 @@
       this.tier = "full";
     }
     setTier(tier) {
-      this.tier = tier === "low" ? "low" : "full";
-      if (this.tier === "low") { this._stop(); this._drawStatic(); }
+      this.tier = tier;
+      if (tier !== "full") { this._stop(); this._drawStatic(); }
       else this._start();
     }
     _start() {

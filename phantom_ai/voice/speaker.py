@@ -106,6 +106,15 @@ class SpeakerVerifier:
 
     def _load_encoder(self) -> None:
         try:
+            import torch  # noqa: F401
+        except Exception as exc:  # noqa: BLE001
+            self._unavailable_reason = (
+                "torch is missing — the speaker engine needs it. Install once "
+                "with: pip install --user torch (CPU build: pip install --user "
+                "torch --index-url https://download.pytorch.org/whl/cpu)")
+            self._encoder = None
+            raise SpeakerUnavailable(str(exc)) from None
+        try:
             from resemblyzer import VoiceEncoder
         except Exception as exc:  # noqa: BLE001 — missing pkg
             self._unavailable_reason = (
