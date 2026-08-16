@@ -1044,8 +1044,8 @@ async function loadSettings() {
       <div class="row"><label>Cloud token 🔒</label><input type="password" id="cloudToken" placeholder="the PHANTOM_CLOUD_TOKEN you set at deploy"></div>
       <div class="row"><label>Test connection</label><button class="btn" onclick="testKey('cloud')">Test</button>
         <span class="muted small">checks the worker is reachable and the token works</span></div>
-      <div class="row"><label>Cloud NVIDIA key</label><input type="password" id="cloudNvidia" placeholder="paste key → Save (cloud only)"></div>
-      <div class="row"><label>Cloud Deepgram key</label><input type="password" id="cloudDeepgram" placeholder="paste key → Save (cloud only)"></div>
+      <div class="row"><label>Cloud NVIDIA key</label><input type="password" id="cloudNvidia" placeholder="same NVIDIA key as your PC (nvapi-…)"></div>
+      <div class="row"><label>Cloud Deepgram key</label><input type="password" id="cloudDeepgram" placeholder="same Deepgram key as your PC"></div>
       <div class="row">
         <button class="btn" onclick="saveCloud()">Save config</button>
         <button class="btn" onclick="saveCloudKeys()">Save keys</button>
@@ -1055,7 +1055,7 @@ async function loadSettings() {
         <span id="cloudStatus" class="muted small"></span>
       </div>
       <pre id="cloudDeployLog" class="mono small hidden" style="max-height:220px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px;margin-top:8px"></pre>
-      <p class="muted small">Key fields are sent straight to the Worker over https with your cloud token — never stored in the app, never shown back.</p>
+      <p class="muted small">These are <b>the same API keys you use on your PC</b> (Settings → AI / Voice) — the cloud Phantom uses them when your PC is off. They are <b>NOT</b> the cloud token above (that is the access password for the Worker). Keys are sent straight to the Worker over https — never stored in the app, never shown back.</p>
     </div>
     <div class="settings-section"><h3>🔧 Diagnostics</h3>
       <p class="muted small">See what's going on without a terminal — recent backend log lines + engine status. Copy anything you want to share.</p>
