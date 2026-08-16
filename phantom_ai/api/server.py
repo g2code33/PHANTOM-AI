@@ -1715,6 +1715,10 @@ def create_app(app: App) -> FastAPI:
         async def voice_js():
             return FileResponse(UI_DIR / "voice.js", media_type="text/javascript")
 
+        @fastapi.get("/hud.js")
+        async def hud_js():
+            return FileResponse(UI_DIR / "hud.js", media_type="text/javascript")
+
         @fastapi.get("/mobile")
         async def mobile_index():
             return FileResponse(UI_DIR / "mobile.html")
