@@ -210,3 +210,24 @@ async def test_enroll_clear(app_with_mock_verifier):
         assert (await client.get("/api/voice/enroll/status?agent=phantom")).json()["enrolled"]
         await client.post("/api/voice/enroll/clear", json={"agent": "phantom"})
         assert not (await client.get("/api/voice/enroll/status?agent=phantom")).json()["enrolled"]
+
+
+async def test_base_url_normalization(app):
+    """A stored bad base_url must self-heal: full endpoint stripped, scheme
+    added, and the NVIDIA host gets /v1 — no more '404 page not found'."""
+    from phantom_ai.brains.config import _normalize_base_url
+
+    # full endpoint accidentally stored as the base
+    assert _normalize_base_url("https://integrate.api.nvidia.com/chat/completions") == \
+        "https://integrate.api.nvidia.com/v1"
+    # bare host without /v1 → gets /v1
+    assert _normalize_base_url("https://integrate.api.nvidia.com") == \
+        "https://integrate.api.nvidia.com/v1"
+    assert _normalize_base_url("integrate.api.nvidia.com") == \
+        "https://integrate.api.nvidia.com/v1"
+    # other endpoints are untouched apart from scheme/trailing slash
+    assert _normalize_base_url("http://localhost:8080/v1") == "http://localhost:8080/v1"
+    assert _normalize_base_url("http://10.0.0.5:8000") == "http://10.0.0.5:8000"
+    # empty → default NVIDIA base
+    from phantom_ai.config import NVIDIA_BASE_URL
+    assert _normalize_base_url("") == NVIDIA_BASE_URL

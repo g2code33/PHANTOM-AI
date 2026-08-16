@@ -1165,6 +1165,8 @@ async function loadDiagnostics() {
       `version: ${d.version || "?"} · uptime ${Math.round(d.uptime_s || 0)}s · wake ${(d.wake && d.wake.state) || "?"}`,
       `keys: NVIDIA ${d.keys?.nvidia ? "set" : "—"} · Deepgram ${d.keys?.deepgram ? "set" : "—"} · Groq ${d.keys?.groq ? "set" : "—"}`,
       `speaker engine: ${d.speaker?.available ? "available" : "unavailable"}`,
+      "---- model endpoints (base_url + model) ----",
+      ...((d.providers || []).map((p) => `  ${p.agent}: ${p.base_url || "?"} · ${p.model || "?"} · ${p.provider || "?"}`)),
       "---- backend log ----",
       ...(d.logs || []).slice(-120),
       "---- frontend errors ----",

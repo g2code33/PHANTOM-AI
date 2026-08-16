@@ -223,7 +223,10 @@ class NVIDIAProvider(ModelProvider):
             return ProviderError("server", f"NVIDIA server error (HTTP {status}): {body}", retryable=True, status_code=status)
         if status == 400 and ("tool" in body.lower() or "function" in body.lower()):
             return ProviderError("unsupported_tool_calling", f"Model does not support native tool calling: {body}", status_code=status)
-        return ProviderError("invalid_request", f"NVIDIA request failed (HTTP {status}): {body}", status_code=status)
+        return ProviderError(
+            "invalid_request",
+            f"NVIDIA request failed (HTTP {status}) on {self.base_url}/chat/completions "
+            f"(model={self.model}): {body}", status_code=status)
 
     async def _backoff(self, attempt: int, err: ProviderError) -> None:
         base = min(0.5 * (2 ** (attempt - 1)), 8.0)
