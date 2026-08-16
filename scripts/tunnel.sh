@@ -29,10 +29,23 @@ URL="http://127.0.0.1:${PORT}"
 
 if ! command -v cloudflared >/dev/null 2>&1; then
   echo "❌ cloudflared not found."
-  echo "   Install it first:"
-  echo "     Linux:   sudo apt install cloudflared   (or download from cloudflare.com)"
-  echo "     macOS:   brew install cloudflared"
+  echo
+  echo "   Debian/Ubuntu (the package is NOT in the default repos —"
+  echo "   use Cloudflare's official repo or the direct .deb):"
+  echo
+  echo "     # option 1 — Cloudflare's apt repo:"
+  echo "     sudo mkdir -p --mode=0755 /usr/share/keyrings"
+  echo "     curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null"
+  echo "     echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' | sudo tee /etc/apt/sources.list.d/cloudflared.list"
+  echo "     sudo apt-get update && sudo apt-get install -y cloudflared"
+  echo
+  echo "     # option 2 — direct .deb download:"
+  echo "     curl -L -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb"
+  echo "     sudo dpkg -i /tmp/cloudflared.deb"
+  echo
+  echo "     macOS: brew install cloudflared"
   echo "     Windows: choco install cloudflared"
+  echo
   echo "   Then re-run: bash scripts/tunnel.sh"
   exit 1
 fi

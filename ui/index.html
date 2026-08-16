@@ -21,6 +21,20 @@
         <span id="identitySub">personal AI companion</span>
       </div>
       <span id="presenceDot" class="dot" title="connection"></span>
+      <!-- session badge (avatar + OS + version + user) — part of the header -->
+      <div id="sessionBadge" class="hud-top-item">
+        <div id="sessionAvatar" class="avatar" title="session">👤</div>
+        <div class="session-text">
+          <div id="sessionOs">Phantom OS</div>
+          <div id="sessionVer">v—</div>
+          <div id="sessionUser" class="muted small">JOOJO</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="clockBlock" class="hud-top-item">
+      <div id="clockDate" class="muted small">—</div>
+      <div id="clockTime" class="clock">00:00:00</div>
     </div>
 
     <div id="topControls">
@@ -48,22 +62,6 @@
 
   <!-- ================= PRESENCE (main) ================= -->
   <main id="presence">
-    <!-- top bar: session badge + clock -->
-    <div id="hudTop">
-      <div id="sessionBadge">
-        <div id="sessionAvatar" class="avatar" title="session">👤</div>
-        <div class="session-text">
-          <div id="sessionOs">Phantom OS</div>
-          <div id="sessionVer">v0.0.0</div>
-          <div id="sessionUser" class="muted small">JOOJO</div>
-        </div>
-      </div>
-      <div id="clockBlock">
-        <div id="clockDate" class="muted small">—</div>
-        <div id="clockTime" class="clock">00:00:00</div>
-      </div>
-    </div>
-
     <!-- left column -->
     <div id="hudLeft">
       <div class="hud-panel" id="cpuHistPanel">
@@ -146,6 +144,10 @@
 
   <!-- ================= TRANSCRIPT (secondary) ================= -->
   <section id="transcriptPanel">
+    <div id="transcriptHead" class="transcript-head">
+      <span id="currentChatLabel" class="muted small">💬 current chat</span>
+      <button class="mini-btn" onclick="openChatsMenu()" title="All conversations">☰ chats</button>
+    </div>
     <div id="messages"></div>
   </section>
 
@@ -410,6 +412,18 @@
 
   <div id="toast" class="toast hidden"></div>
 </div>
+
+  <!-- HUD detail modal (click any home-screen gauge) -->
+  <div id="hudModal" class="hud-modal hidden">
+    <div class="hud-modal-card">
+      <div class="hud-modal-head"><span id="hudModalTitle">Details</span><button id="hudModalClose" class="ctl" title="Close">✕</button></div>
+      <div id="hudModalBody" class="hud-modal-body"></div>
+      <div class="hud-modal-foot">
+        <button id="hudModalManage" class="btn">Manage in Settings</button>
+        <button id="hudModalRefresh" class="btn">Refresh</button>
+      </div>
+    </div>
+  </div>
 
 <script src="/voice.js"></script>
 <script src="/hud.js"></script>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import platform
 import shutil
@@ -58,6 +59,63 @@ async def _network_info(ctx: ToolContext) -> ToolResult:
         data={"interfaces": out})
 
 
+async def _hud_status(ctx: ToolContext) -> ToolResult:
+    """Live HUD telemetry: per-core CPU, memory, disk/net I/O rates, battery,
+    top process — the same real readings shown on the home screen. Lets
+    Phantom/Coded report and regulate the machine (pair with process tools)."""
+    import time
+
+    # prime psutil so percentages are real deltas
+    psutil.cpu_percent(interval=None)
+    psutil.cpu_percent(percpu=True, interval=None)
+    await asyncio.sleep(0.15)
+    per_core = [round(x, 1) for x in psutil.cpu_percent(percpu=True, interval=None)]
+    vm = psutil.virtual_memory()
+    net = psutil.net_io_counters()
+    disk = psutil.disk_io_counters()
+    battery = None
+    try:
+        b = psutil.sensors_battery()
+        if b is not None:
+            battery = {"percent": round(b.percent, 1), "plugged": bool(b.power_plugged)}
+    except Exception:  # noqa: BLE001
+        battery = None
+    # top process by one-shot cpu_percent
+    top = None
+    try:
+        rows = []
+        for p in psutil.process_iter(["pid", "name"]):
+            try:
+                rows.append((p.cpu_percent(interval=None) or 0, p.pid, p.name()))
+            except Exception:  # noqa: BLE001
+                continue
+        if rows:
+            rows.sort(reverse=True)
+            top = {"pid": rows[0][1], "name": rows[0][2], "cpu": round(rows[0][0], 1)}
+    except Exception:  # noqa: BLE001
+        top = None
+    info = {
+        "cpu_percent_per_core": per_core,
+        "cpu_total_percent": round(sum(per_core) / max(len(per_core), 1), 1),
+        "cores": len(per_core),
+        "memory_percent": round(vm.percent, 1),
+        "memory_used_gb": round(vm.used / (1024 ** 3), 2),
+        "memory_total_gb": round(vm.total / (1024 ** 3), 2),
+        "net_bytes_sent": net.bytes_sent, "net_bytes_recv": net.bytes_recv,
+        "disk_read_bytes": disk.read_bytes if disk else None,
+        "disk_write_bytes": disk.write_bytes if disk else None,
+        "battery": battery,
+        "top_cpu_process": top,
+        "ts": time.time(),
+    }
+    text = (
+        f"CPU {info['cpu_total_percent']}% (cores: {info['cpu_percent_per_core']}) | "
+        f"MEM {info['memory_percent']}% | top: {(top or {}).get('name') or '-'} "
+        f"{(top or {}).get('cpu') or 0}% | battery: "
+        f"{battery['percent'] if battery else 'n/a'}")
+    return ToolResult.ok(text, data=info)
+
+
 def register_system_tools(registry) -> None:
     registry.register(ToolSpec(
         name="system_info", description="Get OS, hardware, disk, and user information for this computer.",
@@ -68,6 +126,11 @@ def register_system_tools(registry) -> None:
         name="system_resources", description="Get live CPU, memory, load and disk usage.",
         purpose="Monitor resources", category="system",
         parameters={}, handler=_system_resources, permission=PermissionLevel.READ_ONLY, timeout=10,
+    ))
+    registry.register(ToolSpec(
+        name="hud_status", description="Live HUD telemetry: per-core CPU, memory, disk/net I/O, battery, top CPU process — same real readings as the home screen. Use to report or regulate the machine (pair with process tools).",
+        purpose="Monitor the machine live", category="system",
+        parameters={}, handler=_hud_status, permission=PermissionLevel.READ_ONLY, timeout=10,
     ))
     registry.register(ToolSpec(
         name="network_info", description="List network interfaces and their state/IPs.",

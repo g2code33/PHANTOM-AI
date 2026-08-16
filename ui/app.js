@@ -365,15 +365,32 @@ function addMessageEl(role, content, container) {
 }
 
 function renderMessages(msgs) {
+  // MAIN SCREEN: only the current chat — user + assistant turns, clean.
+  // Tool cards / system noise / older history belong to the Chats menu.
   const host = $("messages");
   host.innerHTML = "";
-  const full = $("fullTranscript");
-  if (full) full.innerHTML = "";
   for (const m of msgs || []) {
-    if (m.role === "tool") continue;
+    if (m.role === "tool" || m.role === "system") continue;
     if (m.role === "user") addMessageEl("user", m.content || "");
     else if (m.role === "assistant") addMessageEl("assistant", m.content || "…");
   }
+  // CHATS MENU: the full transcript incl. tool cards for the same conv.
+  renderFullTranscript(msgs);
+}
+function renderFullTranscript(msgs) {
+  const full = $("fullTranscript");
+  if (!full) return;
+  full.innerHTML = "";
+  for (const m of msgs || []) {
+    if (m.role === "tool") continue;
+    const el = document.createElement("div");
+    el.className = "msg " + m.role;
+    if (m.role === "user") el.innerHTML = `<div class="bubble user"><span class="who">You</span>${esc(m.content || "")}</div>`;
+    else if (m.role === "assistant") el.innerHTML = `<div class="bubble assistant">${renderMarkdown(m.content || "…")}</div>`;
+    else el.innerHTML = `<div class="muted small">${esc(m.content || "")}</div>`;
+    full.appendChild(el);
+  }
+  full.scrollTop = full.scrollHeight;
 }
 
 let activeStreamEl = null;
@@ -460,6 +477,11 @@ async function loadConversations() {
     item.onclick = () => openConversation(c.id);
     list.appendChild(item);
   }
+}
+function openChatsMenu() {
+  const d = $("drawer");
+  if (d && d.classList.contains("hidden")) openDrawer();
+  switchPanel("chats");
 }
 async function openConversation(id) {
   state.currentConv = id;
@@ -1084,6 +1106,7 @@ async function loadSettings() {
   if ($("continuousSel")) $("continuousSel").value = vc.continuous ? "1" : "0";
   loadVoiceStatus();
   loadDiagnostics();   // fire-and-forget: fill the Diagnostics log box
+  wireHudClickables(); // make home-screen gauges clickable
   await loadVoicePickers(vc);
   await Promise.all([loadBrainKeys(), loadEnrollStatus()]);
   await loadSchedules();
@@ -1179,6 +1202,74 @@ async function loadDiagnostics() {
     if (stEl) stEl.textContent = "backend unreachable";
   }
 }
+// ---- HUD panels: click any home gauge for details + manage ----
+function wireHudClickables() {
+  const map = {
+    cpuHistPanel: ["CPU", "cpu", "settings"],
+    memHistPanel: ["Memory", "memory", "settings"],
+    corePanel: ["Processor units", "cpu", "settings"],
+    diskPanel: ["Disk I/O", "disk", "settings"],
+    weatherPanel: ["Weather", "weather", "settings"],
+    moonPanel: ["Moon", "moon", "settings"],
+    netPanel: ["Network", "net", "settings"],
+    sysPanel: ["System", "system", "settings"],
+  };
+  for (const [id, [title, key, manage]] of Object.entries(map)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.classList.add("hud-clickable");
+    el.title = "Click for details — " + title;
+    el.addEventListener("click", (ev) => {
+      if (ev.target.closest("button, a, input, select")) return;
+      openHudModal(title, key, manage);
+    });
+  }
+}
+async function openHudModal(title, key, manage) {
+  const modal = $("hudModal");
+  if (!modal) return;
+  $("hudModalTitle").textContent = title;
+  const body = $("hudModalBody");
+  body.innerHTML = `<div class="muted small">refreshing…</div>`;
+  modal.classList.remove("hidden");
+  modal._key = key; modal._manage = manage;
+  await refreshHudModal();
+}
+async function refreshHudModal() {
+  const body = $("hudModalBody");
+  const key = $("hudModal")?._key;
+  if (!body || !key) return;
+  try {
+    const d = await api("/api/hud");
+    const sec = (k) => `<h4 class="muted" style="margin:8px 0 4px">${k}</h4><pre class="mono small">${esc(JSON.stringify(d[k], null, 2))}</pre>`;
+    let html = "";
+    if (key === "weather") {
+      const w = await api("/api/hud/weather").catch(() => ({ available: false, reason: "unavailable" }));
+      html = sec("weather") + (w.available ? "" : `<div class="muted small">${esc(w.reason || "")}</div>`);
+    } else if (key === "system") {
+      html = sec("process") + sec("process_count") + sec("battery");
+    } else {
+      html = sec(key);
+    }
+    body.innerHTML = html +
+      `<div class="muted small" style="margin-top:8px">Live reading from /api/hud — every value is real. Phantom/Coded can read and act on this via system tools.</div>`;
+  } catch (e) {
+    body.innerHTML = `<div class="muted small">could not refresh: ${esc(e.message)}</div>`;
+  }
+}
+$("hudModal") && ($("hudModal").addEventListener("click", (ev) => {
+  if (ev.target.id === "hudModal") $("hudModal").classList.add("hidden");
+}));
+$("hudModalClose") && ($("hudModalClose").onclick = () => $("hudModal").classList.add("hidden"));
+$("hudModalRefresh") && ($("hudModalRefresh").onclick = () => refreshHudModal());
+$("hudModalManage") && ($("hudModalManage").onclick = () => {
+  $("hudModal").classList.add("hidden");
+  const p = $("hudModal")._manage;
+  if (p === "settings") { openDrawer(); switchPanel("settings"); }
+  else if (p === "memory") { openDrawer(); switchPanel("memory"); }
+  else { openDrawer(); switchPanel("settings"); }
+});
+
 window.copyDiagLog = () => {
   const el = $("diagLog");
   if (!el) return;

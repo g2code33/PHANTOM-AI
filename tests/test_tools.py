@@ -153,3 +153,20 @@ async def test_memory_tools_via_registry(tool_ctx):
     assert "Fridays" in found.output
     listed = await ctx.registry_get("list_memories").run(ctx)
     assert "Deployments" in listed.output
+
+
+async def test_hud_status_tool_registered_and_works(tool_ctx):
+    """Phantom/Coded can read live HUD telemetry via the hud_status tool."""
+    from phantom_ai.tools.base import ToolContext
+
+    ctx = tool_ctx("phantom")
+    assert ctx.registry_get("hud_status") is not None
+    result = await ctx.registry_get("hud_status").handler(ctx)
+    assert result.ok
+    data = result.data
+    assert "cpu_percent_per_core" in data
+    assert isinstance(data["cpu_percent_per_core"], list)
+    assert data["cores"] == len(data["cpu_percent_per_core"])
+    assert "memory_percent" in data
+    assert "battery" in data
+    assert "top_cpu_process" in data
