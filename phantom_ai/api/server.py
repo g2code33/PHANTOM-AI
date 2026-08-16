@@ -49,6 +49,23 @@ def _init_diag_log() -> None:
 
 _init_diag_log()
 
+
+def _thread_excepthook(args) -> None:
+    log.error("Unhandled thread exception: %s: %s",
+              getattr(args, "exc_type", Exception).__name__,
+              getattr(args, "exc_value", "?"))
+    tb = getattr(args, "exc_traceback", None)
+    if tb is not None:
+        log.error("Traceback (most recent call last):\n%s",
+                  "".join(__import__("traceback").format_tb(tb)))
+
+
+try:
+    import threading as _threading
+    _threading.excepthook = _thread_excepthook
+except Exception:  # noqa: BLE001
+    pass
+
 ACCESS_TOKEN = os.environ.get("PHAI_ACCESS_TOKEN", "")
 
 
@@ -908,12 +925,31 @@ def create_app(app: App) -> FastAPI:
     async def diagnostics():
         """In-app diagnostics: recent backend log lines + key status, so the
         user can see what's wrong without a terminal (never keys/secrets)."""
+        import asyncio as _asyncio
+
         speaker = None
         if app.speaker is not None:
             try:
                 speaker = await app.speaker.available()
             except Exception as exc:  # noqa: BLE001
                 speaker = {"available": False, "reason": str(exc)[:120]}
+        system = {}
+        if app.hud is not None:
+            try:
+                system = await app.hud.snapshot()
+            except Exception as exc:  # noqa: BLE001
+                system = {"error": str(exc)[:120]}
+        ws_subs = 0
+        try:
+            subs = getattr(app.events, "_subscribers", None) or {}
+            ws_subs = len(subs)
+        except Exception:  # noqa: BLE001
+            ws_subs = -1
+        pending_tasks = 0
+        try:
+            pending_tasks = len(_asyncio.all_tasks())
+        except Exception:  # noqa: BLE001
+            pending_tasks = -1
         return {
             "version": APP_VERSION,
             "uptime_s": round(app.uptime_seconds(), 1),
@@ -929,7 +965,17 @@ def create_app(app: App) -> FastAPI:
                 "state": (app.wake._state.state if getattr(app.wake, "_state", None)
                           else "unknown"),
             },
+            "system": system,
+            "pending_tasks": pending_tasks,
+            "ws_subscribers": ws_subs,
         }
+
+    @fastapi.post("/api/diagnostics/clear")
+    async def diagnostics_clear():
+        """Clear the in-app backend log ring (the frontend console has its
+        own clear via window.PhantomConsole.clear())."""
+        DIAG_LOG.clear()
+        return {"ok": True}
 
     # ------------------------------------------------------------- HUD (real)
     @fastapi.get("/api/hud")
@@ -1581,6 +1627,8 @@ def create_app(app: App) -> FastAPI:
             payload["nvidia_key"] = str(body["nvidia_key"]).strip()
         if body.get("deepgram_key"):
             payload["deepgram_key"] = str(body["deepgram_key"]).strip()
+        if body.get("model"):
+            payload["model"] = str(body["model"]).strip()
         if body.get("clear_nvidia"):
             payload["clear_nvidia"] = True
         if body.get("clear_deepgram"):
@@ -1846,6 +1894,10 @@ def create_app(app: App) -> FastAPI:
         @fastapi.get("/hud.js")
         async def hud_js():
             return FileResponse(UI_DIR / "hud.js", media_type="text/javascript")
+
+        @fastapi.get("/console.js")
+        async def console_js():
+            return FileResponse(UI_DIR / "console.js", media_type="text/javascript")
 
         @fastapi.get("/mobile")
         async def mobile_index():

@@ -1044,8 +1044,10 @@ async function loadSettings() {
       <div class="row"><label>Cloud token 🔒</label><input type="password" id="cloudToken" placeholder="the PHANTOM_CLOUD_TOKEN you set at deploy"></div>
       <div class="row"><label>Test connection</label><button class="btn" onclick="testKey('cloud')">Test</button>
         <span class="muted small">checks the worker is reachable and the token works</span></div>
-      <div class="row"><label>Cloud NVIDIA key</label><input type="password" id="cloudNvidia" placeholder="paste key → Save (cloud only)"></div>
-      <div class="row"><label>Cloud Deepgram key</label><input type="password" id="cloudDeepgram" placeholder="paste key → Save (cloud only)"></div>
+      <div class="row"><label>Cloud NVIDIA key</label><input type="password" id="cloudNvidia" placeholder="same NVIDIA key as your PC (nvapi-…)"></div>
+      <div class="row"><label>Cloud Deepgram key</label><input type="password" id="cloudDeepgram" placeholder="same Deepgram key as your PC"></div>
+      <div class="row"><label>Cloud model</label><input type="text" id="cloudModel" placeholder="nvidia/llama-3.3-70b-instruct (default)" title="NVIDIA model the cloud Phantom uses when your PC is off. Leave empty for the default.">
+        <span class="muted small" id="cloudModelHint"></span></div>
       <div class="row">
         <button class="btn" onclick="saveCloud()">Save config</button>
         <button class="btn" onclick="saveCloudKeys()">Save keys</button>
@@ -1055,17 +1057,29 @@ async function loadSettings() {
         <span id="cloudStatus" class="muted small"></span>
       </div>
       <pre id="cloudDeployLog" class="mono small hidden" style="max-height:220px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px;margin-top:8px"></pre>
-      <p class="muted small">Key fields are sent straight to the Worker over https with your cloud token — never stored in the app, never shown back.</p>
+      <p class="muted small">These are <b>the same API keys you use on your PC</b> (Settings → AI / Voice) — the cloud Phantom uses them when your PC is off. They are <b>NOT</b> the cloud token above (that is the access password for the Worker). Keys are sent straight to the Worker over https — never stored in the app, never shown back.</p>
     </div>
     <div class="settings-section"><h3>🔧 Diagnostics</h3>
-      <p class="muted small">See what's going on without a terminal — recent backend log lines + engine status. Copy anything you want to share.</p>
+      <p class="muted small">Everything the console sees — backend logs, frontend console, network calls, WS events, unhandled errors. No terminal needed.</p>
       <div class="row"><label>Status</label><span id="diagStatus" class="muted small"></span></div>
-      <pre id="diagLog" class="mono small" style="max-height:220px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px">loading…</pre>
-      <div class="row" style="margin-top:6px">
-        <button id="diagRefreshBtn" class="btn" onclick="loadDiagnostics()">Refresh</button>
-        <button class="btn" onclick="copyDiagLog()">Copy log</button>
-        <span class="muted small">frontend errors also appear here</span>
+      <div class="row" style="flex-wrap:wrap">
+        <button class="btn mini-btn" onclick="diagTab('all')">All</button>
+        <button class="btn mini-btn" onclick="diagTab('backend')">Backend</button>
+        <button class="btn mini-btn" onclick="diagTab('console')">Console</button>
+        <button class="btn mini-btn" onclick="diagTab('network')">Network/WS</button>
+        <button class="btn mini-btn" onclick="diagTab('system')">System</button>
+        <button class="btn mini-btn" onclick="loadDiagnostics()">Refresh</button>
+        <button class="btn mini-btn" onclick="copyDiagLog()">Copy</button>
+        <button class="btn mini-btn" onclick="exportDiagLog()">Export file</button>
+        <button class="btn mini-btn" onclick="clearDiagLog()">Clear console</button>
       </div>
+      <pre id="diagLog" class="mono small" style="max-height:300px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px">loading…</pre>
+      <div class="row" style="margin-top:8px">
+        <input id="replInput" placeholder="JS expression — try: document.title · voice.state · state.agent" style="flex:1" onkeydown="if(event.key==='Enter')replRun()">
+        <button class="btn" onclick="replRun()">Run</button>
+        <span class="muted small">evaluates in the app's context (dev tool)</span>
+      </div>
+      <pre id="replOut" class="mono small hidden" style="max-height:140px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px"></pre>
     </div>
     <div class="settings-section"><h3>📱 Mobile / remote backend</h3>
       <div class="row"><label>Backend URL</label><input type="text" id="apiBase" placeholder="http://192.168.1.50:8000">
@@ -1179,96 +1193,88 @@ window.clearBrainKey = async (bid) => {
 };
 
 /* voice enrollment */
+let diagActiveTab = "all";
+function diagTab(tab) {
+  diagActiveTab = tab;
+  loadDiagnostics();
+}
 async function loadDiagnostics() {
   const logEl = $("diagLog"); const stEl = $("diagStatus");
   if (!logEl) return;
   try {
     const d = await api("/api/diagnostics");
+    const pc = window.PhantomConsole;
+    const consoleLines = pc ? pc.getLogs() : [];
     const lines = [
       `version: ${d.version || "?"} · uptime ${Math.round(d.uptime_s || 0)}s · wake ${(d.wake && d.wake.state) || "?"}`,
       `keys: NVIDIA ${d.keys?.nvidia ? "set" : "—"} · Deepgram ${d.keys?.deepgram ? "set" : "—"} · Groq ${d.keys?.groq ? "set" : "—"}`,
       `speaker engine: ${d.speaker?.available ? "available" : "unavailable"}`,
-      "---- model endpoints (base_url + model) ----",
-      ...((d.providers || []).map((p) => `  ${p.agent}: ${p.base_url || "?"} · ${p.model || "?"} · ${p.provider || "?"}`)),
-      "---- backend log ----",
-      ...(d.logs || []).slice(-120),
-      "---- frontend errors ----",
-      ...(FE_LOG.length ? FE_LOG.slice(-30) : ["(none)"]),
     ];
+    const tab = diagActiveTab;
+    if (tab === "all" || tab === "backend") {
+      lines.push("---- model endpoints (base_url + model) ----");
+      for (const p of (d.providers || [])) lines.push(`  ${p.agent}: ${p.base_url || "?"} · ${p.model || "?"} · ${p.provider || "?"}`);
+      lines.push("---- backend log ----");
+      lines.push(...(d.logs || []).slice(-160));
+    }
+    if (tab === "all" || tab === "console") {
+      lines.push("---- frontend console ----");
+      lines.push(...(consoleLines.length ? consoleLines.map((c) => `${c.t} ${c.level.toUpperCase()} ${c.text}`).slice(-120) : ["(none)"]));
+    }
+    if (tab === "all" || tab === "network") {
+      lines.push("---- network / websocket ----");
+      const nets = consoleLines.filter((c) => c.level === "net");
+      lines.push(...(nets.length ? nets.map((c) => `${c.t} ${c.text}`).slice(-80) : ["(none)"]));
+    }
+    if (tab === "all" || tab === "system") {
+      const sys = d.system || {};
+      lines.push("---- system ----");
+      lines.push(`cpu total ${sys.cpu?.total ?? "?"}% · cores ${sys.cpu?.cores ?? "?"} · mem ${sys.memory?.percent ?? "?"}%`);
+      lines.push(`disk R ${sys.disk?.read_bps ?? 0} B/s · W ${sys.disk?.write_bps ?? 0} B/s · net ↓${sys.net?.down_bps ?? 0} ↑${sys.net?.up_bps ?? 0}`);
+      lines.push(`battery: ${sys.battery?.available ? sys.battery.percent + "%" : "unavailable"}`);
+      lines.push(`processes: ${sys.process_count ?? "?"} · top cpu: ${sys.process?.name || "—"} ${sys.process?.cpu_percent || 0}%`);
+      lines.push(`pending asyncio tasks: ${d.pending_tasks ?? "?"} · ws subscribers: ${d.ws_subscribers ?? "?"}`);
+    }
     logEl.textContent = lines.join("\n");
-    if (stEl) stEl.textContent = `connected · v${d.version || "?"}`;
+    logEl.scrollTop = logEl.scrollHeight;
+    if (stEl) stEl.textContent = `connected · v${d.version || "?"} · tab: ${tab}`;
   } catch (e) {
-    logEl.textContent = "Could not reach backend diagnostics: " + e.message + "\n\nFrontend errors:\n" + (FE_LOG.slice(-20).join("\n") || "(none)");
+    logEl.textContent = "Could not reach backend diagnostics: " + e.message +
+      "\n\nFrontend console:\n" + (window.PhantomConsole ? window.PhantomConsole.getLogs().map((c) => `${c.t} ${c.level.toUpperCase()} ${c.text}`).slice(-20).join("\n") : "(none)");
     if (stEl) stEl.textContent = "backend unreachable";
   }
 }
-// ---- HUD panels: click any home gauge for details + manage ----
-function wireHudClickables() {
-  const map = {
-    cpuHistPanel: ["CPU", "cpu", "settings"],
-    memHistPanel: ["Memory", "memory", "settings"],
-    corePanel: ["Processor units", "cpu", "settings"],
-    diskPanel: ["Disk I/O", "disk", "settings"],
-    weatherPanel: ["Weather", "weather", "settings"],
-    moonPanel: ["Moon", "moon", "settings"],
-    netPanel: ["Network", "net", "settings"],
-    sysPanel: ["System", "system", "settings"],
-  };
-  for (const [id, [title, key, manage]] of Object.entries(map)) {
-    const el = document.getElementById(id);
-    if (!el) continue;
-    el.classList.add("hud-clickable");
-    el.title = "Click for details — " + title;
-    el.addEventListener("click", (ev) => {
-      if (ev.target.closest("button, a, input, select")) return;
-      openHudModal(title, key, manage);
-    });
-  }
-}
-async function openHudModal(title, key, manage) {
-  const modal = $("hudModal");
-  if (!modal) return;
-  $("hudModalTitle").textContent = title;
-  const body = $("hudModalBody");
-  body.innerHTML = `<div class="muted small">refreshing…</div>`;
-  modal.classList.remove("hidden");
-  modal._key = key; modal._manage = manage;
-  await refreshHudModal();
-}
-async function refreshHudModal() {
-  const body = $("hudModalBody");
-  const key = $("hudModal")?._key;
-  if (!body || !key) return;
+window.replRun = () => {
+  const inp = $("replInput"); const out = $("replOut");
+  if (!inp || !out) return;
+  const code = inp.value.trim();
+  if (!code) return;
+  out.classList.remove("hidden");
+  let r;
+  if (window.PhantomConsole) r = window.PhantomConsole.evalJs(code);
+  else { try { r = { ok: true, result: String((0, eval)(code)) }; } catch (e) { r = { ok: false, error: String(e) }; } }
+  out.textContent += (r.ok ? "> " + code + "\n" + r.result : "> " + code + "\n✗ " + r.error) + "\n";
+  out.scrollTop = out.scrollHeight;
+};
+window.exportDiagLog = () => {
+  const el = $("diagLog");
+  if (!el) return;
   try {
-    const d = await api("/api/hud");
-    const sec = (k) => `<h4 class="muted" style="margin:8px 0 4px">${k}</h4><pre class="mono small">${esc(JSON.stringify(d[k], null, 2))}</pre>`;
-    let html = "";
-    if (key === "weather") {
-      const w = await api("/api/hud/weather").catch(() => ({ available: false, reason: "unavailable" }));
-      html = sec("weather") + (w.available ? "" : `<div class="muted small">${esc(w.reason || "")}</div>`);
-    } else if (key === "system") {
-      html = sec("process") + sec("process_count") + sec("battery");
-    } else {
-      html = sec(key);
-    }
-    body.innerHTML = html +
-      `<div class="muted small" style="margin-top:8px">Live reading from /api/hud — every value is real. Phantom/Coded can read and act on this via system tools.</div>`;
-  } catch (e) {
-    body.innerHTML = `<div class="muted small">could not refresh: ${esc(e.message)}</div>`;
-  }
-}
-$("hudModal") && ($("hudModal").addEventListener("click", (ev) => {
-  if (ev.target.id === "hudModal") $("hudModal").classList.add("hidden");
-}));
-$("hudModalClose") && ($("hudModalClose").onclick = () => $("hudModal").classList.add("hidden"));
-$("hudModalRefresh") && ($("hudModalRefresh").onclick = () => refreshHudModal());
-$("hudModalManage") && ($("hudModalManage").onclick = () => {
-  $("hudModal").classList.add("hidden");
-  const p = $("hudModal")._manage;
-  if (p === "settings") { openDrawer(); switchPanel("settings"); }
-  else if (p === "memory") { openDrawer(); switchPanel("memory"); }
-  else { openDrawer(); switchPanel("settings"); }
-});
+    const blob = new Blob([el.textContent || ""], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "phantom-diag-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".txt";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+    toast("✓ Diagnostics exported", "ok");
+  } catch (e) { toast("Export failed: " + e.message, "err"); }
+};
+window.clearDiagLog = async () => {
+  if (window.PhantomConsole) window.PhantomConsole.clear();
+  try { await api("/api/diagnostics/clear", { method: "POST" }); } catch (e) {}
+  loadDiagnostics();
+  toast("✓ Console cleared", "ok");
+};
 
 window.copyDiagLog = () => {
   const el = $("diagLog");
@@ -1523,14 +1529,18 @@ window.saveCloud = async () => {
 window.saveCloudKeys = async () => {
   const nv = $("cloudNvidia").value.trim();
   const dg = $("cloudDeepgram").value.trim();
+  const model = $("cloudModel").value.trim();
   const body = {};
   if (nv) body.nvidia_key = nv;
   if (dg) body.deepgram_key = dg;
-  if (!Object.keys(body).length) { toast("Paste a key first"); return; }
+  if (model) body.model = model;
+  if (!Object.keys(body).length) { toast("Paste a key or model first"); return; }
   try {
     const r = await api("/api/cloud/keys", { body });
     $("cloudNvidia").value = ""; $("cloudDeepgram").value = "";
-    toast("Cloud keys saved (masked) — " + JSON.stringify(r.masked || {}));
+    toast("Cloud config saved (masked) — " + JSON.stringify(r.masked || {}));
+    const hint = $("cloudModelHint");
+    if (hint) hint.textContent = (r.masked && r.masked.model) ? "active: " + r.masked.model : "";
     loadSettings();
   } catch (e) { toast("Error: " + e.message); }
 };

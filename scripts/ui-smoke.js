@@ -11,6 +11,7 @@ const ROOT = require("path").join(__dirname, "..", "ui");
 const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
 const voiceJs = fs.readFileSync(path.join(ROOT, "voice.js"), "utf8");
 const hudJs = fs.readFileSync(path.join(ROOT, "hud.js"), "utf8");
+const consoleJs = fs.readFileSync(path.join(ROOT, "console.js"), "utf8");
 const appJs = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
 
 const errors = [];
@@ -70,6 +71,7 @@ window.WebSocket = class { constructor(){ this.readyState = 3; } close(){} send(
 try {
   window.eval(voiceJs);
   window.eval(hudJs);
+  window.eval(consoleJs);
   window.eval(appJs);
 } catch (e) {
   errors.push("eval threw: " + (e && e.stack || e));

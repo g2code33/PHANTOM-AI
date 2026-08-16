@@ -70,14 +70,22 @@ await t("status reports portable mode", async () => {
   assert.equal(j.has_nvidia, true);
 });
 
-// auth: token required when set
-await t("auth enforced when token set", async () => {
+// auth: token required for DATA endpoints, but /api/status + / stay public
+// (status only reports masked presence, so the phone can test connection)
+await t("auth enforced when token set (data endpoints)", async () => {
   const e2 = makeEnv(); e2.PHANTOM_CLOUD_TOKEN = "secret123";
-  const r = await handle(req("https://phantom.local/api/status"), e2);
+  const r = await handle(req("https://phantom.local/api/memory"), e2);
   assert.equal(r.status, 401);
-  const ok = await handle(req("https://phantom.local/api/status",
+  const ok = await handle(req("https://phantom.local/api/memory",
     { headers: { "X-Access-Token": "secret123" } }), e2);
   assert.equal(ok.status, 200);
+});
+await t("status public for health checks", async () => {
+  const e2 = makeEnv(); e2.PHANTOM_CLOUD_TOKEN = "secret123";
+  const r = await handle(req("https://phantom.local/api/status"), e2);
+  assert.equal(r.status, 200);
+  const j = await r.json();
+  assert.equal(j.mode, "portable");
 });
 
 // cloud memory (the "save to cloud" store)
@@ -181,7 +189,8 @@ await t("config/keys sets + masks cloud keys", async () => {
     { method: "POST", body: { nvidia_key: "nvapi-cloud-123", deepgram_key: "dg-cloud-456" } }), e);
   const j = await r.json();
   assert.equal(j.ok, true);
-  assert.deepEqual(j.masked, { nvidia: "configured", deepgram: "configured" });
+  assert.deepEqual(j.masked, { nvidia: "configured", deepgram: "configured",
+                               model: "nvidia/llama-3.3-70b-instruct" });
   const st = await handle(req("https://phantom.local/api/status"), e);
   const sj = await st.json();
   assert.equal(sj.keys.nvidia, "configured");
@@ -218,4 +227,58 @@ await t("chat uses app-stored nvidia key", async () => {
     await handle(req("https://phantom.local/api/chat", { method: "POST", body: { text: "hi" } }), e);
     assert.match(used, /nvapi-from-app/);
   } finally { globalThis.fetch = realFetch; }
+});
+
+// cloud model override (set from the app) + the fixed-link mobile UI
+await t("cloud model override + mobile UI served at root", async () => {
+  const e = makeEnv();
+  const set = await handle(req("https://phantom.local/api/config/keys",
+    { method: "POST", body: { model: "nvidia/llama-3.1-8b-instruct" } }), e);
+  const sj = await set.json();
+  assert.equal(sj.masked.model, "nvidia/llama-3.1-8b-instruct");
+  const st = await handle(req("https://phantom.local/api/status"), e);
+  assert.equal((await st.json()).model, "nvidia/llama-3.1-8b-instruct");
+  // chat must use the overridden model
+  const realFetch = globalThis.fetch;
+  let usedModel = "";
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("integrate.api.nvidia.com")) {
+      usedModel = JSON.parse(init.body).model;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "hi" } }] }));
+    }
+    return realFetch(url, init);
+  };
+  const chat = await handle(req("https://phantom.local/api/chat",
+    { method: "POST", body: { text: "hello" } }), e);
+  assert.equal(chat.status, 200);
+  assert.equal(usedModel, "nvidia/llama-3.1-8b-instruct");
+  globalThis.fetch = realFetch;
+  // /mobile serves the embedded companion UI (html)
+  const mob = await handle(req("https://phantom.local/mobile"), e);
+  assert.equal(mob.status, 200);
+  const html = await mob.text();
+  assert.match(html, /<!doctype html/i);
+  assert.match(html, /Connect to your PC/);
+});
+
+// PWA install assets: manifest + icons served from the fixed link
+await t("manifest + icons served (PWA install)", async () => {
+  const e = makeEnv();
+  const m = await handle(req("https://phantom.local/manifest.webmanifest"), e);
+  assert.equal(m.status, 200);
+  assert.match(m.headers.get("content-type"), /manifest\+json|json/);
+  const mj = await m.json();
+  assert.equal(mj.display, "standalone");
+  assert.equal(mj.start_url, "/");
+  assert.ok(Array.isArray(mj.icons) && mj.icons.length >= 3);
+  const icon = await handle(req("https://phantom.local/icons/icon-192.png"), e);
+  assert.equal(icon.status, 200);
+  assert.match(icon.headers.get("content-type"), /image\/png/);
+  const bytes = await icon.arrayBuffer();
+  assert.ok(bytes.byteLength > 1000);
+  const apple = await handle(req("https://phantom.local/apple-touch-icon.png"), e);
+  assert.equal(apple.status, 200);
+  const root = await handle(req("https://phantom.local/"), e);
+  const html = await root.text();
+  assert.match(html, /rel="manifest"/);
 });

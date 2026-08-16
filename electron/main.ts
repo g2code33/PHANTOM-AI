@@ -13,7 +13,7 @@
  * follow-up; until then the packaged app needs a Python 3.10+ on the machine.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, shell, Tray } from "electron";
 import { ChildProcess, spawn } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
@@ -421,6 +421,19 @@ function createWindow() {
   });
 
   mainWindow.loadURL(`http://127.0.0.1:${backendPort}`);
+
+  // F12 / Ctrl+Shift+I / Ctrl+Shift+C → developer options (DevTools)
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    const key = String(input.key || "").toLowerCase();
+    const devtoolsShortcut = input.key === "F12" ||
+      (input.control && input.shift && (key === "i" || key === "c"));
+    if (devtoolsShortcut) {
+      mainWindow?.webContents.toggleDevTools();
+      event.preventDefault();
+    }
+  });
+
   // Jarvis behavior: closing the window hides to tray; the agent stays alive.
   mainWindow.on("close", (ev) => {
     if (!isQuitting) {
@@ -437,8 +450,24 @@ function createWindow() {
 // app lifecycle
 // --------------------------------------------------------------------------
 
+function buildAppMenu() {
+  const template: MenuItemConstructorOptions[] = [
+    { label: "Phantom", submenu: [{ role: "quit" }] },
+    { label: "View", submenu: [
+      { role: "reload", label: "Reload (Ctrl+R)" },
+      { role: "forceReload", label: "Force reload" },
+      { type: "separator" },
+      { role: "toggleDevTools", label: "Developer options (F12)", accelerator: "F12" },
+      { type: "separator" },
+      { role: "togglefullscreen" },
+    ]},
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 app.whenReady().then(async () => {
   initUpdater();
+  buildAppMenu();
   try {
     backendPort = await startBackend();
   } catch (err) {
