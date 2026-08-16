@@ -160,19 +160,35 @@ class Agent:
         self.tool_allowlist: Optional[set] = None
 
     async def ensure_model(self, task_text: str, mode: str = "chat") -> str:
-        """Intelligent model selection: pick a model for this task via the
-        router and rebuild the provider if the chosen model differs."""
+        """Intelligent model selection — BUT respect an explicit user choice.
+
+        If the user (or a brain config) set a custom model, use it and skip
+        the router entirely — otherwise the router swaps models per task and
+        replies feel incoherent/off-topic ('out of the league')."""
+        try:
+            custom = await self.settings.get(f"brain.{self.agent_id}.model", "*", "")
+            if custom:
+                if custom != self.provider.model:
+                    await self._swap_provider(custom)
+                return custom
+        except Exception:  # noqa: BLE001
+            pass
         if self.router is None:
             return self.provider.model
         chosen = await self.router.choose(self.agent_id, task_text,
                                           has_tools=mode != "delegation")
         if chosen and chosen != self.provider.model:
-            from ..providers import build_provider
-            from ..config import KEY_ENV
+            await self._swap_provider(chosen)
+        return self.provider.model
 
+    async def _swap_provider(self, model: str) -> None:
+        from ..providers import build_provider
+        from ..config import KEY_ENV
+
+        try:
             key = self.secrets.get(KEY_ENV.get(self.agent_id, "")) or \
                 self.secrets.get(KEY_ENV.get("phantom", ""))
-            provider = build_provider(self.agent_id, api_key=key or "", model=chosen)
+            provider = build_provider(self.agent_id, api_key=key or "", model=model)
             if provider.has_key:
                 old = self.provider
                 self.provider = provider
@@ -182,7 +198,8 @@ class Agent:
                         await close()
                     except Exception:  # noqa: BLE001
                         pass
-        return self.provider.model
+        except Exception:  # noqa: BLE001
+            pass
 
     async def verify(self, objective: str, produced: str) -> dict[str, Any]:
         """Independent verification (critic-style) using this brain's provider."""

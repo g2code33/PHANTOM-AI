@@ -525,7 +525,7 @@ class PhantomVoice {
 
   speak(text, opts = {}) {
     if (this.muted || this.mode === "private" || this.killEngaged) return;
-    const clean = String(text || "").replace(/[#*`_>]/g, "").trim();
+    const clean = PhantomVoice._cleanSpeech(text);
     if (!clean) return;
     this._speakQueue.push({ text: clean, priority: opts.priority === "high" });
     this._drainQueue();
@@ -550,6 +550,16 @@ class PhantomVoice {
     }
   }
 
+  // strip markdown/symbols so the voice reads clean, natural speech
+  static _cleanSpeech(text) {
+    return String(text || "")
+      .replace(/```[\s\S]*?```/g, " code block. ")
+      .replace(/`([^`]*)`/g, " $1 ")
+      .replace(/[*_~#>`]/g, "")
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, " $1 ")
+      .replace(/\s+/g, " ").trim();
+  }
+
   _speakBrowser(text) {
     // system voices can't be tapped by an AnalyserNode — honest "no spectrum"
     this._ttsAnalyser = null;
@@ -561,9 +571,14 @@ class PhantomVoice {
       this.setState(this.mode === "conversation" ? "LISTENING" : "IDLE");
       return;
     }
+    const clean = PhantomVoice._cleanSpeech(text);
+    if (!clean) { this._speakDone(); return; }
     synth.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.04;
+    const u = new SpeechSynthesisUtterance(clean);
+    // slower + clearer = less choppy (browser voices stutter at 1.04)
+    u.rate = 0.95;
+    u.pitch = 1;
+    u.volume = 1;
     // per-persona voice: use the active agent's configured voice, else global
     const pref = this.voices[this.currentAgent] || this.ttsVoice || "";
     if (pref) {
@@ -581,10 +596,11 @@ class PhantomVoice {
     // Server-side TTS failover chain (Deepgram Aura -> cloud -> local).
     try {
       const voice = this.voices[this.currentAgent] || this.ttsVoice || "";
+      const clean = PhantomVoice._cleanSpeech(text);
       const res = await fetch("/api/voice/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, voice }),
+        body: JSON.stringify({ text: clean || text, voice }),
       });
       if (!res.ok) {
         let detail = res.statusText;
@@ -631,12 +647,15 @@ class PhantomVoice {
       // per-persona Deepgram aura voice (defaults: Phantom=orion, Coded=arcas)
       const dgVoice = this.voices[this.currentAgent] || this.ttsVoice ||
         (this.currentAgent === "coded" ? "aura-arcas-en" : "aura-orion-en");
+      // Deepgram Aura speak: model=aura-2-english + the chosen aura voice
+      // (previously the model param was set to the VOICE id — wrong, so the
+      // selected voice never applied and it fell back to defaults)
       const ws = new WebSocket(
-        `wss://api.deepgram.com/v1/speak?model=${encodeURIComponent(dgVoice)}`,
+        `wss://api.deepgram.com/v1/speak?model=aura-2-english&voice=${encodeURIComponent(dgVoice)}`,
         ["token", token],
       );
       this._dgSpeakWs = ws;
-      ws.onopen = () => ws.send(JSON.stringify({ type: "Speak", text }));
+      ws.onopen = () => ws.send(JSON.stringify({ type: "Speak", text: PhantomVoice._cleanSpeech(text) || text }));
       ws.onmessage = async (ev) => {
         if (typeof ev.data === "string") return;
         const blob = ev.data;
