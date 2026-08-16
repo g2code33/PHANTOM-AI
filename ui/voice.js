@@ -264,12 +264,13 @@ class PhantomVoice {
     if (level > SPEECH) {
       this._vadBuf.push(Date.now());
       if (this._vadBuf.length > 30) this._vadBuf.shift();
-      // barge-in: user speaks while we speak → stop us immediately.
-      // Require 2 consecutive hot frames (~fast but not jitter-triggered).
+      // barge-in: the moment the user speaks while we speak → stop and
+      // listen for their redirect (like two people talking). One hot frame
+      // = instant; jitter is filtered by the level threshold itself.
       if (this.state === "SPEAKING" && this.micEnabled) {
         if (this._hotFrames === undefined) this._hotFrames = 0;
         this._hotFrames += 1;
-        if (this._hotFrames >= 2) {
+        if (this._hotFrames >= 1) {
           this._hotFrames = 0;
           this.bargeIn();
         }
@@ -721,11 +722,11 @@ class PhantomVoice {
 
   stopSpeaking() {
     this._speakQueue = [];
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    if (window.speechSynthesis) { try { window.speechSynthesis.cancel(); } catch (e) {} }
     if (this._dgSpeakWs) { try { this._dgSpeakWs.close(); } catch (e) {} this._dgSpeakWs = null; }
     this._dgAudioQueue = [];
     this._dgPlaying = false;
-    if (this._serverAudio) { try { this._serverAudio.pause(); } catch (e) {} this._serverAudio = null; }
+    if (this._serverAudio) { try { this._serverAudio.pause(); this._serverAudio.src = ""; } catch (e) {} this._serverAudio = null; }
     this._speaking = false;
     this._utterance = null;
     this.ttsSpectrumAvailable = false;

@@ -93,7 +93,8 @@ def register_profile_tools(registry) -> None:
     registry.register(ToolSpec(
         name="profile_get",
         description="Read the user's profile sheet (name, school, projects, "
-                    "preferences, goals) — so you know who you're talking to.",
+                    "preferences, goals). Call with NO profile_id to get the "
+                    "current user's profile — do NOT invent an id.",
         purpose="Know the user", category="profile",
         parameters={"profile_id": {"type": "string", "default": ""}},
         handler=_profile_get, permission=PermissionLevel.READ_ONLY, timeout=10,

@@ -278,3 +278,20 @@ async def test_cancellation(app):
     instance.agents["phantom"].cancel(run_id)
     result = await asyncio.wait_for(run_task, timeout=10)
     assert result.status == "cancelled"
+
+
+def test_casual_gate_detects_small_talk():
+    """Greetings/small talk must be flagged so tools are skipped."""
+    from phantom_ai.agents.core import Agent
+
+    agent = Agent.__new__(Agent)  # no __init__ — we only test the helper
+    assert agent._is_casual("hi") is True
+    assert agent._is_casual("how are you?") is True
+    assert agent._is_casual("Hello there!") is True
+    assert agent._is_casual("thanks") is True
+    assert agent._is_casual("what's up") is True
+    # real requests are NOT casual
+    assert agent._is_casual("open firefox") is False
+    assert agent._is_casual("check my cpu usage") is False
+    assert agent._is_casual("write a python script that sorts a list") is False
+    assert agent._is_casual("tell me about the weather in Accra") is False

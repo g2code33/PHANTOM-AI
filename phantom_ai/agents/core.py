@@ -265,6 +265,28 @@ class Agent:
             self._run_semaphore = asyncio.Semaphore(max(1, limit))
         return self._run_semaphore
 
+    def _is_casual(self, user_text: str) -> bool:
+        """Small talk / greetings should NEVER trigger tool calls — reply
+        directly (fast + human). Heuristic + length guard."""
+        t = (user_text or "").strip().lower()
+        if not t or len(t) > 90:
+            return False
+        casual = (
+            "how are you", "how r u", "how's it going", "how is it going",
+            "what's up", "whats up", "wassup", "sup ", "hi", "hii", "hello",
+            "hey", "yo", "good morning", "good afternoon", "good evening",
+            "good night", "thanks", "thank you", "thx", "ty", "ok", "okay",
+            "yes", "no", "lol", "haha", "nice", "cool", "great", "awesome",
+            "what do you do", "who are you", "how are you doing", "how are u",
+            "how are you today", "are you there", "you there", "are you alive",
+        )
+        if any(t == c or t.startswith(c + " ") or t.startswith(c + ",") or t.startswith(c + "!") or t.startswith(c + "?") for c in casual):
+            return True
+        # very short pure-greeting punctuation
+        if t in ("?", "!", "..."):
+            return True
+        return False
+
     async def _run_locked(self, conversation_id, user_text, session_id, mode, run_id,
                           cancel_event, permissions_override, started) -> AgentRunResult:
         agent = self.agent_id
@@ -343,6 +365,11 @@ class Agent:
             tools = [t for t in tools if t["function"]["name"] in self.tool_allowlist]
         if permissions_override:
             tools = [t for t in tools if t["function"]["name"] in permissions_override]
+        # SMALL-TALK GATE: greetings/casual chat never call tools — reply
+        # directly, fast and human (a greeting must not fire system_info!).
+        if mode == "chat" and self._is_casual(user_text):
+            tools = []
+            protocol = "text"
         tool_calls_made = 0
         content_out = ""
         final = None
@@ -403,6 +430,9 @@ class Agent:
             content_out = assistant_content
 
             if not tool_calls:
+                if not (assistant_content or "").strip():
+                    # never leave the user with a blank reply
+                    assistant_content = "I'm here — what would you like to do?"
                 final = AgentRunResult(
                     run_id=run_id, conversation_id=conversation_id, agent=agent,
                     content=assistant_content or "", tool_calls_made=tool_calls_made,
