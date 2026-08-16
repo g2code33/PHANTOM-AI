@@ -95,6 +95,21 @@ def _key_test_result(kind: str, resp) -> dict:
             "message": f"✗ {kind} returned an error ({status}) — try again later"}
 
 
+async def _agent_model(app: App, agent_id: str) -> str:
+    """Resolve the model actually configured for an agent (env/settings/
+    default) — used by the key test so it proves the real model in use."""
+    from ..brains.config import resolve_brain_config
+
+    try:
+        brain = await app.brains.get(agent_id) if app.brains else None
+        definition = dict(brain) if brain else {}
+        cfg = await resolve_brain_config(agent_id, definition, app.secrets,
+                                         app.settings)
+        return cfg.get("model") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 async def _diagnostic_providers(app: App) -> list[dict]:
     """Resolved provider config per agent (URLs + model — never keys) so the
     user can see in-app why a request 404s (e.g. a wrong base_url)."""
@@ -513,7 +528,7 @@ def create_app(app: App) -> FastAPI:
         if kind not in ("nvidia", "deepgram", "groq", "cloud"):
             raise HTTPException(400, "unknown kind — use nvidia | deepgram | groq | cloud")
         try:
-            async with _httpx.AsyncClient(timeout=20) as client:
+            async with _httpx.AsyncClient(timeout=30) as client:
                 if kind == "nvidia":
                     # per-brain key first (brain.<id>.api_key), then the
                     # agent env key — so each brain's Test button checks ITS
@@ -522,10 +537,27 @@ def create_app(app: App) -> FastAPI:
                         app.secrets.get(KEY_ENV.get(agent, KEY_ENV["phantom"]))
                     if not key:
                         raise HTTPException(400, f"No NVIDIA key stored for {agent} — save one first")
-                    resp = await client.get(
-                        os.environ.get("PHAI_NVIDIA_BASE_URL", NVIDIA_BASE_URL) + "/models",
-                        headers={"Authorization": f"Bearer {key}"})
-                    return _key_test_result("NVIDIA", resp)
+                    # REAL proof: run an actual chat completion with the
+                    # agent's configured model (GET /models accepts fake keys,
+                    # which is why the old test was useless)
+                    model = await _agent_model(app, agent)
+                    base = os.environ.get("PHAI_NVIDIA_BASE_URL", NVIDIA_BASE_URL)
+                    resp = await client.post(
+                        base + "/chat/completions",
+                        headers={"Authorization": f"Bearer {key}",
+                                 "Content-Type": "application/json"},
+                        json={"model": model, "max_tokens": 16, "temperature": 0,
+                              "stream": False,
+                              "messages": [{"role": "user",
+                                            "content": "Reply with exactly: OK"}]})
+                    if resp.status_code != 200:
+                        return _key_test_result("NVIDIA", resp)
+                    data = resp.json()
+                    reply = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+                    return {"ok": True, "kind": "nvidia",
+                            "model": model,
+                            "reply": reply[:160],
+                            "message": f"✓ NVIDIA key works with model {model} — it replied: {reply[:60]}"}
                 if kind == "deepgram":
                     key = app.secrets.get("DEEPGRAM_API_KEY")
                     if not key:
@@ -538,10 +570,21 @@ def create_app(app: App) -> FastAPI:
                     key = app.secrets.get("GROQ_API_KEY")
                     if not key:
                         raise HTTPException(400, "No Groq key stored — save one first")
+                    # Groq keys are auth-gated on /models (fake keys -> 401);
+                    # also confirm the Whisper model used for STT exists
                     resp = await client.get(
                         os.environ.get("PHAI_GROQ_BASE_URL", GROQ_BASE_URL) + "/models",
                         headers={"Authorization": f"Bearer {key}"})
-                    return _key_test_result("Groq", resp)
+                    if resp.status_code != 200:
+                        return _key_test_result("Groq", resp)
+                    ids = [m.get("id") for m in (resp.json().get("data") or [])]
+                    has_whisper = any("whisper" in str(i) for i in ids)
+                    return {"ok": True, "kind": "groq",
+                            "models_available": len(ids),
+                            "whisper_ready": has_whisper,
+                            "message": ("✓ Groq key works — " +
+                                        (f"Whisper STT ready ({len(ids)} models)" if has_whisper
+                                         else f"{len(ids)} models, whisper not listed"))}
                 if kind == "cloud":
                     url = app.cloudsync._url() if app.cloudsync else ""
                     token = app.cloudsync._token() if app.cloudsync else ""

@@ -42,8 +42,18 @@ _SHADOW_VARS = ("PHANTOM_NVIDIA_API_KEY", "CODED_NVIDIA_API_KEY",
 
 
 def _mock_app() -> FastAPI:
-    """Auth-aware mock: NVIDIA /models, Deepgram /projects, Groq /models."""
+    """Auth-aware mock: NVIDIA chat/completions, Deepgram /projects, Groq /models.
+    The NVIDIA test must call chat/completions — a fake key gets 401 there,
+    exactly like the real API (the old /models-only check was the fake-key hole)."""
     app = FastAPI()
+
+    @app.post("/v1/chat/completions")
+    async def nvidia_chat(request: Request):
+        if request.headers.get("Authorization") != f"Bearer {VALID_NVIDIA}":
+            return JSONResponse(status_code=401, content={"error": {"message": "unauthorized"}})
+        body = await request.json()
+        return {"choices": [{"message": {"content":
+                f"OK — model {body.get('model')} responded"}}]}
 
     @app.get("/v1/models")
     async def nvidia_models(request: Request):
@@ -263,6 +273,9 @@ async def test_keys_test_nvidia_ok(provider_mock, workdir):
             assert res.status_code == 200
             data = res.json()
             assert data["ok"] is True
+            assert data["model"] == "meta/llama-3.3-70b-instruct"
+            assert data["reply"], "test must return the model's actual reply"
+            assert "OK" in data["reply"]
             assert "works" in data["message"]
             assert VALID_NVIDIA not in json_dumps(data)
     finally:
@@ -280,7 +293,7 @@ async def test_keys_test_invalid_key_friendly(provider_mock, workdir):
             assert res.status_code == 200
             data = res.json()
             assert data["ok"] is False
-            assert "rejected" in data["message"]
+            assert "rejected" in data["message"]  # fake key MUST fail now
     finally:
         await inst.shutdown()
 
@@ -309,7 +322,9 @@ async def test_keys_test_deepgram_and_groq(provider_mock, workdir):
             res = await c.post("/api/keys/test", json={"kind": "deepgram"})
             assert res.json()["ok"] is True
             res = await c.post("/api/keys/test", json={"kind": "groq"})
-            assert res.json()["ok"] is True
+            g = res.json()
+            assert g["ok"] is True
+            assert g["whisper_ready"] is True  # whisper STT model confirmed
             # invalid groq → friendly rejection
             await c.put("/api/voice/config", json={"groq_api_key": "gsk_bad"})
             res = await c.post("/api/keys/test", json={"kind": "groq"})
