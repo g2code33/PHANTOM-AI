@@ -70,14 +70,22 @@ await t("status reports portable mode", async () => {
   assert.equal(j.has_nvidia, true);
 });
 
-// auth: token required when set
-await t("auth enforced when token set", async () => {
+// auth: token required for DATA endpoints, but /api/status + / stay public
+// (status only reports masked presence, so the phone can test connection)
+await t("auth enforced when token set (data endpoints)", async () => {
   const e2 = makeEnv(); e2.PHANTOM_CLOUD_TOKEN = "secret123";
-  const r = await handle(req("https://phantom.local/api/status"), e2);
+  const r = await handle(req("https://phantom.local/api/memory"), e2);
   assert.equal(r.status, 401);
-  const ok = await handle(req("https://phantom.local/api/status",
+  const ok = await handle(req("https://phantom.local/api/memory",
     { headers: { "X-Access-Token": "secret123" } }), e2);
   assert.equal(ok.status, 200);
+});
+await t("status public for health checks", async () => {
+  const e2 = makeEnv(); e2.PHANTOM_CLOUD_TOKEN = "secret123";
+  const r = await handle(req("https://phantom.local/api/status"), e2);
+  assert.equal(r.status, 200);
+  const j = await r.json();
+  assert.equal(j.mode, "portable");
 });
 
 // cloud memory (the "save to cloud" store)

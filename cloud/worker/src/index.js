@@ -182,6 +182,35 @@ async function handle(request, env) {
   const path = url.pathname;
 
   if (request.method === "OPTIONS") return json({ ok: true });
+
+  // bare root: informational (no data, no auth) so a browser visit isn't a
+  // confusing 401 — this is an API, not a page
+  if (path === "/" && request.method === "GET") {
+    return json({
+      service: "Phantom portable worker",
+      ok: true,
+      message: "This is the Phantom cloud API, not a website. Open the companion "
+        + "in the app (PC: Settings -> Portable Phantom) or add /mobile via the "
+        + "PC's Cloudflare tunnel for the phone UI.",
+      endpoints: ["/api/chat", "/api/voice/stt", "/api/memory", "/api/profile",
+                  "/api/reminders", "/api/briefing", "/api/status"],
+    });
+  }
+
+  // status is intentionally UNauthenticated: it only reports presence and
+  // masked key-config state (never secrets) — so Test connection works
+  if (path === "/api/status" && request.method === "GET") {
+    const profile = await kvGet(env.PHANTOM_PROFILE, "profile", null);
+    return json({ ok: true, mode: "portable", cloud: true,
+                  profile_name: (profile && profile.display_name) || "User",
+                  has_nvidia: !!env.NVIDIA_API_KEY,
+                  has_deepgram: !!env.DEEPGRAM_API_KEY,
+                  keys: {
+                    nvidia: (await env.PHANTOM_KEYS.get("nvidia")) ? "configured" : "not set",
+                    deepgram: (await env.PHANTOM_KEYS.get("deepgram")) ? "configured" : "not set",
+                  } });
+  }
+
   if (!authOk(request, env)) return json({ error: "unauthorized" }, 401);
 
   // ---- config/keys: set/update/clear cloud keys from the app (secrets) ----
@@ -202,19 +231,6 @@ async function handle(request, env) {
       deepgram: (await env.PHANTOM_KEYS.get("deepgram")) ? "configured" : "not set",
     } });
   }
-  // status now reports which keys are configured (masked only)
-  if (path === "/api/status" && request.method === "GET") {
-    const profile = await kvGet(env.PHANTOM_PROFILE, "profile", null);
-    return json({ ok: true, mode: "portable", cloud: true,
-                  profile_name: (profile && profile.display_name) || "User",
-                  has_nvidia: !!env.NVIDIA_API_KEY,
-                  has_deepgram: !!env.DEEPGRAM_API_KEY,
-                  keys: {
-                    nvidia: (await env.PHANTOM_KEYS.get("nvidia")) ? "configured" : "not set",
-                    deepgram: (await env.PHANTOM_KEYS.get("deepgram")) ? "configured" : "not set",
-                  } });
-  }
-
   // ---- chat (with cloud tool loop, max 4 iterations) ----
   if (path === "/api/chat" && request.method === "POST") {
     const body = await request.json();
