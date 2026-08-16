@@ -290,6 +290,11 @@ class App:
     async def shutdown(self) -> None:
         if self.scheduler:
             await self.scheduler.stop()
+        if getattr(self, "wake", None) is not None:
+            try:
+                await self.wake.stop()
+            except Exception:  # noqa: BLE001
+                pass
         if getattr(self, "voice_mgr", None) is not None:
             self.voice_mgr.close()
         for provider in self.providers.values():

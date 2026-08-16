@@ -91,8 +91,9 @@ class DeepgramAuraTTSProvider(TTSProvider):
                 resp = await client.post(
                     f"{self.base_url}/speak",
                     headers={"Authorization": f"Token {self.api_key}"},
-                    params={"model": "aura-2-english", "encoding": "mp3",
-                            "sample_rate": "24000"},
+                    params={"model": "aura-2-english"},  # mp3 default — no
+                    # encoding/sample_rate: Deepgram rejects sample_rate when
+                    # encoding is fixed ("UNSUPPORTED_AUDIO_FORMAT")
                     json={"text": text[:4000],
                           "voice": voice or self.default_voice},
                 )

@@ -92,7 +92,12 @@ class DeepgramSTTProvider(STTProvider):
                         f"{self.base_url}/listen",
                         headers={"Authorization": f"Token {self.api_key}"},
                         params={"model": self.model, "punctuate": "true",
-                                "language": language},
+                                "language": language,
+                                # explicit format so Deepgram never has to
+                                # sniff ("corrupt or unsupported data" was
+                                # the symptom when autodetect failed)
+                                "container": "wav", "encoding": "linear16",
+                                "sample_rate": "16000"},
                         files={"audio": (audio_path.split("/")[-1], fh,
                                         "audio/wav")},
                     )

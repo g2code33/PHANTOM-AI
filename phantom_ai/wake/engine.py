@@ -87,6 +87,13 @@ class WakeEngine:
         # on restart, presence starts sleeping (no fake "always awake")
         await self.publish()
 
+    async def stop(self) -> None:
+        """Cancel background tasks cleanly (avoids 'Task was destroyed but
+        it is pending!' at app shutdown)."""
+        if self._idle_task:
+            self._idle_task.cancel()
+            self._idle_task = None
+
     async def publish(self) -> None:
         await self.events.publish("presence.state", self._state.to_dict())
 
