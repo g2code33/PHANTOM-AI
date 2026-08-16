@@ -209,7 +209,10 @@ class PhantomVoice {
   }
 
   _vadLoop() {
+    let _lv = 0;
     const tick = () => {
+      if (performance.now() - _lv < 33) { this._vadRaf = requestAnimationFrame(tick); return; }  // ~30fps
+      _lv = performance.now();
       if (!this._analyser) return;
       const buf = new Float32Array(this._analyser.fftSize);
       this._analyser.getFloatTimeDomainData(buf);
