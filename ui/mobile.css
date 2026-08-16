@@ -35,6 +35,9 @@ body {
 .mPill.warn { color: var(--yellow); border-color: rgba(255,214,0,.4); }
 .mKill { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--red);
   background: rgba(240,113,139,.12); color: var(--red); font-size: 15px; }
+#mRefreshBtn { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--accent);
+  background: rgba(110,168,254,.14); color: var(--accent); font-size: 16px; font-weight: 800; }
+#mRefreshBtn:active { background: var(--accent); color: #0a0e18; }
 .mMode { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--border);
   background: var(--card); color: var(--text); font-size: 15px; }
 .mMode.active { border-color: var(--yellow); color: var(--yellow); }

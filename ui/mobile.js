@@ -93,7 +93,7 @@ function setMode(m) {
   detectAndConnect();
 }
 // hard refresh: bust the service-worker cache + reload fresh
-$("mRefreshBtn").onclick = async () => {
+async function hardRefresh() {
   toastHint("refreshing…");
   try {
     const regs = await (navigator.serviceWorker ? navigator.serviceWorker.getRegistrations() : []);
@@ -101,7 +101,9 @@ $("mRefreshBtn").onclick = async () => {
   } catch (e) {}
   try { caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))); } catch (e) {}
   location.reload();
-};
+}
+$("mRefreshBtn").onclick = hardRefresh;
+$("mRefreshBtn2").onclick = hardRefresh;
 
 $("mModeToggle").onclick = () => {
   const order = ["auto", "pc", "portable"];
