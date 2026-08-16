@@ -78,3 +78,69 @@ async def test_hud_sleep_rendering_tier_contract():
     import json
     payload = json.dumps(snap)
     assert len(payload) < 20000
+
+
+async def test_hud_memory_and_process_count(app):
+    instance, _state, _wd = app
+    async with await _client(instance) as c:
+        d = (await c.get("/api/hud")).json()
+        assert "memory" in d
+        mem = d["memory"]
+        if mem.get("available") is not False:
+            assert 0 <= mem["percent"] <= 100
+            assert mem["total_bytes"] > 0
+        assert isinstance(d.get("process_count"), int) and d["process_count"] > 0
+
+
+async def test_weather_endpoint(app, monkeypatch):
+    """Weather proxies Open-Meteo; when unreachable it's HONEST unavailable."""
+    instance, _state, _wd = app
+    async with await _client(instance) as c:
+        # without network this returns unavailable (never raises)
+        r = await c.get("/api/hud/weather")
+        assert r.status_code == 200
+        data = r.json()
+        assert "available" in data
+        if not data["available"]:
+            assert data["reason"]  # honest reason, no fake values
+        else:
+            assert "current" in data and "daily" in data
+
+
+async def test_weather_endpoint_mocked_success(app, monkeypatch):
+    """With a mocked Open-Meteo response the panel data is real & shaped."""
+    instance, _state, _wd = app
+
+    class FakeResp:
+        status_code = 200
+
+        def raise_for_status(self):  # noqa: D401
+            pass
+
+        def json(self):
+            return {
+                "current": {"temperature_2m": 28.4, "relative_humidity_2m": 71,
+                            "wind_speed_10m": 12.3, "surface_pressure": 1011.2,
+                            "weather_code": 3, "apparent_temperature": 30.1},
+                "daily": {"time": ["2026-08-16", "2026-08-17"],
+                          "weather_code": [3, 61],
+                          "temperature_2m_max": [30.0, 29.0],
+                          "temperature_2m_min": [24.0, 23.0],
+                          "sunrise": ["2026-08-16T06:00:00Z"],
+                          "sunset": ["2026-08-16T18:30:00Z"]},
+                "current_units": {"temperature_2m": "°C"},
+            }
+
+    import phantom_ai.api.server as srv
+
+    async def fake_fetch(lat, lon):
+        assert 5.0 <= lat <= 6.5 and -0.5 <= lon <= 0.0  # Accra vicinity
+        return FakeResp().json()
+
+    monkeypatch.setattr(srv, "_fetch_weather", fake_fetch)
+    async with await _client(instance) as c:
+        r = await c.get("/api/hud/weather")
+        data = r.json()
+        assert data["available"] is True
+        assert data["current"]["temperature_2m"] == 28.4
+        assert len(data["daily"]["time"]) == 2

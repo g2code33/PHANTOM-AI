@@ -20,6 +20,8 @@ from __future__ import annotations
 import base64
 import io
 import math
+import os
+import sys
 import wave
 from typing import Any, Optional
 
@@ -57,6 +59,30 @@ def _encode_wav16k_mono(audio) -> bytes:
     return buf.getvalue()
 
 
+def find_resemblyzer_weights() -> str | None:
+    """Locate resemblyzer's pretrained.pt for the (possibly frozen) app.
+
+    Order: RESEMBLYZER_WEIGHTS env → bundled (_MEIPASS/resemblyzer/
+    pretrained.pt, which PyInstaller data collection places there) → the
+    package directory next to the installed resemblyzer. Returns None when
+    not found (caller reports honestly)."""
+    try:
+        import resemblyzer
+        pkg_dir = os.path.dirname(resemblyzer.__file__)
+    except Exception:  # noqa: BLE001
+        pkg_dir = ""
+    meipass = getattr(sys, "_MEIPASS", "")
+    candidates = [
+        os.environ.get("RESEMBLYZER_WEIGHTS", ""),
+        os.path.join(meipass, "resemblyzer", "pretrained.pt") if meipass else "",
+        os.path.join(pkg_dir, "pretrained.pt") if pkg_dir else "",
+    ]
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            return cand
+    return None
+
+
 class SpeakerVerifier:
     def __init__(self, secrets: SecretsStore, audit: Any,
                  threshold: float = THRESHOLD_DEFAULT) -> None:
@@ -72,13 +98,35 @@ class SpeakerVerifier:
             self._load_encoder()
         return self._encoder.embed_utterance(audio)
 
+    INSTALL_HINT = (
+        "pip install --user resemblyzer torch\n"
+        "# smaller CPU-only torch (optional, keeps it light):\n"
+        "pip install --user torch --index-url https://download.pytorch.org/whl/cpu"
+    )
+
     def _load_encoder(self) -> None:
         try:
             from resemblyzer import VoiceEncoder
+        except Exception as exc:  # noqa: BLE001 — missing pkg
+            self._unavailable_reason = (
+                "resemblyzer is not installed — speaker lock needs it. "
+                "Install once with: " + self.INSTALL_HINT.replace("\n", " / "))
+            self._encoder = None
+            raise SpeakerUnavailable(str(exc)) from None
 
-            self._encoder = VoiceEncoder()
-        except Exception as exc:  # noqa: BLE001 — missing pkg or blocked weights
-            self._unavailable_reason = str(exc)[:200]
+        weights_fpath = find_resemblyzer_weights()
+        if weights_fpath is None:
+            self._unavailable_reason = (
+                "resemblyzer pretrained weights not found — reinstall resemblyzer "
+                "or set RESEMBLYZER_WEIGHTS to pretrained.pt")
+            self._encoder = None
+            raise SpeakerUnavailable(self._unavailable_reason) from None
+        try:
+            self._encoder = VoiceEncoder(weights_fpath=weights_fpath)
+        except Exception as exc:  # noqa: BLE001 — torch issue
+            self._unavailable_reason = (
+                "speaker engine failed to load (torch problem): " + str(exc)[:120] +
+                " — try: " + self.INSTALL_HINT.replace("\n", " / "))
             self._encoder = None
             raise SpeakerUnavailable(str(exc)) from None
 
@@ -91,6 +139,7 @@ class SpeakerVerifier:
                     "samples_needed": ENROLL_SAMPLES_NEEDED}
         except SpeakerUnavailable as exc:
             return {"available": False, "reason": str(exc)[:200],
+                    "install_hint": self.INSTALL_HINT,
                     "threshold": self.threshold}
 
     async def enrolled(self, agent: str) -> bool:

@@ -119,6 +119,7 @@ class App:
         self.voice_mgr: Any = None
         # Real-telemetry HUD sampler (psutil deltas)
         self.hud: Any = None
+        self._weather_cache: Any = None
 
     # ------------------------------------------------------------------
     async def startup(self) -> None:

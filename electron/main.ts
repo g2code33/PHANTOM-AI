@@ -232,6 +232,12 @@ function startBackend(): Promise<number> {
   }
 
   const root = resourceRoot();
+  // Stable default port so the browser origin (http://127.0.0.1:<port>) is
+  // IDENTICAL across launches — otherwise localStorage (onboarding flag,
+  // theme, mic permission) resets on every close/open because it's scoped per
+  // origin INCLUDING the port. The backend falls back to a random port only
+  // if 47611 is already taken.
+  const preferredPort = Number(process.env.PHAI_APP_PORT || 47611) || 47611;
   backend = spawn(
     backendCmd.command,
     [...backendCmd.args, "--port-file", portFile],
@@ -240,7 +246,8 @@ function startBackend(): Promise<number> {
       env: {
         ...process.env,
         PHAI_HOST: "127.0.0.1",
-        PHAI_PORT: "0",
+        PHAI_PORT: String(preferredPort),
+        PHAI_APP_VERSION: app.getVersion(),
         PHAI_DATA_DIR: path.join(app.getPath("userData"), "data"),
         PYTHONUNBUFFERED: "1",
       },

@@ -1,7 +1,7 @@
 {
   "name": "phantom",
-  "version": "0.4.9",
-  "description": "Phantom \u2014 a personal AI computer companion (voice-first). Coded, Health and specialist brains live inside the same platform.",
+  "version": "0.5.1",
+  "description": "Phantom — a personal AI computer companion (voice-first). Coded, Health and specialist brains live inside the same platform.",
   "author": "g2code33",
   "license": "MIT",
   "main": "dist-electron/main.js",
@@ -31,12 +31,13 @@
     "@types/node": "^22.10.0",
     "electron": "^33.0.0",
     "electron-builder": "^25.1.8",
+    "jsdom": "^24.1.3",
     "typescript": "^5.6.3"
   },
   "build": {
     "appId": "com.g2code33.phantom",
     "productName": "Phantom",
-    "copyright": "Copyright \u00a9 2026 g2code33",
+    "copyright": "Copyright © 2026 g2code33",
     "directories": {
       "output": "release"
     },
@@ -89,7 +90,7 @@
       "maintainer": "g2code33",
       "synopsis": "Phantom personal AI companion",
       "executableName": "phantom",
-      "description": "A personal AI computer companion \u2014 voice-first."
+      "description": "A personal AI computer companion — voice-first."
     },
     "deb": {
       "afterInstall": "build/after_install.sh",

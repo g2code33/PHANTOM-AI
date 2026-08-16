@@ -16,11 +16,13 @@ const STATE_TEXT = {
 };
 
 const state = {
+  // exposed for HUD/session badge (module-scope const is not on window)
   agent: "phantom", conversations: [], currentConv: null,
   runId: null, running: false, killEngaged: false, voiceOn: true,
   pendingConfirmations: {}, userName: localStorage.getItem("phantom.userName") || "",
   micLevel: 0, transcript: [],
 };
+window.phantomState = state;
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -35,6 +37,20 @@ const timeAgo = (iso) => {
   if (s < 86400) return Math.floor(s / 3600) + "h ago";
   return new Date(t).toLocaleDateString();
 };
+
+// ---- frontend error log (shown in Settings → Diagnostics) ----
+const FE_LOG = [];
+window.addEventListener("error", (ev) => {
+  const line = `${new Date().toISOString().slice(11, 19)} ERROR ${ev.message || ev.error || "?"} @ ${ev.filename || ""}:${ev.lineno || "?"}`;
+  FE_LOG.push(line);
+  if (FE_LOG.length > 60) FE_LOG.shift();
+});
+window.addEventListener("unhandledrejection", (ev) => {
+  const r = ev.reason || {};
+  const line = `${new Date().toISOString().slice(11, 19)} ERROR unhandled: ${r.message || r || ev}`;
+  FE_LOG.push(line);
+  if (FE_LOG.length > 60) FE_LOG.shift();
+});
 
 async function api(path, opts = {}) {
   const res = await fetch(API_BASE + path, {
@@ -121,14 +137,53 @@ voice.onWakeWord = async (agent) => {
 };
 
 /* ============================== WS ============================== */
+// Robust reconnect: backoff (1.5s → 15s cap), a max before showing
+// DISCONNECTED instead of an infinite retry loop, and an HTTP presence
+// fallback so the UI stays LIVE even when the WS won't connect.
 let ws = null;
+let wsRetries = 0;
+let wsTimer = null;
+let wsFallbackTimer = null;
+const WS_MAX_RETRIES = 5;
 function connectWS() {
+  if (wsTimer) { clearTimeout(wsTimer); wsTimer = null; }
   const base = (WS_BASE || location.origin).replace(/\/+$/, "");
   const proto = base.startsWith("https") ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${base.replace(/^https?:\/\//, "")}/ws`);
+  try {
+    ws = new WebSocket(`${proto}://${base.replace(/^https?:\/\//, "")}/ws`);
+  } catch (e) {
+    scheduleWSRetry();
+    return;
+  }
   ws.onmessage = (ev) => { try { handleEvent(JSON.parse(ev.data)); } catch (e) {} };
-  ws.onclose = () => { setPresence("DISCONNECTED"); setTimeout(connectWS, 1500); };
-  ws.onopen = () => { ws.send(JSON.stringify({ type: "ping" })); if (!state.running) setPresence("IDLE"); };
+  ws.onclose = () => {
+    wsRetries += 1;
+    if (wsRetries > WS_MAX_RETRIES) {
+      setPresence("DISCONNECTED");
+      startPresenceFallback();   // keep the UI live via HTTP polls
+      return;                    // no infinite reconnect loop
+    }
+    scheduleWSRetry();
+  };
+  ws.onopen = () => {
+    wsRetries = 0;
+    stopPresenceFallback();
+    try { ws.send(JSON.stringify({ type: "ping" })); } catch (e) {}
+    if (!state.running) setPresence("IDLE");
+  };
+}
+function scheduleWSRetry() {
+  const delay = Math.min(1500 * Math.pow(2, wsRetries - 1), 15000);
+  wsTimer = setTimeout(connectWS, delay);
+}
+function stopPresenceFallback() {
+  if (wsFallbackTimer) { clearInterval(wsFallbackTimer); wsFallbackTimer = null; }
+}
+// HTTP presence poll fallback: when WS is down we still show real state.
+function startPresenceFallback() {
+  if (wsFallbackTimer) return;
+  loadPresence();
+  wsFallbackTimer = setInterval(loadPresence, 4000);
 }
 
 let sentenceBuf = "";
@@ -478,6 +533,7 @@ async function saveBriefingTime() {
 function applyTheme(theme) {
   document.body.dataset.theme = theme === "yellow" ? "yellow" : "midnight";
   localStorage.setItem("phantom.theme", theme === "yellow" ? "yellow" : "midnight");
+  _saveUiPref("ui.theme", theme === "yellow" ? "yellow" : "midnight");
 }
 function renderBriefing(b) {
   const top = $("briefingTop");
@@ -925,6 +981,7 @@ async function loadSettings() {
     </div>
     <div class="settings-section"><h3>🔊 Voice enrollment (speaker lock)</h3>
       <p class="muted small">Only your voice should wake Phantom and Coded. Record 3 short phrases (2s each) for each agent.</p>
+      <div id="enrollHint" class="hidden"></div>
       <div class="row"><label>Enroll Phantom</label>
         <span id="enrollPhantomStatus" class="muted">…</span>
         <button id="enrollPhantomBtn" class="btn">🎙 Enroll</button></div>
@@ -978,6 +1035,16 @@ async function loadSettings() {
       <pre id="cloudDeployLog" class="mono small hidden" style="max-height:220px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px;margin-top:8px"></pre>
       <p class="muted small">Key fields are sent straight to the Worker over https with your cloud token — never stored in the app, never shown back.</p>
     </div>
+    <div class="settings-section"><h3>🔧 Diagnostics</h3>
+      <p class="muted small">See what's going on without a terminal — recent backend log lines + engine status. Copy anything you want to share.</p>
+      <div class="row"><label>Status</label><span id="diagStatus" class="muted small"></span></div>
+      <pre id="diagLog" class="mono small" style="max-height:220px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px">loading…</pre>
+      <div class="row" style="margin-top:6px">
+        <button id="diagRefreshBtn" class="btn" onclick="loadDiagnostics()">Refresh</button>
+        <button class="btn" onclick="copyDiagLog()">Copy log</button>
+        <span class="muted small">frontend errors also appear here</span>
+      </div>
+    </div>
     <div class="settings-section"><h3>📱 Mobile / remote backend</h3>
       <div class="row"><label>Backend URL</label><input type="text" id="apiBase" placeholder="http://192.168.1.50:8000">
         <button class="btn" onclick="saveApiBase()">Save</button></div>
@@ -1016,6 +1083,7 @@ async function loadSettings() {
   if ($("maxRecordMs")) $("maxRecordMs").value = vc.max_record_ms ?? 15000;
   if ($("continuousSel")) $("continuousSel").value = vc.continuous ? "1" : "0";
   loadVoiceStatus();
+  loadDiagnostics();   // fire-and-forget: fill the Diagnostics log box
   await loadVoicePickers(vc);
   await Promise.all([loadBrainKeys(), loadEnrollStatus()]);
   await loadSchedules();
@@ -1087,16 +1155,88 @@ window.clearBrainKey = async (bid) => {
 };
 
 /* voice enrollment */
+async function loadDiagnostics() {
+  const logEl = $("diagLog"); const stEl = $("diagStatus");
+  if (!logEl) return;
+  try {
+    const d = await api("/api/diagnostics");
+    const lines = [
+      `version: ${d.version || "?"} · uptime ${Math.round(d.uptime_s || 0)}s · wake ${(d.wake && d.wake.state) || "?"}`,
+      `keys: NVIDIA ${d.keys?.nvidia ? "set" : "—"} · Deepgram ${d.keys?.deepgram ? "set" : "—"} · Groq ${d.keys?.groq ? "set" : "—"}`,
+      `speaker engine: ${d.speaker?.available ? "available" : "unavailable"}`,
+      "---- backend log ----",
+      ...(d.logs || []).slice(-120),
+      "---- frontend errors ----",
+      ...(FE_LOG.length ? FE_LOG.slice(-30) : ["(none)"]),
+    ];
+    logEl.textContent = lines.join("\n");
+    if (stEl) stEl.textContent = `connected · v${d.version || "?"}`;
+  } catch (e) {
+    logEl.textContent = "Could not reach backend diagnostics: " + e.message + "\n\nFrontend errors:\n" + (FE_LOG.slice(-20).join("\n") || "(none)");
+    if (stEl) stEl.textContent = "backend unreachable";
+  }
+}
+window.copyDiagLog = () => {
+  const el = $("diagLog");
+  if (!el) return;
+  const text = el.textContent || "";
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error("no clipboard")))
+    .then(() => toast("✓ Diagnostics copied", "ok"))
+    .catch(() => { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); toast("✓ Diagnostics copied", "ok"); } catch (e) { toast("Copy failed — select the log manually", "err"); } ta.remove(); });
+};
+
 async function loadEnrollStatus() {
   const [p, c] = await Promise.all([
     api("/api/voice/enroll/status?agent=phantom"),
     api("/api/voice/enroll/status?agent=coded"),
   ]);
-  $("enrollPhantomStatus").textContent = p.enrolled ? "✅ enrolled" : (p.engine.available ? "not enrolled" : "engine unavailable: " + (p.engine.reason || "").slice(0, 60));
-  $("enrollCodedStatus").textContent = c.enrolled ? "✅ enrolled" : (c.engine.available ? "not enrolled" : "engine unavailable");
-  $("speakerLockCb").checked = p.speaker_lock;
+  const fmt = (r) => r.enrolled ? "✅ enrolled" : (r.engine.available ? "not enrolled" : "⚠️ " + (r.engine.reason || "engine unavailable").slice(0, 80));
+  const pe = $("enrollPhantomStatus"); if (pe) pe.textContent = fmt(p);
+  const ce = $("enrollCodedStatus"); if (ce) ce.textContent = fmt(c);
+  const lock = $("speakerLockCb"); if (lock) lock.checked = p.speaker_lock;
+  // disable enroll buttons + tell the user WHY when the engine can't load
+  const pb = $("enrollPhantomBtn"); const cb = $("enrollCodedBtn");
+  const blocked = !p.engine.available;
+  if (pb) { pb.disabled = blocked; pb.title = blocked ? "voice engine unavailable — see hint below" : ""; }
+  if (cb) { cb.disabled = blocked; cb.title = blocked ? "voice engine unavailable — see hint below" : ""; }
+  // auto-instruct: show the exact install command when the engine is missing
+  const hint = $("enrollHint");
+  if (hint) {
+    if (blocked) {
+      const reason = (p.engine.reason || "engine unavailable").replace(/</g, "&lt;");
+      const cmd = (p.engine.install_hint || "pip install --user resemblyzer torch").replace(/\n/g, "<br>").replace(/</g, "&lt;");
+      hint.className = "card";
+      hint.innerHTML = `<div style="color:#f6c945;font-weight:700">⚠️ Speaker lock engine not installed</div>
+        <div class="muted small" style="margin:4px 0">${reason}</div>
+        <div style="margin:6px 0">Run this once in a terminal, then click Re-check:</div>
+        <pre class="mono small" id="enrollCmd" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px;overflow:auto">${cmd}</pre>
+        <button class="btn" onclick="copyEnrollCmd()">Copy command</button>
+        <button class="btn" onclick="loadEnrollStatus()">Re-check</button>`;
+    } else {
+      hint.className = "hidden";
+      hint.innerHTML = "";
+    }
+  }
+}
+window.copyEnrollCmd = () => {
+  const el = $("enrollCmd");
+  if (!el) return;
+  const text = el.textContent || "";
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error("no clipboard")))
+    .then(() => toast("✓ Install command copied", "ok"))
+    .catch(() => toast("Select the command and copy manually", "err"));
 }
 async function enrollVoice(agent) {
+  // pre-check the engine so the user gets a clear message instead of silence
+  try {
+    const st = await api(`/api/voice/enroll/status?agent=${agent}`);
+    if (!st.engine || !st.engine.available) {
+      const why = (st.engine && st.engine.reason) || "voice engine unavailable";
+      toast("Voice enrollment unavailable: " + why.slice(0, 120), "err");
+      loadEnrollStatus();
+      return;
+    }
+  } catch (e) { /* let the loop surface errors */ }
   toast(`🎙 Speak 3 short phrases for ${agent}…`);
   for (let i = 1; i <= 3; i++) {
     $("voiceHint").textContent = `Enrollment ${i}/3 — speak now…`;
@@ -1109,8 +1249,9 @@ async function enrollVoice(agent) {
       method: "POST",
       body: b64 ? atob(b64) : "",
     }).catch((e) => ({ error: e.message }));
-    if (res.error) { toast("Enroll failed: " + res.error); return; }
-    if (res.enrolled) { toast(`✅ ${agent} voice enrolled`); break; }
+    if (res.error) { toast("Enroll failed: " + res.error, "err"); return; }
+    if (res.enrolled) { toast(`✅ ${agent} voice enrolled`, "ok"); break; }
+    else toast(`✓ sample ${i} captured (${res.samples || 1}/${res.samples_needed || 3})`, "ok");
   }
   $("voiceHint").textContent = "";
   loadEnrollStatus();
@@ -1387,15 +1528,21 @@ async function checkForUpdates() {
   updaterState = { state: "checking" }; renderUpdater();
   const res = await updater.check().catch((e) => ({ state: "error", message: String(e) }));
   updaterState = res || {}; renderUpdater();
-  if (updaterState.state === "available") {
-    toast(`⬆ Update v${updaterState.version} found — downloading…`);
+  const st = updaterState;
+  if (st.state === "available") {
+    toast(`⬆ Update v${st.version} found — downloading…`);
     updater.download();
-  } else if (updaterState.state === "ready") {
-    toast(`⬆ Update v${updaterState.version} ready — restart to install`);
-  } else if (updaterState.state === "up-to-date") {
-    toast(`✓ You're on the latest version — v${updaterState.version || updaterVersion}`, "ok");
-  } else if (updaterState.state === "error") {
-    toast("⬆ Update check failed: " + (updaterState.message || ""), "err");
+  } else if (st.state === "ready") {
+    toast(`⬆ Update v${st.version} downloaded — restart to install`, "ok");
+  } else if (st.state === "up-to-date") {
+    toast(`✓ You're on the latest — v${st.version || updaterVersion}`, "ok");
+  } else if (st.state === "error") {
+    const msg = String(st.message || "");
+    toast("⬆ Update check failed: " + (msg || "no detail"), "err");
+  } else if (st.state === "dev") {
+    toast("Dev mode — updates only in the packaged app", "err");
+  } else if (!st.state || st.state === "idle") {
+    toast("⬆ No update info returned — check the releases page", "err");
   }
 }
 window.checkForUpdates = checkForUpdates;
@@ -1469,6 +1616,18 @@ const ctx = coreCanvas && coreCanvas.getContext("2d");
 let rafId = null;
 let hudLoopActive = false;
 const hudGauges = window.PhantomHud ? new window.PhantomHud.HudGauges() : null;
+const spectrumStrip = window.PhantomHud ? new window.PhantomHud.SpectrumStrip() : null;
+// session/clock/moon/weather panels (started once)
+window.PhantomHud && window.PhantomHud.startClock();
+// session badge version: prefer the updater's app version; fall back to the
+// backend status version (browser/dev mode)
+if (!window.appVersion) {
+  api("/api/status").then((s) => { window.appVersion = (s && s.version) || ""; window.PhantomHud && window.PhantomHud.renderSession(); }).catch(() => {});
+}
+window.PhantomHud && window.PhantomHud.renderSession();
+window.PhantomHud && window.PhantomHud.renderMoon();
+window.PhantomHud && window.PhantomHud.loadWeather();
+setInterval(() => { if (window.PhantomHud) window.PhantomHud.loadWeather(); }, 10 * 60 * 1000);
 
 function hudTierNow() {
   const sleeping = document.body.classList.contains("presence-sleeping");
@@ -1480,6 +1639,7 @@ function hudApplyTier() {
   const tier = hudTierNow();
   document.body.classList.toggle("hud-low", tier === "low");
   if (hudGauges) hudGauges.setTier(tier);
+  if (spectrumStrip) spectrumStrip.setTier(tier);
   if (tier === "low") {
     hudStopLoop();
     drawCoreFrame(0);            // one dim static frame — no continuous redraw
@@ -1549,9 +1709,27 @@ buildOrbTicks();
 hudApplyTier();
 
 /* ============================== ONBOARDING ============================== */
-function maybeOnboarding() {
-  if (localStorage.getItem("phantom.onboarded")) return;
-  $("onboarding").classList.remove("hidden");
+async function _uiPref(key, dflt) {
+  try {
+    const s = await api("/api/settings");
+    const g = (s.settings && s.settings["*"]) || {};
+    return (key in g) ? g[key] : dflt;
+  } catch (e) { return dflt; }
+}
+async function _saveUiPref(key, value) {
+  try { await api("/api/settings", { method: "PUT", body: { agent: "*", key, value } }); }
+  catch (e) {}
+}
+async function maybeOnboarding() {
+  // server-side first (survives port changes), localStorage as a fast cache
+  let onboarded = localStorage.getItem("phantom.onboarded");
+  if (!onboarded) onboarded = (await _uiPref("ui.onboarded", false)) ? "1" : "";
+  if (!onboarded) { $("onboarding").classList.remove("hidden"); return; }
+  // restore name + theme from the server if we have them
+  const savedName = await _uiPref("ui.userName", "");
+  if (savedName) state.userName = savedName;
+  const savedTheme = await _uiPref("ui.theme", "");
+  if (savedTheme) { applyTheme(savedTheme); const t = $("themeSel"); if (t) t.value = savedTheme; }
 }
 window.addEventListener("DOMContentLoaded", () => {
   const done = $("onbDone");
@@ -1559,6 +1737,8 @@ window.addEventListener("DOMContentLoaded", () => {
     state.userName = $("onbName").value.trim() || "friend";
     localStorage.setItem("phantom.userName", state.userName);
     localStorage.setItem("phantom.onboarded", "1");
+    _saveUiPref("ui.onboarded", true);
+    _saveUiPref("ui.userName", state.userName);
     const voiceSel = $("onbVoice").value;
     const proactive = $("onbProactive").value === "1";
     try {
@@ -1715,7 +1895,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     updater.onStatus((s) => { updaterState = s || {}; renderUpdater(); });
     const chkBtn = $("updateCheckBtn"); if (chkBtn) chkBtn.onclick = checkForUpdates;
     const instBtn = $("updateInstallBtn"); if (instBtn) instBtn.onclick = () => updater.install();
-    updater.getVersion().then((v) => { updaterVersion = v || ""; renderUpdater(); }).catch(() => {});
+    updater.getVersion().then((v) => { updaterVersion = v || ""; window.appVersion = v || window.appVersion || ""; renderUpdater(); }).catch(() => {});
     renderUpdater();
     setTimeout(checkForUpdates, 4000); // auto-check shortly after launch
   }

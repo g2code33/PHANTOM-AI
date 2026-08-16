@@ -48,6 +48,67 @@
 
   <!-- ================= PRESENCE (main) ================= -->
   <main id="presence">
+    <!-- top bar: session badge + clock -->
+    <div id="hudTop">
+      <div id="sessionBadge">
+        <div id="sessionAvatar" class="avatar" title="session">👤</div>
+        <div class="session-text">
+          <div id="sessionOs">Phantom OS</div>
+          <div id="sessionVer">v0.0.0</div>
+          <div id="sessionUser" class="muted small">JOOJO</div>
+        </div>
+      </div>
+      <div id="clockBlock">
+        <div id="clockDate" class="muted small">—</div>
+        <div id="clockTime" class="clock">00:00:00</div>
+      </div>
+    </div>
+
+    <!-- left column -->
+    <div id="hudLeft">
+      <div class="hud-panel" id="cpuHistPanel">
+        <div class="hud-panel-title">CPU HISTORY</div>
+        <canvas id="cpuHist" class="hud-graph" width="220" height="64"></canvas>
+        <div class="hud-panel-val" id="cpuHistVal">—</div>
+      </div>
+      <div class="hud-panel" id="memHistPanel">
+        <div class="hud-panel-title">MEMORY</div>
+        <canvas id="memHist" class="hud-graph" width="220" height="64"></canvas>
+        <div class="hud-panel-val" id="memHistVal">—</div>
+      </div>
+      <div class="hud-panel" id="corePanel">
+        <div class="hud-panel-title">PROCESSOR UNITS</div>
+        <div class="cpu-bars" id="hudCpuBars"></div>
+        <div class="hud-panel-val" id="hudCpuVal">—</div>
+      </div>
+      <div class="hud-panel" id="diskPanel">
+        <div class="hud-panel-title">DISK I/O</div>
+        <div class="hud-panel-val big" id="hudDiskVal">—</div>
+      </div>
+    </div>
+
+    <!-- right column -->
+    <div id="hudRight">
+      <div class="hud-panel" id="weatherPanel">
+        <div class="hud-panel-title">WEATHER</div>
+        <div id="weatherBody" class="hud-panel-body"><span class="muted small">…</span></div>
+      </div>
+      <div class="hud-panel" id="moonPanel">
+        <div class="hud-panel-title">MOON</div>
+        <div id="moonBody" class="hud-panel-body"><span class="muted small">…</span></div>
+      </div>
+      <div class="hud-panel" id="netPanel">
+        <div class="hud-panel-title">NETWORK</div>
+        <canvas id="netHist" class="hud-graph" width="220" height="64"></canvas>
+        <div class="hud-panel-val" id="hudNetVal">—</div>
+      </div>
+      <div class="hud-panel" id="sysPanel">
+        <div class="hud-panel-title">SYSTEM</div>
+        <div class="hud-panel-body" id="sysBody"><span class="muted small">…</span></div>
+      </div>
+    </div>
+
+    <!-- center: orb -->
     <div id="coreStage">
       <canvas id="coreCanvas" aria-hidden="true"></canvas>
       <div id="orbGlow" aria-hidden="true"></div>
@@ -59,20 +120,23 @@
       </div>
       <div id="orbSweep" aria-hidden="true"></div>
       <div id="coreRing" aria-hidden="true"></div>
+      <div id="orbBrackets" aria-hidden="true">
+        <span class="bracket tl"></span><span class="bracket tr"></span>
+        <span class="bracket bl"></span><span class="bracket br"></span>
+      </div>
       <div id="coreOrb"></div>
     </div>
     <div id="presenceStatus">
       <span id="stateLabel">IDLE</span>
       <span id="stateSub">Phantom is here.</span>
     </div>
-    <div id="hudPanel">
-      <div class="hud-gauge"><label>CPU</label><div class="cpu-bars" id="hudCpuBars"></div><span class="hud-val" id="hudCpuVal">—</span></div>
-      <div class="hud-gauge"><label>DISK</label><span class="hud-val" id="hudDiskVal">—</span></div>
-      <div class="hud-gauge"><label>NET</label><span class="hud-val" id="hudNetVal">—</span></div>
-      <div class="hud-gauge"><label>BATT</label><span class="hud-val" id="hudBattVal">—</span></div>
-      <div class="hud-gauge"><label>TOP CPU</label><span class="hud-val" id="hudProcVal">—</span></div>
-      <div class="hud-gauge"><label>SPECTRUM</label><span class="hud-val" id="hudSpecVal">—</span></div>
+
+    <!-- bottom: spectrum strip + footer -->
+    <div id="hudBottom">
+      <canvas id="specStrip" class="hud-spec-strip" aria-hidden="true"></canvas>
+      <div id="hudFooter">PHANTOM <span class="muted">·</span> <span id="hudSpecVal" class="muted small">spectrum idle</span></div>
     </div>
+
     <div id="contextLine" class="hidden"></div>
 
     <div id="activityStrip" class="hidden">

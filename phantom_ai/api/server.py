@@ -14,13 +14,40 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..agents.identities import identity, identity_summary
-from ..config import (AGENTS, DEEPGRAM_BASE_URL, GROQ_BASE_URL, KEY_ENV,
-                      NVIDIA_BASE_URL, UI_DIR, SecretRedactor, mask_key)
+from ..config import (AGENTS, APP_VERSION, DEEPGRAM_BASE_URL, GROQ_BASE_URL,
+                      KEY_ENV, NVIDIA_BASE_URL, UI_DIR, SecretRedactor, mask_key)
 from ..permissions.policy import PermissionLevel
 from ..tools.base import ToolContext, ToolError
 from .app import App
 
 log = logging.getLogger("phantom.api")
+
+# ---- in-app diagnostics: keep the last N log lines so the UI can show what
+# ---- went wrong without a terminal (Settings → Diagnostics) ---------------
+import collections as _collections
+
+DIAG_LOG = _collections.deque(maxlen=400)
+
+
+class _DiagLogHandler(logging.Handler):
+    def emit(self, record):  # noqa: D102
+        try:
+            DIAG_LOG.append(self.format(record))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _init_diag_log() -> None:
+    h = _DiagLogHandler()
+    h.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    # don't double-add on repeated module imports
+    if not any(isinstance(x, _DiagLogHandler) for x in root.handlers):
+        root.addHandler(h)
+
+
+_init_diag_log()
 
 ACCESS_TOKEN = os.environ.get("PHAI_ACCESS_TOKEN", "")
 
@@ -49,6 +76,28 @@ def _key_test_result(kind: str, resp) -> dict:
                 "message": f"⚠️ {kind} is rate-limited — try again later"}
     return {"ok": False, "kind": kind_l,
             "message": f"✗ {kind} returned an error ({status}) — try again later"}
+
+
+async def _fetch_weather(lat: float, lon: float) -> Optional[dict]:
+    """Open-Meteo fetch (module-level seam so tests can monkeypatch it).
+    Returns the parsed JSON or None on any failure (honest 'unavailable')."""
+    import httpx as _httpx
+
+    url = ("https://api.open-meteo.com/v1/forecast"
+           f"?latitude={lat}&longitude={lon}"
+           "&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+           "is_day,precipitation,weather_code,wind_speed_10m,surface_pressure"
+           "&daily=weather_code,temperature_2m_max,temperature_2m_min,"
+           "sunrise,sunset,precipitation_probability_max&timezone=auto"
+           "&forecast_days=5")
+    try:
+        async with _httpx.AsyncClient(timeout=12) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("weather fetch failed: %s", SecretRedactor.redact(str(exc)))
+        return None
 
 
 async def _save_voice_upload(app: App, upload: UploadFile) -> Path:
@@ -144,7 +193,7 @@ class AgentIdBody(BaseModel):
 
 
 def create_app(app: App) -> FastAPI:
-    fastapi = FastAPI(title="PHANTOM + CODED", version="0.1.0", docs_url="/api/docs")
+    fastapi = FastAPI(title="PHANTOM + CODED", version=APP_VERSION, docs_url="/api/docs")
 
     @fastapi.middleware("http")
     async def token_middleware(request: Request, call_next):
@@ -183,7 +232,7 @@ def create_app(app: App) -> FastAPI:
             except Exception as exc:  # noqa: BLE001
                 provider_statuses[agent_id] = {"ok": False, "detail": str(exc)[:200]}
         return {
-            "version": "0.1.0",
+            "version": APP_VERSION,
             "uptime_s": round(app.uptime_seconds(), 1),
             "killswitch": app.killswitch.to_dict(),
             "providers": provider_statuses,
@@ -825,15 +874,64 @@ def create_app(app: App) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"Deepgram token failed: {exc}") from None
 
+    # ---------------------------------------------------------- diagnostics
+    @fastapi.get("/api/diagnostics")
+    async def diagnostics():
+        """In-app diagnostics: recent backend log lines + key status, so the
+        user can see what's wrong without a terminal (never keys/secrets)."""
+        speaker = None
+        if app.speaker is not None:
+            try:
+                speaker = await app.speaker.available()
+            except Exception as exc:  # noqa: BLE001
+                speaker = {"available": False, "reason": str(exc)[:120]}
+        return {
+            "version": APP_VERSION,
+            "uptime_s": round(app.uptime_seconds(), 1),
+            "logs": list(DIAG_LOG),
+            "speaker": speaker,
+            "keys": {
+                "nvidia": bool(app.secrets.get("PHANTOM_NVIDIA_API_KEY")),
+                "deepgram": bool(app.secrets.get("DEEPGRAM_API_KEY")),
+                "groq": bool(app.secrets.get("GROQ_API_KEY")),
+            },
+            "wake": {
+                "state": (app.wake._state.state if getattr(app.wake, "_state", None)
+                          else "unknown"),
+            },
+        }
+
     # ------------------------------------------------------------- HUD (real)
     @fastapi.get("/api/hud")
     async def hud_telemetry():
-        """Real system telemetry for the HUD: per-core CPU, disk/net I/O rates,
-        battery, top CPU process. Nothing is simulated; unreadable values
-        report available=false."""
+        """Real system telemetry for the HUD: per-core CPU, memory, disk/net I/O
+        rates, battery, top CPU process, process count. Nothing is simulated;
+        unreadable values report available=false."""
         if app.hud is None:
             raise HTTPException(503, "hud not ready")
         return await app.hud.snapshot()
+
+    @fastapi.get("/api/hud/weather")
+    async def hud_weather(lat: float = 0, lon: float = 0):
+        """Weather via Open-Meteo (no API key). Location: settings
+        hud.weather.lat/lon, else Accra (JOOJO's city). Cached 10 min; honest
+        unavailable on network failure. Never leaks keys."""
+        import time as _t
+
+        lat = lat or float(await app.settings.get("hud.weather.lat", "*", 5.6037) or 5.6037)
+        lon = lon or float(await app.settings.get("hud.weather.lon", "*", -0.1870) or -0.1870)
+        cache = getattr(app, "_weather_cache", None)
+        now = _t.time()
+        if cache and now - cache[0] < 600 and abs(cache[1] - lat) < 0.01 and abs(cache[2] - lon) < 0.01:
+            return cache[3]
+        data = await _fetch_weather(lat, lon)
+        if data is None:
+            return {"available": False, "reason": "Open-Meteo unreachable — check internet"}
+        out = {"available": True, "lat": round(lat, 4), "lon": round(lon, 4),
+               "current": data.get("current"), "daily": data.get("daily"),
+               "units": data.get("current_units") or {}}
+        app._weather_cache = (now, lat, lon, out)
+        return out
 
     # ------------------------------------------- multi-provider voice engine
     @fastapi.get("/api/voice/status")

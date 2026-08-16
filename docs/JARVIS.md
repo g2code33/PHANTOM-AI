@@ -74,3 +74,46 @@ The presence orb + gauges (added with the v0.4.8 HUD pass) follow these rules:
 - Every gauge shows a real reading or an honest "unavailable" — never a
   simulated number. Verified by `node scripts/test-hud.mjs` (pure helpers)
   and `tests/test_hud.py` (sampler contract + endpoint).
+
+## Full radial HUD (v0.4.9)
+
+The presence view is now a Stark-style radial layout, every panel real-data:
+
+- **Top:** session badge (avatar + "Phantom OS" + real app version + user name
+  from app state) and a client-side live clock/date.
+- **Left:** CPU history line graph + memory graph (rolling buffers from
+  /api/hud polls), per-core "processor units" bar cluster, disk I/O R/W rates.
+- **Right:** weather (Open-Meteo via /api/hud/weather proxy — no API key;
+  temp/condition/humidity/wind/pressure, sunrise/sunset, 5-day outlook;
+  location = settings `hud.weather.lat/lon`, default Accra), moon phase
+  (computed client-side from the real date), network up/down traffic graphs
+  (byte-rate deltas), and a system panel (battery — honest unavailable on
+  desktops — process count, top process by measured CPU).
+- **Bottom:** horizontal spectrum strip driven by the REAL AnalyserNode data
+  (mic while listening, TTS playback while speaking; system-voice fallback
+  shows "system voice"), plus the PHANTOM wordmark footer.
+- **Center:** the existing orb untouched (state/glow logic unchanged) with the
+  layered CSS rings + one-time SVG tick marks + corner brackets.
+
+Sleep/awake tiers still rule: sleeping = panels static, gauges poll every 8 s,
+spectrum strip frozen; awake = 2 s polls, live spectrum. Weather caches 10 min.
+
+**Onboarding no longer re-asks every launch.** Root cause: the Electron shell
+passed PHAI_PORT=0 → random port per launch → the browser origin changed →
+localStorage (onboarding flag, theme, mic permission) reset each open. Fixed
+by a stable default port (47611, fallback only if busy) AND server-side
+persistence of `ui.onboarded` / `ui.userName` / `ui.theme` via /api/settings.
+
+## In-app diagnostics (no console needed)
+
+Settings → **Diagnostics** shows what's wrong without opening a terminal:
+- recent backend log lines (last 400, captured in-process) + frontend JS errors
+- version, uptime, wake state, which API keys are set (presence only — never values)
+- speaker-engine status with an actionable **install hint** when the speaker lock
+  engine (resemblyzer + torch) isn't installed: the exact `pip install --user`
+  command with a Copy button + Re-check.
+
+**Voice enrollment auto-instruct** (chosen over bundling torch into the app to
+keep the build light): when the engine is missing, the enrollment section shows
+the reason + the one-time install command; the Enroll buttons stay disabled
+until it's installed. After installing, click **Re-check** and enroll normally.

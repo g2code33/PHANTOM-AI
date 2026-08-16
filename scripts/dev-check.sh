@@ -54,6 +54,12 @@ echo "   ✓ deps ready"
 echo "▶ 4/5  Tests (expect: 201 passed)"
 .venv/bin/python -m pytest -q
 node scripts/test-hud.mjs
+if [ -d node_modules/jsdom ]; then
+  echo "   (UI smoke: jsdom present — running headless page test)"
+  node scripts/ui-smoke.js
+else
+  echo "   (UI smoke skipped — run \`npm i\` once to enable jsdom UI crash test)"
+fi
 node cloud/tests/test_worker.mjs
 echo "   ✓ all checks green"
 

@@ -33,11 +33,31 @@ class HudSampler:
     async def snapshot(self) -> dict[str, Any]:
         out: dict[str, Any] = {"ts": time.time()}
         out["cpu"] = self._cpu()
+        out["memory"] = self._memory()
         out["disk"] = self._disk()
         out["net"] = self._net()
         out["battery"] = self._battery()
         out["process"] = self._top_process()
+        out["process_count"] = self._process_count()
         return out
+
+    # ------------------------------------------------------------------
+    def _memory(self) -> dict[str, Any]:
+        try:
+            vm = psutil.virtual_memory()
+            return {
+                "percent": round(vm.percent, 1),
+                "used_bytes": vm.used,
+                "total_bytes": vm.total,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"available": False, "reason": str(exc)[:120]}
+
+    def _process_count(self) -> int:
+        try:
+            return len(list(psutil.process_iter(["pid"])))
+        except Exception:  # noqa: BLE001
+            return 0
 
     # ------------------------------------------------------------------
     def _cpu(self) -> dict[str, Any]:
