@@ -61,7 +61,16 @@ jobs:
       - name: Compile Electron main
         run: npm run build:electron
 
+      - name: Unblock app-builder binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Get-ChildItem -Path node_modules -Recurse -Filter "*.exe" | Unblock-File
+          try { Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE\node_modules\app-builder-bin" -Force -ErrorAction SilentlyContinue } catch { }
+
       - name: Build desktop installers
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx electron-builder
 
       - name: Upload desktop artifacts
@@ -129,7 +138,16 @@ jobs:
       - name: Build web assets
         run: npm run web:build
 
+      - name: Unblock app-builder binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Get-ChildItem -Path node_modules -Recurse -Filter "*.exe" | Unblock-File
+          try { Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE\node_modules\app-builder-bin" -Force -ErrorAction SilentlyContinue } catch { }
+
       - name: Build + publish installers to GitHub Release
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run dist -- --publish always
 
       - name: Upload desktop artifacts (belt-and-braces)
