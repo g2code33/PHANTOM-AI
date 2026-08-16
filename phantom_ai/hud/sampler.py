@@ -37,9 +37,10 @@ class HudSampler:
         out["disk"] = self._disk()
         out["net"] = self._net()
         out["battery"] = self._battery()
-        out["process"] = self._top_process()
+        tops = self._top_processes(6)
+        out["process"] = tops[0] if tops else {"name": "", "pid": 0, "cpu_percent": 0.0}
         out["process_count"] = self._process_count()
-        out["top_processes"] = self._top_processes(5)
+        out["top_processes"] = tops[:5]
         return out
 
     # ------------------------------------------------------------------

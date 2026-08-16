@@ -470,6 +470,16 @@ function buildAppMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// ---- single instance: prevents TWO backends fighting for the machine
+// (tray autostart + a manual `phantom` launch = 2 backends = 99% CPU).
+// The second launch just shows the existing window and exits. ----
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => showWindow());
+}
+
 app.whenReady().then(async () => {
   initUpdater();
   buildAppMenu();
@@ -492,6 +502,8 @@ app.whenReady().then(async () => {
   }
   app.on("activate", () => showWindow());
 });
+
+} // end single-instance else
 
 app.on("window-all-closed", () => {
   // Jarvis: keep running in the tray; quit only via tray "Quit" or kill.

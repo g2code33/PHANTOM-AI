@@ -110,7 +110,7 @@
 
     _reschedule() {
       if (this._timer) { clearInterval(this._timer); this._timer = null; }
-      const ms = this.tier === "low" ? 8000 : 2000;
+      const ms = this.tier === "low" ? 8000 : 3000;
       this._poll();
       this._timer = setInterval(() => this._poll(), ms);
     }
@@ -407,9 +407,9 @@
     _start() {
       if (this.active || !this.ctx) return;
       this.active = true;
-      const loop = () => {
+      const loop = (ts) => {
         if (!this.active) return;
-        this._frame();
+        this._frame(ts);
         this.raf = requestAnimationFrame(loop);
       };
       this.raf = requestAnimationFrame(loop);
@@ -423,8 +423,11 @@
       this.ctx.fillStyle = "rgba(110,168,254,.12)";
       this.ctx.fillRect(0, h - 2, w, 2);
     }
-    _frame() {
+    _frame(ts) {
       if (!this.ctx || !this.canvas) return;
+      if (ts - (this._lastT || 0) < 41) { if (this.active) this.raf = requestAnimationFrame(this._frame); return; }  // ~24fps
+      this._lastT = ts;
+      if (document.hidden) return;  // don't draw in background
       const w = this.canvas.width = this.canvas.clientWidth || 600;
       const h = this.canvas.height = this.canvas.clientHeight || 40;
       this.ctx.clearRect(0, 0, w, h);

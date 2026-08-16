@@ -565,3 +565,16 @@ input[type="time"] { width: 130px; color-scheme: dark; }
 .splash-name { font-size: 34px; font-weight: 800; letter-spacing: 10px; color: var(--text);
   text-shadow: 0 0 30px rgba(110,168,254,.6); }
 .splash-sub { font-size: 12px; letter-spacing: 3px; color: var(--muted); }
+
+/* conversations panel */
+.conv-search { width: 100%; margin: 6px 0 8px; background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 10px; padding: 8px 12px; color: var(--text); font-size: 13px; outline: none; }
+.conv-search:focus { border-color: var(--accent); }
+.conv-group { font-size: 10px; letter-spacing: 1.5px; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; }
+.conv-item { cursor: pointer; }
+.conv-item:hover { border-color: var(--accent); }
+
+/* speak-replay button on messages */
+.speak-replay { float: right; margin-left: 8px; background: none; border: 1px solid var(--border);
+  border-radius: 8px; color: var(--accent); font-size: 12px; padding: 2px 7px; cursor: pointer; opacity: .7; }
+.speak-replay:hover { opacity: 1; border-color: var(--accent); }

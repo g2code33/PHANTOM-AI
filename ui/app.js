@@ -368,11 +368,20 @@ function addMessageEl(role, content, container) {
   const who = role === "user" ? (AGENTS[state.agent]?.emoji || "") + " you"
     : role === "assistant" ? (AGENTS[state.agent]?.emoji || "") + " " + (AGENTS[state.agent]?.name || "")
     : role === "error" ? "⚠️" : "";
-  div.innerHTML = `<div class="md">${who ? `<span class="muted small">${esc(who)} · </span>` : ""}${role === "user" ? esc(content) : renderMarkdown(content)}</div>`;
+  const body = role === "user" ? esc(content) : renderMarkdown(content);
+  // voice-first: 🔊 replay button on every assistant bubble (and errors)
+  const speakBtn = role !== "user" ? `<button class="speak-replay" title="Read aloud" onclick="speakText(this.parentElement.querySelector('.md')?.innerText || '')">🔊</button>` : "";
+  div.innerHTML = `<div class="md">${who ? `<span class="muted small">${esc(who)} · </span>` : ""}${body}${speakBtn}</div>`;
   host.appendChild(div);
   host.scrollTop = host.scrollHeight;
   return div.querySelector(".md");
 }
+window.speakText = (text) => {
+  const clean = String(text || "").replace(/🔊/g, "").trim();
+  if (!clean) return;
+  if (voice) voice.speak(clean, { priority: "high" });
+  else { try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(clean)); } catch (e) {} }
+};
 
 function renderMessages(msgs) {
   // MAIN SCREEN: only the current chat — user + assistant turns, clean.
@@ -414,6 +423,11 @@ function finalizeAssistantMessage(data) {
   if (data.status === "cancelled") addMessageEl("system", "⏹ run stopped" + (data.error ? ` — ${data.error}` : ""));
   else if (data.status === "error") addMessageEl("error", data.error || "run failed");
   else if (!data.content) addMessageEl("assistant", "(no textual answer)");
+  // voice-first: always read the final answer aloud (chunks may have been muted)
+  if (data.content && state.voiceOn && !state.killEngaged) {
+    flushSpeech();
+    if (sentenceBuf.trim()) { voice.speak(sentenceBuf.trim()); sentenceBuf = ""; }
+  }
 }
 
 function addToolCard(data, phase) {
@@ -474,20 +488,44 @@ async function sendMessage(text, opts = {}) {
   }
 }
 
+let convSearchTerm = "";
 async function loadConversations() {
   const res = await api(`/api/conversations?agent=${state.agent}`);
   state.conversations = res.conversations || [];
   const list = $("convList");
   if (!list) return;
   list.innerHTML = "";
-  for (const c of state.conversations.slice(0, 40)) {
-    const item = document.createElement("div");
-    item.className = "conv-item" + (c.id === state.currentConv ? " active" : "");
-    item.innerHTML = `<span>${esc(c.title || "Untitled")}</span><span class="conv-date">${timeAgo(c.updated_at)} · ${c.message_count || 0}</span>`;
-    item.onclick = () => openConversation(c.id);
-    list.appendChild(item);
+  const all = state.conversations.slice(0, 200);
+  const term = convSearchTerm.toLowerCase();
+  const filtered = term ? all.filter((c) => String(c.title || "").toLowerCase().includes(term)) : all;
+  if (!filtered.length) {
+    list.innerHTML = `<div class="muted small" style="padding:8px 2px">${term ? "No conversations match." : "No conversations yet — start a chat!"}</div>`;
+    return;
   }
+  const day = 24 * 3600 * 1000;
+  const now = Date.now();
+  const active = filtered.filter((c) => now - new Date(c.updated_at).getTime() < day);
+  const past = filtered.filter((c) => now - new Date(c.updated_at).getTime() >= day);
+  const renderGroup = (title, items) => {
+    if (!items.length) return "";
+    let html = `<div class="conv-group">${title} (${items.length})</div>`;
+    for (const c of items) {
+      const isActive = c.id === state.currentConv;
+      const isRunning = state.running && isActive;
+      html += `<div class="conv-item${isActive ? " active" : ""}" onclick="openConversation('${c.id}')">
+        <span>${isRunning ? "● " : ""}${esc(c.title || "Untitled")}</span>
+        <span class="conv-date">${timeAgo(c.updated_at)} · ${c.message_count || 0}</span></div>`;
+    }
+    return html;
+  };
+  list.innerHTML = renderGroup("Active", active) + renderGroup("Past", past);
 }
+// conversation search
+const convSearchEl = $("convSearch");
+if (convSearchEl) convSearchEl.addEventListener("input", (ev) => {
+  convSearchTerm = ev.target.value.trim();
+  loadConversations();
+});
 function openChatsMenu() {
   const d = $("drawer");
   if (d && d.classList.contains("hidden")) openDrawer();
@@ -1939,6 +1977,7 @@ function hudApplyTier() {
 
 function hudStartLoop() {
   if (hudLoopActive || !ctx) return;
+  if (document.hidden) return;  // background: don't burn CPU drawing
   hudLoopActive = true;
   rafId = requestAnimationFrame(drawCoreFrame);
 }
@@ -1946,8 +1985,17 @@ function hudStopLoop() {
   hudLoopActive = false;
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
 }
+// pause drawing entirely when the window is hidden, resume on visibility
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) hudStopLoop();
+  else if (hudTierNow() === "full") hudStartLoop();
+});
 
+let _lastCoreDraw = 0;
 function drawCoreFrame(ts) {
+  // throttle to ~24fps — the old 60fps loop was a big CPU cost
+  if (ts - _lastCoreDraw < 41) { if (hudLoopActive) rafId = requestAnimationFrame(drawCoreFrame); return; }
+  _lastCoreDraw = ts;
   if (!ctx || !coreCanvas) return;
   const w = coreCanvas.width = coreCanvas.clientWidth || 320;
   const h = coreCanvas.height = coreCanvas.clientHeight || 320;

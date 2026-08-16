@@ -25,7 +25,8 @@ async def test_voice_config_defaults(app):
         assert res.status_code == 200
         cfg = res.json()
         assert cfg["stt"]["provider"] == "server"
-        assert cfg["tts"]["provider"] == "server"
+        # JARVIS default: browser/system TTS so speech works with zero config
+        assert cfg["tts"]["provider"] == "browser"
         assert cfg["stt_priority"] == ["deepgram", "groq", "local_whisper"]
         assert cfg["tts_priority"] == ["deepgram", "cloud", "local"]
         assert cfg["mode"] in ("private", "push", "conversation")

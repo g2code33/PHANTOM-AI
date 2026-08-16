@@ -360,8 +360,23 @@ async function sendVoice(blob) {
     toastHint("✗ " + e.message);
   }
 }
+// JARVIS on the phone too: speechSynthesis needs a prior user gesture on
+// iOS — unlock on first tap so replies always speak.
+let _mUnlocked = false;
+function unlockPhoneAudio() {
+  if (_mUnlocked) return;
+  _mUnlocked = true;
+  try { speechSynthesis.cancel(); speechSynthesis.getVoices(); } catch (e) {}
+}
+["pointerdown", "touchstart", "keydown"].forEach((ev) =>
+  window.addEventListener(ev, unlockPhoneAudio, { passive: true }));
 function speakReply(txt) {
-  try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(String(txt || "").replace(/[#*`_>]/g, "").slice(0, 600))); } catch (e) {}
+  try {
+    unlockPhoneAudio();
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(String(txt || "").replace(/[#*`_>]/g, "").slice(0, 600));
+    speechSynthesis.speak(u);
+  } catch (e) {}
 }
 $("mVoiceBtn").onclick = () => S.recording ? stopRec() : startRec();
 
