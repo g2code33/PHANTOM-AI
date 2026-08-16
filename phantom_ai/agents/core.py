@@ -771,8 +771,14 @@ def _parse_tool_calls(raw: Optional[str]) -> Optional[list[ToolCall]]:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return None
+    # guard: the model can persist "null" / an object instead of a list —
+    # iterating it crashes the whole agent run ("'NoneType' object is not
+    # iterable"), which showed up as 'phantom not responding'
+    if not isinstance(data, list):
+        return None
     return [ToolCall(id=t.get("id", ""), name=t.get("name", ""),
-                     arguments=t.get("arguments") or {}) for t in data if t.get("name")]
+                     arguments=t.get("arguments") or {}) for t in data
+            if isinstance(t, dict) and t.get("name")]
 
 
 def _first_tool_call_id(raw: Optional[str]) -> str:

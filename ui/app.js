@@ -920,7 +920,7 @@ async function loadSettings() {
           <button class="btn" onclick="testKey('nvidia', '${agentId}')">Test</button>
           ${k.configured ? `<span class="muted small">${esc(k.masked || "")}</span>` : ""}</div>
         <div class="row"><label>Model</label><input type="text" id="model-${agentId}"></div>
-        <div class="row"><label>Temperature</label><input type="text" id="temp-${agentId}" style="width:80px"></div>
+        <div class="row"><label>Temperature</label><input type="text" id="temp-${agentId}" style="width:80px" title="Creativity/randomness of the model: 0 = strict &amp; factual, higher (up to 2) = more creative &amp; varied. Default 0.4 — a balanced, dependable personality."></div>
       </div>`);
   }
   sections.push(`
@@ -1127,6 +1127,7 @@ async function loadBrainKeys() {
         <input type="password" id="bkey-${esc(b.brain_id)}" placeholder="${b.key_configured ? "configured (" + esc(b.key_masked) + ") — type to replace" : "own API key (empty = share Phantom's)"}" style="flex:1">
         <input type="text" id="bmodel-${esc(b.brain_id)}" value="${esc(b.model)}" placeholder="model" style="width:230px">
         <button class="btn" onclick="saveBrainKey('${esc(b.brain_id)}')">Save</button>
+        <button class="btn" onclick="testKey('nvidia', '${esc(b.brain_id)}')">Test</button>
         ${b.key_configured ? `<button class="btn btn-danger" onclick="clearBrainKey('${esc(b.brain_id)}')">Remove key</button>` : ""}
       </div>`;
     el.appendChild(card);
@@ -1491,9 +1492,13 @@ function renderUpdater() {
   const s = updaterState;
   let text = "not checked — press “Check for updates”";
   let downloadVisible = false, installVisible = false, releaseVisible = false;
-  if (s.state === "checking") text = "checking for updates…";
+  if (s.state === "checking") text = "⏳ checking for updates…";
   else if (s.state === "up-to-date") text = `✓ you're on the latest version — v${s.version || updaterVersion}`;
-  else if (s.state === "available") text = `⬆ update available: v${s.version} — downloading…`;
+  else if (s.state === "available") {
+    text = `⬆ update available: v${s.version} — downloading…`;
+    downloadVisible = true; // manual fallback if auto-download didn't start
+    releaseVisible = true;
+  }
   else if (s.state === "downloading") text = `⬇ downloading… ${s.percent || 0}%`;
   else if (s.state === "ready") { text = `⬆ update ready: v${s.version} — restart to install`; installVisible = true; releaseVisible = true; }
   else if (s.state === "error") {
@@ -1527,7 +1532,10 @@ async function checkForUpdates() {
   }
   updaterState = { state: "checking" }; renderUpdater();
   const res = await updater.check().catch((e) => ({ state: "error", message: String(e) }));
-  updaterState = res || {}; renderUpdater();
+  // never let a transient 'checking' clobber the real result the events
+  // already delivered (the race that stuck the button on 'checking…')
+  if (res && res.state && res.state !== "checking") updaterState = res;
+  renderUpdater();
   const st = updaterState;
   if (st.state === "available") {
     toast(`⬆ Update v${st.version} found — downloading…`);

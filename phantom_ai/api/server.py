@@ -107,6 +107,9 @@ async def _save_voice_upload(app: App, upload: UploadFile) -> Path:
     data = await upload.read()
     if not data:
         raise HTTPException(400, "empty audio upload")
+    if len(data) < 44 or data[:4] != b"RIFF":
+        raise HTTPException(400, "audio must be a WAV file (RIFF) — got "
+                                 f"{data[:4]!r} ({len(data)} bytes)")
     upload_dir = Path(app.data_dir) / "voice_uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     path = upload_dir / f"rec_{uuid.uuid4().hex[:12]}.wav"
@@ -472,8 +475,11 @@ def create_app(app: App) -> FastAPI:
         try:
             async with _httpx.AsyncClient(timeout=20) as client:
                 if kind == "nvidia":
-                    env = KEY_ENV.get(agent, KEY_ENV["phantom"])
-                    key = app.secrets.get(env)
+                    # per-brain key first (brain.<id>.api_key), then the
+                    # agent env key — so each brain's Test button checks ITS
+                    # own key, not Phantom's
+                    key = app.secrets.get(f"brain.{agent}.api_key") or \
+                        app.secrets.get(KEY_ENV.get(agent, KEY_ENV["phantom"]))
                     if not key:
                         raise HTTPException(400, f"No NVIDIA key stored for {agent} — save one first")
                     resp = await client.get(

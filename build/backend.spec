@@ -109,6 +109,10 @@ a = Analysis(
     hiddenimports=uvicorn_hidden + phantom_pkg_hidden + [
         "aiosqlite", "cryptography", "jsonschema", "psutil",
         "numpy", "multipart", "multipart.multipart",
+        # real-time events: the WebSocket endpoint needs the websockets lib
+        # in the frozen bundle ("No supported WebSocket library detected" 405)
+        "websockets", "websockets.legacy", "websockets.legacy.server",
+        "websockets.legacy.client", "websockets.legacy.asyncio",
     ],
     hookspath=[],
     hooksconfig={},
