@@ -475,8 +475,11 @@ def create_app(app: App) -> FastAPI:
         try:
             async with _httpx.AsyncClient(timeout=20) as client:
                 if kind == "nvidia":
-                    env = KEY_ENV.get(agent, KEY_ENV["phantom"])
-                    key = app.secrets.get(env)
+                    # per-brain key first (brain.<id>.api_key), then the
+                    # agent env key — so each brain's Test button checks ITS
+                    # own key, not Phantom's
+                    key = app.secrets.get(f"brain.{agent}.api_key") or \
+                        app.secrets.get(KEY_ENV.get(agent, KEY_ENV["phantom"]))
                     if not key:
                         raise HTTPException(400, f"No NVIDIA key stored for {agent} — save one first")
                     resp = await client.get(

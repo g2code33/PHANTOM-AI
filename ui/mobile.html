@@ -44,7 +44,16 @@
       <input id="mCloudToken" type="password" placeholder="cloud token (optional)">
       <button id="mConnectBtn" class="mPrimary">Connect</button>
       <p class="muted small" style="margin-top:8px">💡 Auto mode: uses your PC when reachable, portable cloud when not. The 🔄 button cycles auto → PC → portable.</p>
-      <p class="muted small" style="margin-top:6px">📲 iPhone install: open this page in Safari → <b>Share → Add to Home Screen</b>. Use the 🔄 toggle to switch PC / portable anytime.</p>
+      <div class="mCard" style="margin-top:10px;background:var(--mbg2)">
+        <div style="font-weight:700;margin-bottom:4px">🚀 Getting started (iPhone)</div>
+        <ol class="muted small" style="margin:0;padding-left:18px">
+          <li><b>PC:</b> keep Phantom running — <code>bash scripts/run.sh</code> or the tray app.</li>
+          <li><b>Same Wi-Fi:</b> enter <code>http://&lt;PC-IP&gt;:8000</code> above (PC on the same network) and Connect.</li>
+          <li><b>Anywhere (off campus/home):</b> on the PC run <code>bash scripts/tunnel.sh</code>, open the <code>https://…trycloudflare.com</code> URL here, then Share → <b>Add to Home Screen</b>.</li>
+          <li><b>Portable cloud:</b> deploy the Worker (<code>bash cloud/deploy.sh</code>) and paste its URL — works even with your PC off.</li>
+        </ol>
+        <p class="muted small" style="margin-top:6px">🔐 If you set an access token on the PC, enter it in the token field.</p>
+      </div>
       <p id="mConnErr" class="mErr hidden"></p>
     </div>
   </div>

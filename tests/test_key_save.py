@@ -322,3 +322,25 @@ async def test_keys_test_deepgram_and_groq(provider_mock, workdir):
 def json_dumps(obj) -> str:
     import json
     return json.dumps(obj)
+
+
+async def test_keys_test_uses_brain_own_key(provider_mock, workdir):
+    """A specialist brain's Test button must check ITS OWN stored key
+    (brain.<id>.api_key), not fall back to Phantom's key."""
+    inst = _make_app(workdir)
+    await inst.startup()
+    try:
+        async with await _client(inst) as c:
+            # phantom has an INVALID key; research has a VALID one
+            await c.put("/api/settings", json={
+                "agent": "phantom", "key": "nvidia_api_key", "value": "nvapi-bad-key-9999"})
+            await c.put("/api/brains/research/config", json={"api_key": VALID_NVIDIA})
+            # brain's own key works
+            r = await c.post("/api/keys/test", json={"kind": "nvidia", "agent": "research"})
+            assert r.status_code == 200
+            assert r.json()["ok"] is True, r.json()
+            # phantom (no own brain key) still fails with its bad key
+            r2 = await c.post("/api/keys/test", json={"kind": "nvidia", "agent": "phantom"})
+            assert r2.json()["ok"] is False
+    finally:
+        await inst.shutdown()

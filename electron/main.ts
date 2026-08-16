@@ -101,10 +101,14 @@ function initUpdater() {
       return { state: "dev", message: "updates are only available in the packaged app" };
     }
     try {
-      const result = await autoUpdater.checkForUpdates();
-      return { state: "checking", result: !!result };
+      await autoUpdater.checkForUpdates();
+      // the check triggers update-not-available/update-available/error events
+      // which update `updateStatus` BEFORE the promise resolves — return that
+      // live status so the renderer never clobbers it with a transient
+      // "checking" (which stuck the button on 'checking for updates…').
+      return { ...updateStatus, result: true };
     } catch (err) {
-      return { state: "error", message: String(err) };
+      return { state: "error", message: String(err?.message || err) };
     }
   });
 

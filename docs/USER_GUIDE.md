@@ -190,3 +190,41 @@ exponential backoff (short for rate limits, long for invalid keys), counts usage
   set `PHAI_HOST=127.0.0.1`.
 - GUI automation needs a real desktop session (`pyautogui`/`xdotool`/`mss`); browser automation
   needs `pip install playwright && playwright install chromium`.
+
+## Temperature (what it does)
+
+Each agent has a **Temperature** setting in Settings → AI. It controls how
+"creative" vs "strict" the model is:
+
+- **0** → always picks the most likely answer: factual, repeatable, safe.
+- **0.4 (default)** → balanced: dependable but not robotic. Good for a
+  personal companion.
+- **0.7 – 1.0** → more creative/varied: better for ideas, storytelling, jokes.
+- **Above 1.0** → increasingly random; can ramble or repeat.
+
+Lower it if Phantom gives off-topic answers; raise it if replies feel wooden.
+It's per-agent, so you can keep Phantom calm (0.4) and Coded technical (0.2)
+if you like.
+
+## iPhone companion — how to start
+
+The phone companion (`/mobile`) is a PWA: no App Store. Three ways to connect,
+in order of preference:
+
+1. **Same Wi-Fi (PC nearby)** — PC: keep Phantom running
+   (`bash scripts/run.sh` or the tray app). On the phone: open
+   `http://<PC-IP>:8000/mobile` (find PC-IP with `hostname -I`), enter the
+   address in the connect screen → **Connect**. Set `PHAI_ACCESS_TOKEN` on the
+   PC if you want it password-protected.
+2. **Anywhere (tunnel)** — PC: `bash scripts/tunnel.sh` prints an
+   `https://…trycloudflare.com` URL. Open it on the iPhone in **Safari**, then
+   **Share → Add to Home Screen** → it becomes a full-screen app icon. Works
+   from home/campus anywhere. (Public URL — keep the token set.)
+3. **Portable cloud (PC off)** — deploy the Worker once with
+   `bash cloud/deploy.sh`, paste its URL into the phone's connect screen
+   (Portable field) + the cloud token. The companion keeps working even when
+   your PC is asleep.
+
+The 🔄 button on the phone cycles **auto → PC → portable**: auto prefers your
+PC when reachable and falls back to the cloud. Tap-to-talk on the phone sends
+audio to the PC's voice engine (or the Worker's) and streams the reply back.
