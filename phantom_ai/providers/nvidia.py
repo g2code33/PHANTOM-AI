@@ -203,6 +203,22 @@ class NVIDIAProvider(ModelProvider):
             "stream_options": {"include_usage": True},
         }
         if tools:
+            # NVIDIA's tool-use template injects the tool definitions into the
+            # FIRST user message. If history was window-truncated (or a run
+            # resumes mid-tool-loop) the first non-system message can be an
+            # assistant message — then there's no user turn to hang the tools
+            # on and the API 500s:
+            #   "Cannot put tools in the first user message when there's no
+            #    first user message!" (in tool_use:66)
+            # Guarantee a user turn leads the conversation in that case —
+            # inserted AFTER the system message(s), never before them.
+            msgs = payload["messages"]
+            first = next((m for m in msgs if m.get("role") != "system"), None)
+            if not first or first.get("role") != "user":
+                insert_at = 0
+                while insert_at < len(msgs) and msgs[insert_at].get("role") == "system":
+                    insert_at += 1
+                msgs.insert(insert_at, {"role": "user", "content": "(continue)"})
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice or "auto"
         return payload

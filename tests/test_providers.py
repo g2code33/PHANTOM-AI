@@ -163,3 +163,30 @@ def _coro(result):
         return result
 
     return _inner
+
+
+async def test_nvidia_tools_requires_leading_user_message():
+    """Regression: NVIDIA 500 'Cannot put tools in the first user message'
+    when a truncated/resumed conversation starts with an assistant message.
+    The payload builder must insert a leading user turn when tools are set."""
+    from phantom_ai.providers.nvidia import NVIDIAProvider
+    from phantom_ai.agents.core import ChatMessage
+
+    prov = NVIDIAProvider(api_key="nvapi-test", model="meta/llama-3.3-70b-instruct")
+    # conversation truncated so the first non-system message is assistant
+    messages = [
+        ChatMessage(role="system", content="you are Phantom"),
+        ChatMessage(role="assistant", content="I already started"),
+        ChatMessage(role="user", content="continue"),
+    ]
+    tools = [{"type": "function",
+              "function": {"name": "web_search", "parameters": {"type": "object", "properties": {}}}}]
+    payload = prov._build_payload(messages, tools, "auto", 0.4, 512, stream=False)
+    first = next((m for m in payload["messages"] if m["role"] != "system"), None)
+    assert first is not None and first["role"] == "user", \
+        "tools require a leading user message"
+    assert payload["tools"] == tools
+    assert payload["tool_choice"] == "auto"
+    # no tools -> no insertion
+    payload2 = prov._build_payload(messages, None, None, 0.4, 512, stream=False)
+    assert payload2["messages"][1]["role"] == "assistant"

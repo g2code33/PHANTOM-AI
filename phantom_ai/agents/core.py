@@ -676,9 +676,15 @@ class Agent:
             tcs = _parse_tool_calls(m["tool_calls"])
             out.append(ChatMessage(role=role, content=m["content"],
                                    tool_calls=tcs if tcs else None))
-        # window: keep last `window` messages (plus system built elsewhere)
+        # window: keep last `window` messages (plus system built elsewhere).
+        # Never let the window truncation start on an assistant/tool message:
+        # NVIDIA's tool template needs a leading user turn, and a truncated
+        # history starting with assistant caused HTTP 500
+        # ("Cannot put tools in the first user message...").
         if len(out) > window:
             out = out[-window:]
+            if out and out[0].role not in ("user", "system"):
+                out.insert(0, ChatMessage(role="user", content="(continue)"))
         return out
 
     async def _refresh_summary(self, conversation_id: str, window: int) -> None:
