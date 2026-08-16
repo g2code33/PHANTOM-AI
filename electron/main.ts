@@ -503,8 +503,6 @@ app.whenReady().then(async () => {
   app.on("activate", () => showWindow());
 });
 
-} // end single-instance else
-
 app.on("window-all-closed", () => {
   // Jarvis: keep running in the tray; quit only via tray "Quit" or kill.
 });
