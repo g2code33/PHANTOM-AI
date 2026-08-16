@@ -78,6 +78,29 @@ def _key_test_result(kind: str, resp) -> dict:
             "message": f"✗ {kind} returned an error ({status}) — try again later"}
 
 
+async def _diagnostic_providers(app: App) -> list[dict]:
+    """Resolved provider config per agent (URLs + model — never keys) so the
+    user can see in-app why a request 404s (e.g. a wrong base_url)."""
+    from ..brains.config import resolve_brain_config
+
+    out = []
+    for bid in await app.brain_ids():
+        try:
+            brain = await app.brains.get(bid) if app.brains else None
+            definition = dict(brain) if brain else {}
+            cfg = await resolve_brain_config(bid, definition, app.secrets,
+                                             app.settings)
+            out.append({
+                "agent": bid,
+                "base_url": cfg.get("base_url", ""),
+                "model": cfg.get("model", ""),
+                "provider": app.providers.get(bid, None).name if app.providers.get(bid) else "",
+            })
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
 async def _fetch_weather(lat: float, lon: float) -> Optional[dict]:
     """Open-Meteo fetch (module-level seam so tests can monkeypatch it).
     Returns the parsed JSON or None on any failure (honest 'unavailable')."""
@@ -901,6 +924,7 @@ def create_app(app: App) -> FastAPI:
                 "deepgram": bool(app.secrets.get("DEEPGRAM_API_KEY")),
                 "groq": bool(app.secrets.get("GROQ_API_KEY")),
             },
+            "providers": await _diagnostic_providers(app),
             "wake": {
                 "state": (app.wake._state.state if getattr(app.wake, "_state", None)
                           else "unknown"),

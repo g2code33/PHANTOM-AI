@@ -99,14 +99,25 @@ class HeartbeatScheduler:
         self.notifications = notification_store
         self._running = False
         self._wake = asyncio.Event()
+        self._loop_task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
         self._running = True
-        asyncio.ensure_future(self._loop())
+        # keep a reference so stop() can cancel it — otherwise the loop task
+        # stays pending at shutdown ('Task was destroyed but it is pending!'
+        # with Event.wait() in the traceback)
+        self._loop_task = asyncio.ensure_future(self._loop())
 
     async def stop(self) -> None:
         self._running = False
         self._wake.set()
+        if self._loop_task is not None:
+            self._loop_task.cancel()
+            try:
+                await self._loop_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._loop_task = None
 
     async def _loop(self) -> None:
         while self._running:

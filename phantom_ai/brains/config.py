@@ -69,7 +69,32 @@ async def resolve_brain_config(brain_id: str, definition: dict[str, Any],
     if not base_url:
         base_url = NVIDIA_BASE_URL
 
+    base_url = _normalize_base_url(base_url)
     return {"api_key": api_key, "model": model, "base_url": base_url}
+
+
+def _normalize_base_url(base_url: str) -> str:
+    """Sanitize a (possibly user-stored) OpenAI-compatible base URL.
+
+    Fixes the failure that produced 'NVIDIA request failed (HTTP 404):
+    404 page not found' — a base_url without the /v1 path (or with the full
+    /chat/completions endpoint stored) makes the provider hit a web-server
+    root and 404. Normalizing here heals it at resolve time."""
+    import re
+
+    url = (base_url or "").strip()
+    if not url:
+        return NVIDIA_BASE_URL
+    # strip a trailing full endpoint if the user stored it
+    url = re.sub(r"/chat/completions/?$", "", url)
+    url = url.rstrip("/")
+    # ensure a scheme (OpenAI-compatible endpoints are https)
+    if "://" not in url:
+        url = "https://" + url
+    # the known NVIDIA NIM host is only correct WITH /v1
+    if url.rstrip("/").endswith("integrate.api.nvidia.com"):
+        url = url + "/v1"
+    return url
 
 
 def brain_key_envs(brain_id: str) -> dict[str, str]:
