@@ -56,6 +56,9 @@ KEY_ENV = {
 
 # Default NVIDIA NIM (OpenAI-compatible) endpoint
 NVIDIA_BASE_URL = os.environ.get("PHAI_NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+# Deepgram + Groq (voice) endpoints — env-overridable (tests point at mocks)
+DEEPGRAM_BASE_URL = os.environ.get("PHAI_DEEPGRAM_BASE_URL", "https://api.deepgram.com/v1")
+GROQ_BASE_URL = os.environ.get("PHAI_GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 # Per-agent overrides (used by tests to point at a local mock)
 BASE_URL_ENV = {
     "phantom": "PHANTOM_NVIDIA_BASE_URL",
@@ -140,19 +143,30 @@ class SecretsStore:
             return env_val
         return self._load_file().get(key)
 
-    def set(self, key: str, value: str) -> None:
+    def set(self, key: str, value: str) -> bool:
+        """Persist a secret. Returns True only when the value was written and
+        read back from disk (so callers can surface honest 'saved' feedback)."""
         value = value.strip()
         if not value:
-            return
+            return False
         data = self._load_file()
         data[key] = value
-        self._save_file(data)
-
-    def delete(self, key: str) -> None:
-        data = self._load_file()
-        if key in data:
-            del data[key]
+        try:
             self._save_file(data)
+        except OSError:
+            return False
+        return True
+
+    def delete(self, key: str) -> bool:
+        data = self._load_file()
+        if key not in data:
+            return False
+        del data[key]
+        try:
+            self._save_file(data)
+        except OSError:
+            return False
+        return True
 
     def has(self, key: str) -> bool:
         return bool(self.get(key))

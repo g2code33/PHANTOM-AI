@@ -2,20 +2,25 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (FastAPI, File, Form, HTTPException, Request, UploadFile,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..agents.identities import identity, identity_summary
-from ..config import AGENTS, KEY_ENV, UI_DIR, mask_key
+from ..config import (AGENTS, DEEPGRAM_BASE_URL, GROQ_BASE_URL, KEY_ENV,
+                      NVIDIA_BASE_URL, UI_DIR, SecretRedactor, mask_key)
 from ..permissions.policy import PermissionLevel
 from ..tools.base import ToolContext, ToolError
 from .app import App
+
+log = logging.getLogger("phantom.api")
 
 ACCESS_TOKEN = os.environ.get("PHAI_ACCESS_TOKEN", "")
 
@@ -25,6 +30,39 @@ def _check_token(request: Request) -> None:
         return
     if request.headers.get("X-Access-Token") != ACCESS_TOKEN:
         raise HTTPException(status_code=401, detail="missing or invalid access token")
+
+
+def _key_test_result(kind: str, resp) -> dict:
+    """Map a provider HTTP status to a friendly test result (never the key)."""
+    status = resp.status_code
+    kind_l = kind.lower()
+    if status == 200:
+        return {"ok": True, "kind": kind_l, "message": f"✓ {kind} key works"}
+    if status in (401, 403):
+        return {"ok": False, "kind": kind_l,
+                "message": f"✗ {kind} rejected the key (unauthorized)"}
+    if status == 402:
+        return {"ok": False, "kind": kind_l,
+                "message": f"✗ {kind}: no credits / quota exceeded"}
+    if status == 429:
+        return {"ok": False, "kind": kind_l,
+                "message": f"⚠️ {kind} is rate-limited — try again later"}
+    return {"ok": False, "kind": kind_l,
+            "message": f"✗ {kind} returned an error ({status}) — try again later"}
+
+
+async def _save_voice_upload(app: App, upload: UploadFile) -> Path:
+    """Persist an uploaded mic recording to a temp WAV under the data dir."""
+    import uuid
+
+    data = await upload.read()
+    if not data:
+        raise HTTPException(400, "empty audio upload")
+    upload_dir = Path(app.data_dir) / "voice_uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    path = upload_dir / f"rec_{uuid.uuid4().hex[:12]}.wav"
+    path.write_bytes(data)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -329,26 +367,107 @@ def create_app(app: App) -> FastAPI:
     @fastapi.put("/api/settings")
     async def put_setting(body: SettingUpdate):
         if body.key == "nvidia_api_key":
-            if body.delete:
-                app.secrets.delete(KEY_ENV[body.agent])
-            elif body.value:
-                app.secrets.set(KEY_ENV[body.agent], str(body.value))
+            env = KEY_ENV.get(body.agent, KEY_ENV["phantom"])
+            try:
+                if body.delete:
+                    persisted = app.secrets.delete(env)
+                else:
+                    persisted = app.secrets.set(env, str(body.value or ""))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("settings save failed: %s", exc)
+                raise HTTPException(500, "Could not write the key to disk — "
+                                         "check the app data folder is writable") from None
+            rebuild_ok = True
             if body.agent in AGENTS:
-                await app.rebuild_provider(body.agent)
-            return {"ok": True}
-        if body.delete:
-            await app.settings.delete(body.key, body.agent)
-        else:
-            await app.settings.set(body.key, body.value, body.agent)
+                try:
+                    await app.rebuild_provider(body.agent)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("provider rebuild after key save failed: %s", exc)
+                    rebuild_ok = False
+            return {"ok": True, "saved": body.key, "agent": body.agent,
+                    "persisted": persisted,
+                    "masked": mask_key(app.secrets.get(env)),
+                    "rebuild": rebuild_ok}
+        try:
+            if body.delete:
+                await app.settings.delete(body.key, body.agent)
+            else:
+                await app.settings.set(body.key, body.value, body.agent)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("settings save failed: %s", exc)
+            raise HTTPException(500, "Could not save that setting") from None
         if body.agent in AGENTS and body.key in ("model", "model.temperature", "model.max_tokens"):
-            await app.rebuild_provider(body.agent)
-        return {"ok": True}
+            try:
+                await app.rebuild_provider(body.agent)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("provider rebuild after settings change failed: %s", exc)
+        return {"ok": True, "saved": body.key, "agent": body.agent, "persisted": True}
 
     @fastapi.post("/api/settings/rebuild-provider")
     async def rebuild_provider(body: AgentIdBody):
         if body.agent not in app.agents:
             raise HTTPException(400, "unknown agent")
         return await app.rebuild_provider(body.agent)
+
+    # ------------------------------------------------------------- key test
+    @fastapi.post("/api/keys/test")
+    async def keys_test(body: dict):
+        """Server-side live check of a stored key. The key itself never leaves
+        the backend; the UI only receives ok + a friendly message."""
+        import httpx as _httpx
+
+        kind = str(body.get("kind", "")).lower()
+        agent = str(body.get("agent", "phantom"))
+        if kind not in ("nvidia", "deepgram", "groq", "cloud"):
+            raise HTTPException(400, "unknown kind — use nvidia | deepgram | groq | cloud")
+        try:
+            async with _httpx.AsyncClient(timeout=20) as client:
+                if kind == "nvidia":
+                    env = KEY_ENV.get(agent, KEY_ENV["phantom"])
+                    key = app.secrets.get(env)
+                    if not key:
+                        raise HTTPException(400, f"No NVIDIA key stored for {agent} — save one first")
+                    resp = await client.get(
+                        os.environ.get("PHAI_NVIDIA_BASE_URL", NVIDIA_BASE_URL) + "/models",
+                        headers={"Authorization": f"Bearer {key}"})
+                    return _key_test_result("NVIDIA", resp)
+                if kind == "deepgram":
+                    key = app.secrets.get("DEEPGRAM_API_KEY")
+                    if not key:
+                        raise HTTPException(400, "No Deepgram key stored — save one first")
+                    resp = await client.get(
+                        os.environ.get("PHAI_DEEPGRAM_BASE_URL", DEEPGRAM_BASE_URL) + "/projects",
+                        headers={"Authorization": f"Token {key}"})
+                    return _key_test_result("Deepgram", resp)
+                if kind == "groq":
+                    key = app.secrets.get("GROQ_API_KEY")
+                    if not key:
+                        raise HTTPException(400, "No Groq key stored — save one first")
+                    resp = await client.get(
+                        os.environ.get("PHAI_GROQ_BASE_URL", GROQ_BASE_URL) + "/models",
+                        headers={"Authorization": f"Bearer {key}"})
+                    return _key_test_result("Groq", resp)
+                if kind == "cloud":
+                    url = app.cloudsync._url() if app.cloudsync else ""
+                    token = app.cloudsync._token() if app.cloudsync else ""
+                    if not url:
+                        raise HTTPException(400, "Portable Phantom URL not configured — save it first")
+                    if not token:
+                        raise HTTPException(400, "Portable Phantom token not configured — save it first")
+                    resp = await client.get(
+                        url + "/api/status",
+                        headers={"X-Access-Token": token})
+                    return _key_test_result("Portable Phantom", resp)
+        except HTTPException:
+            raise
+        except _httpx.TimeoutException:
+            raise HTTPException(502, f"{kind} test timed out — check your internet connection") from None
+        except _httpx.HTTPError as exc:
+            log.warning("key test (%s) connection failed: %s", kind,
+                        SecretRedactor.redact(str(exc)))
+            raise HTTPException(502, f"{kind} test could not connect — "
+                                     "check your internet connection and try again") from None
+        raise HTTPException(500, "unexpected key test failure")  # pragma: no cover
 
     # ------------------------------------------------------------ permissions
     @fastapi.get("/api/permissions")
@@ -541,13 +660,15 @@ def create_app(app: App) -> FastAPI:
     # ------------------------------------------------------------------ voice
     @fastapi.get("/api/voice/config")
     async def voice_config():
-        stt = await app.settings.get("voice.stt", "*", {"provider": "browser"})
-        tts = await app.settings.get("voice.tts", "*", {"provider": "browser"})
+        stt = await app.settings.get("voice.stt", "*", {"provider": "server"})
+        tts = await app.settings.get("voice.tts", "*", {"provider": "server"})
         mode = await app.settings.get("voice.mode", "*", "conversation")
         proactive = await app.settings.get("voice.proactive_speech", "*", False)
         # per-persona voices (Phase 3): phantom & coded each have their own
         voices = await app.settings.get("voice.voices", "*", {})
         dg = app.secrets.get("DEEPGRAM_API_KEY") or ""
+        groq = app.secrets.get("GROQ_API_KEY") or ""
+        tts_cloud = await app.settings.get("voice.tts_cloud", "*", {}) or {}
         return {
             "stt": {"provider": stt.get("provider", "browser"),
                     "model": stt.get("model", "")},
@@ -561,6 +682,24 @@ def create_app(app: App) -> FastAPI:
             "proactive_speech": bool(proactive),
             "deepgram_configured": bool(dg),
             "deepgram_masked": mask_key(dg),
+            "groq_configured": bool(groq),
+            "groq_masked": mask_key(groq),
+            # multi-provider voice engine settings
+            "stt_priority": await app.settings.get(
+                "voice.stt_priority", "*",
+                ["deepgram", "groq", "local_whisper"]),
+            "tts_priority": await app.settings.get(
+                "voice.tts_priority", "*",
+                ["deepgram", "cloud", "local"]),
+            "local_model": await app.settings.get("voice.local_model", "*", "base"),
+            "tts_cloud": {
+                "base_url": (tts_cloud or {}).get("base_url", ""),
+                "configured": bool((tts_cloud or {}).get("base_url")),
+            },
+            "vad_threshold": await app.settings.get("voice.vad_threshold", "*", 0.02),
+            "auto_stop_ms": await app.settings.get("voice.auto_stop_ms", "*", 900),
+            "max_record_ms": await app.settings.get("voice.max_record_ms", "*", 15000),
+            "continuous": bool(await app.settings.get("voice.continuous", "*", True)),
         }
 
     @fastapi.get("/api/voice/voices")
@@ -585,28 +724,78 @@ def create_app(app: App) -> FastAPI:
 
     @fastapi.put("/api/voice/config")
     async def voice_config_set(body: dict):
-        if body.get("stt"):
-            await app.settings.set("voice.stt", body["stt"], "*")
-        if body.get("tts"):
-            await app.settings.set("voice.tts", body["tts"], "*")
-        if body.get("voices"):
-            existing = await app.settings.get("voice.voices", "*", {})
-            merged = {**(existing or {}), **body["voices"]}
-            await app.settings.set("voice.voices", merged, "*")
-        if body.get("mode") in ("private", "push", "conversation"):
-            await app.settings.set("voice.mode", body["mode"], "*")
-        if body.get("proactive_speech") is not None:
-            await app.settings.set("voice.proactive_speech",
-                                   bool(body["proactive_speech"]), "*")
+        persisted = True
+        try:
+            if body.get("stt"):
+                await app.settings.set("voice.stt", body["stt"], "*")
+            if body.get("tts"):
+                await app.settings.set("voice.tts", body["tts"], "*")
+            if body.get("voices"):
+                existing = await app.settings.get("voice.voices", "*", {})
+                merged = {**(existing or {}), **body["voices"]}
+                await app.settings.set("voice.voices", merged, "*")
+            if body.get("mode") in ("private", "push", "conversation"):
+                await app.settings.set("voice.mode", body["mode"], "*")
+            if body.get("proactive_speech") is not None:
+                await app.settings.set("voice.proactive_speech",
+                                       bool(body["proactive_speech"]), "*")
+            # multi-provider voice engine settings
+            if body.get("stt_priority"):
+                prio = body["stt_priority"]
+                if isinstance(prio, str):
+                    prio = [p.strip() for p in prio.split(",") if p.strip()]
+                await app.settings.set("voice.stt_priority", list(prio), "*")
+            if body.get("tts_priority"):
+                prio = body["tts_priority"]
+                if isinstance(prio, str):
+                    prio = [p.strip() for p in prio.split(",") if p.strip()]
+                await app.settings.set("voice.tts_priority", list(prio), "*")
+            if body.get("local_model"):
+                await app.settings.set("voice.local_model",
+                                       str(body["local_model"]).strip(), "*")
+            if body.get("tts_cloud") is not None:
+                existing_cfg = await app.settings.get("voice.tts_cloud", "*", {}) or {}
+                merged_cfg = {**(existing_cfg or {}), **body["tts_cloud"]}
+                # never store a key in the DB — move it to the secrets file
+                if merged_cfg.get("api_key"):
+                    app.secrets.set("VOICE_TTS_CLOUD_API_KEY",
+                                    str(merged_cfg.pop("api_key")).strip())
+                await app.settings.set("voice.tts_cloud", merged_cfg, "*")
+            if body.get("vad_threshold") is not None:
+                await app.settings.set("voice.vad_threshold",
+                                       float(body["vad_threshold"]), "*")
+            if body.get("auto_stop_ms") is not None:
+                await app.settings.set("voice.auto_stop_ms",
+                                       int(body["auto_stop_ms"]), "*")
+            if body.get("max_record_ms") is not None:
+                await app.settings.set("voice.max_record_ms",
+                                       int(body["max_record_ms"]), "*")
+            if body.get("continuous") is not None:
+                await app.settings.set("voice.continuous",
+                                       bool(body["continuous"]), "*")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("voice settings save failed: %s", exc)
+            persisted = False
         if body.get("deepgram_api_key"):
             # never echoed back; stored server-side only
-            app.secrets.set("DEEPGRAM_API_KEY", str(body["deepgram_api_key"]).strip())
+            ok = app.secrets.set("DEEPGRAM_API_KEY", str(body["deepgram_api_key"]).strip())
+            persisted = persisted and ok
         if body.get("delete_deepgram_key"):
             app.secrets.delete("DEEPGRAM_API_KEY")
+        if body.get("groq_api_key"):
+            # stored server-side only; never returned to the UI
+            ok = app.secrets.set("GROQ_API_KEY", str(body["groq_api_key"]).strip())
+            persisted = persisted and ok
+        if body.get("delete_groq_key"):
+            app.secrets.delete("GROQ_API_KEY")
         await app.audit.record("user", "voice.config_changed",
                                {"keys": [k for k in ("stt", "tts", "voices", "mode",
-                                                     "proactive_speech") if k in body]})
-        return await voice_config()
+                                                     "proactive_speech",
+                                                     "deepgram_api_key",
+                                                     "groq_api_key") if k in body]})
+        cfg = await voice_config()
+        cfg["persisted"] = persisted
+        return cfg
 
     @fastapi.post("/api/voice/deepgram-token")
     async def deepgram_token():
@@ -635,6 +824,111 @@ def create_app(app: App) -> FastAPI:
             raise
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"Deepgram token failed: {exc}") from None
+
+    # ------------------------------------------------------------- HUD (real)
+    @fastapi.get("/api/hud")
+    async def hud_telemetry():
+        """Real system telemetry for the HUD: per-core CPU, disk/net I/O rates,
+        battery, top CPU process. Nothing is simulated; unreadable values
+        report available=false."""
+        if app.hud is None:
+            raise HTTPException(503, "hud not ready")
+        return await app.hud.snapshot()
+
+    # ------------------------------------------- multi-provider voice engine
+    @fastapi.get("/api/voice/status")
+    async def voice_status():
+        if app.voice_mgr is None:
+            raise HTTPException(503, "voice engine not ready")
+        return await app.voice_mgr.status()
+
+    @fastapi.get("/api/voice/usage")
+    async def voice_usage():
+        if app.voice_mgr is None:
+            raise HTTPException(503, "voice engine not ready")
+        return await app.voice_mgr.usage_summary()
+
+    @fastapi.post("/api/voice/stt")
+    async def voice_stt(audio: UploadFile = File(...), language: str = Form("en")):
+        """Mic audio (WAV) -> STT failover chain. Returns the transcript plus
+        which provider handled it (never the keys)."""
+        if app.voice_mgr is None:
+            raise HTTPException(503, "voice engine not ready")
+        from ..voice.errors import VoiceProviderError
+
+        path = await _save_voice_upload(app, audio)
+        try:
+            return await app.voice_mgr.transcribe(str(path), language=language)
+        except VoiceProviderError as exc:
+            raise HTTPException(502, exc.friendly) from None
+        finally:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+
+    @fastapi.post("/api/voice/tts")
+    async def voice_tts(body: dict):
+        """Text -> TTS failover chain. Returns synthesized audio (mp3/wav)
+        plus the provider used in a response header."""
+        if app.voice_mgr is None:
+            raise HTTPException(503, "voice engine not ready")
+        from ..voice.errors import VoiceProviderError
+
+        text = (body.get("text") or "").strip()
+        if not text:
+            raise HTTPException(400, "text required")
+        try:
+            out = await app.voice_mgr.synthesize(text, voice=str(body.get("voice") or ""))
+        except VoiceProviderError as exc:
+            raise HTTPException(502, exc.friendly) from None
+        media = "audio/mpeg" if out["format"] == "mp3" else "audio/wav"
+        return FileResponse(
+            out["audio_path"], media_type=media,
+            headers={"X-TTS-Provider": out["provider"],
+                     "X-Fallbacks": ",".join(out["fallbacks"])})
+
+    @fastapi.post("/api/voice/test")
+    async def voice_test(audio: UploadFile = File(...)):
+        """Full pipeline test: mic -> STT -> Phantom AI -> TTS -> audio.
+        The 'Test Voice System' button records 2s and calls this."""
+        if app.voice_mgr is None:
+            raise HTTPException(503, "voice engine not ready")
+        from ..voice.errors import VoiceProviderError
+
+        path = await _save_voice_upload(app, audio)
+
+        async def _reply(transcript: str) -> str:
+            try:
+                if await app.conversations.get("voice-test") is None:
+                    await app.conversations.create(
+                        "phantom", title="Voice test", conversation_id="voice-test")
+                result = await app._run_agent(
+                    "phantom", "voice-test",
+                    f"Acknowledge this in one short sentence: {transcript}",
+                    mode="voice_test")
+                content = ((result or {}).get("content") or "").strip()
+                return content or f"You said: {transcript}"
+            except Exception:  # noqa: BLE001
+                return f"You said: {transcript}"
+
+        try:
+            out = await app.voice_mgr.test_pipeline(str(path), reply_fn=_reply)
+        except VoiceProviderError as exc:
+            raise HTTPException(502, exc.friendly) from None
+        finally:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+        media = "audio/mpeg" if out["format"] == "mp3" else "audio/wav"
+        return FileResponse(
+            out["audio_path"], media_type=media,
+            headers={"X-STT-Provider": out["stt_provider"],
+                     "X-TTS-Provider": out["tts_provider"],
+                     "X-Fallbacks": ",".join(out["stt_fallbacks"] + out["tts_fallbacks"]),
+                     "X-Transcript": out["transcript"][:200],
+                     "X-Reply": out["reply"][:200]})
 
     @fastapi.post("/api/voice/speak")
     async def voice_speak(body: dict):
@@ -723,18 +1017,29 @@ def create_app(app: App) -> FastAPI:
     async def brain_config_set(bid: str, body: dict):
         if bid not in app.agents:
             raise HTTPException(404, "unknown brain")
-        if body.get("api_key"):
-            # never logged; stored in chmod-600 secrets store
-            app.secrets.set(f"brain.{bid}.api_key", str(body["api_key"]).strip())
-        if body.get("delete_key"):
-            app.secrets.delete(f"brain.{bid}.api_key")
-        if body.get("model"):
-            await app.settings.set(f"brain.{bid}.model", str(body["model"]).strip(), "*")
-        if body.get("base_url"):
-            await app.settings.set(f"brain.{bid}.base_url", str(body["base_url"]).strip(), "*")
-        await app.rebuild_provider(bid)
+        persisted = True
+        try:
+            if body.get("api_key"):
+                # never logged; stored in chmod-600 secrets store
+                ok = app.secrets.set(f"brain.{bid}.api_key", str(body["api_key"]).strip())
+                persisted = persisted and ok
+            if body.get("delete_key"):
+                app.secrets.delete(f"brain.{bid}.api_key")
+            if body.get("model"):
+                await app.settings.set(f"brain.{bid}.model", str(body["model"]).strip(), "*")
+            if body.get("base_url"):
+                await app.settings.set(f"brain.{bid}.base_url", str(body["base_url"]).strip(), "*")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("brain config save failed: %s", exc)
+            persisted = False
+        try:
+            await app.rebuild_provider(bid)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("brain provider rebuild failed: %s", exc)
         await app.audit.record("user", "brain.config_changed", {"brain": bid})
-        return await brain_config(bid)
+        result = await brain_config(bid)
+        result["persisted"] = persisted
+        return result
 
     @fastapi.delete("/api/brains/{bid}")
     async def delete_brain(bid: str):
@@ -1409,6 +1714,10 @@ def create_app(app: App) -> FastAPI:
         @fastapi.get("/voice.js")
         async def voice_js():
             return FileResponse(UI_DIR / "voice.js", media_type="text/javascript")
+
+        @fastapi.get("/hud.js")
+        async def hud_js():
+            return FileResponse(UI_DIR / "hud.js", media_type="text/javascript")
 
         @fastapi.get("/mobile")
         async def mobile_index():

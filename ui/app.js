@@ -61,6 +61,7 @@ function setPresence(pstate, sub) {
   if (label) label.textContent = s;
   const subEl = $("stateSub");
   if (subEl) subEl.textContent = sub || STATE_TEXT[s] || "";
+  if (typeof hudApplyTier === "function") hudApplyTier();
 }
 
 voice.onState = (s) => {
@@ -76,8 +77,14 @@ voice.onInterim = (t) => {
   const h = $("voiceHint");
   if (h) h.textContent = t ? "🎙️ " + t.slice(0, 160) : "";
 };
-voice.onFinal = async (text) => {
+voice.onFinal = async (text, meta) => {
   $("voiceHint").textContent = "";
+  if (meta?.provider) {
+    // show which provider handled the speech (multi-provider transparency)
+    const provLabel = { deepgram: "Deepgram", groq: "Groq Whisper", local_whisper: "Local Whisper", browser: "Browser" }[meta.provider] || meta.provider;
+    const el = $("stateSub");
+    if (el) el.textContent = "via " + provLabel;
+  }
   if (state.running) return; // ignore stray transcripts while an agent is running
   await sendMessage(text, { via: "voice" });
 };
@@ -463,8 +470,8 @@ async function saveBriefingTime() {
   const t = $("briefingTime").value;
   if (!t) return;
   try {
-    const res = await api("/api/briefing/config", { body: { time: t } });
-    toast(`Briefing moved to ${res.time} — schedules updated`);
+    const res = await api("/api/briefing/config", { method: "PUT", body: { time: t } });
+    toast(`✓ Briefing moved to ${res.time} — schedules updated`, "ok");
     loadToday();
   } catch (e) { toast("Error: " + e.message); }
 }
@@ -831,8 +838,11 @@ async function loadPermissions() {
   list.querySelectorAll(".perm-override").forEach((sel) => {
     sel.onchange = async () => {
       const tool = sel.dataset.tool, level = sel.value;
-      if (!level) await api("/api/permissions", { body: { agent, tool, delete: true } });
-      else await api("/api/permissions", { body: { agent, tool, level } });
+      try {
+        if (!level) await api("/api/permissions", { method: "PUT", body: { agent, tool, delete: true } });
+        else await api("/api/permissions", { method: "PUT", body: { agent, tool, level } });
+        toast("✓ Permission saved", "ok");
+      } catch (e) { toast("✗ " + e.message, "err"); }
       loadPermissions();
     };
   });
@@ -849,8 +859,9 @@ async function loadSettings() {
     sections.push(`
       <div class="settings-section"><h3>${meta.emoji} ${meta.name} — AI</h3>
         <div class="row"><label>NVIDIA API key (${esc(k.env || "")})</label>
-          <input type="password" id="key-${agentId}" placeholder="${k.configured ? "configured — type to replace" : "not set"}">
+          <input type="password" id="key-${agentId}" placeholder="${k.configured ? `configured (${esc(k.masked || "")}) — type to replace` : "not set"}">
           <button class="btn" onclick="saveKey('${agentId}')">Save</button>
+          <button class="btn" onclick="testKey('nvidia', '${agentId}')">Test</button>
           ${k.configured ? `<span class="muted small">${esc(k.masked || "")}</span>` : ""}</div>
         <div class="row"><label>Model</label><input type="text" id="model-${agentId}"></div>
         <div class="row"><label>Temperature</label><input type="text" id="temp-${agentId}" style="width:80px"></div>
@@ -859,9 +870,24 @@ async function loadSettings() {
   sections.push(`
     <div class="settings-section"><h3>🎙️ Voice</h3>
       <div class="row"><label>STT provider</label>
-        <select id="sttProvider"><option value="browser">browser (offline)</option><option value="deepgram">deepgram (online)</option></select></div>
+        <select id="sttProvider"><option value="server">auto (Deepgram → Groq → local)</option><option value="browser">browser (offline)</option><option value="deepgram">deepgram (online)</option></select></div>
       <div class="row"><label>TTS provider</label>
-        <select id="ttsProvider"><option value="browser">browser (offline)</option><option value="deepgram">deepgram (online)</option></select></div>
+        <select id="ttsProvider"><option value="server">auto (Deepgram Aura → cloud → local)</option><option value="browser">browser (system voices)</option><option value="deepgram">deepgram Aura (online)</option></select></div>
+      <div class="row"><label>STT priority</label>
+        <input type="text" id="sttPriority" placeholder="deepgram, groq, local_whisper" style="flex:1"></div>
+      <div class="row"><label>TTS priority</label>
+        <input type="text" id="ttsPriority" placeholder="deepgram, cloud, local" style="flex:1"></div>
+      <div class="row"><label>Local Whisper model</label>
+        <select id="localModelSel"><option value="tiny">tiny (fastest, ~39 MB)</option><option value="base" selected>base (good, ~74 MB)</option><option value="small">small (better, ~460 MB)</option><option value="medium">medium (slow)</option></select></div>
+      <div class="row"><label>Voice activity threshold</label>
+        <input type="range" id="vadThreshold" min="0.005" max="0.12" step="0.005" style="flex:1">
+        <span id="vadThresholdLbl" class="muted small" style="width:60px"></span></div>
+      <div class="row"><label>Auto-stop after silence (ms)</label>
+        <input type="number" id="autoStopMs" min="300" max="5000" step="100" style="width:120px"></div>
+      <div class="row"><label>Max recording (ms)</label>
+        <input type="number" id="maxRecordMs" min="2000" max="60000" step="500" style="width:120px"></div>
+      <div class="row"><label>Continuous listening</label>
+        <select id="continuousSel"><option value="1">on</option><option value="0">off</option></select></div>
       <div class="row"><label>👻 Phantom voice</label>
         <select id="voicePhantom"><option value="">default (calm male)</option></select></div>
       <div class="row"><label>💻 Coded voice</label>
@@ -870,10 +896,21 @@ async function loadSettings() {
         <select id="voiceModeSel"><option value="private">private</option><option value="push">push-to-talk</option><option value="conversation">conversation</option></select></div>
       <div class="row"><label>Proactive speech</label>
         <select id="proactiveSel"><option value="0">off</option><option value="1">on</option></select></div>
+      <div class="row"><label>🎤 Test voice system</label>
+        <button class="btn" onclick="testVoicePipeline()">Test Voice System</button>
+        <span class="muted small">records 2s → STT → Phantom → TTS → speaker</span></div>
+      <div id="voiceStatusBox"></div>
       <div class="row"><label>Deepgram API key</label>
-        <input type="password" id="deepgramKey" placeholder="${res.voice?.deepgram_masked ? "configured — type to replace" : "not set"}">
-        <button class="btn" onclick="saveDeepgram()">Save</button></div>
-      <p class="muted small">The Deepgram key stays server-side; the UI only ever gets a short-lived token. Browser voices are your OS voices; Deepgram aura voices need a key.</p>
+        <input type="password" id="deepgramKey" placeholder="${res.voice?.deepgram_masked ? `configured (${esc(res.voice.deepgram_masked)}) — type to replace` : "not set"}">
+        <button class="btn" onclick="saveDeepgram()">Save</button>
+        <button class="btn" onclick="testKey('deepgram')">Test</button>
+        ${res.voice?.deepgram_masked ? `<span class="muted small">${esc(res.voice.deepgram_masked)}</span>` : ""}</div>
+      <div class="row"><label>Groq API key (Whisper STT)</label>
+        <input type="password" id="groqKey" placeholder="${res.voice?.groq_masked ? `configured (${esc(res.voice.groq_masked)}) — type to replace` : "not set (free at groq.com)"}">
+        <button class="btn" onclick="saveGroq()">Save</button>
+        <button class="btn" onclick="testKey('groq')">Test</button>
+        ${res.voice?.groq_masked ? `<span class="muted small">${esc(res.voice.groq_masked)}</span>` : ""}</div>
+      <p class="muted small">Keys stay server-side (chmod-600 file); the UI never sees the full value — only a masked hint like <span class="mono">dg_••••</span>. Deepgram aura voices need a Deepgram key; Groq Whisper gives a fast cloud STT fallback.</p>
     </div>
     <div class="settings-section"><h3>🔁 Heartbeat & quiet hours</h3>
       <div class="row"><label>Quiet hours start (UTC)</label><input id="quietStart" placeholder="22:00"></div>
@@ -911,15 +948,23 @@ async function loadSettings() {
         </select></div>
     </div>
     <div class="settings-section"><h3>⬆ App updates</h3>
-      <div class="row"><label>Desktop app</label><span id="updateState" class="muted">checking…</span>
-        <button id="updateCheckBtn" class="btn">Check now</button>
-        <button id="updateInstallBtn" class="btn btn-primary hidden">Restart &amp; install</button></div>
+      <div class="row"><label>Desktop app</label>
+        <span id="updateVer" class="muted small"></span>
+        <span id="updateState" class="muted">not checked</span></div>
+      <div class="row">
+        <button id="updateCheckBtn" class="btn" onclick="checkForUpdates()">Check for updates</button>
+        <button id="updateDownloadBtn" class="btn hidden" onclick="updaterDownload()">⬇ Download</button>
+        <button id="updateInstallBtn" class="btn btn-primary hidden" onclick="updaterInstall()">Restart &amp; install</button>
+        <button id="updateReleaseBtn" class="btn hidden" onclick="updaterOpenReleases()">Open releases page</button>
+      </div>
     </div>
     <div class="settings-section"><h3>☁️ Portable Phantom (cloud)</h3>
       <p class="muted small">The always-on cloud Phantom for when your PC is off. Set your Worker URL + Cloud token,
         then add the cloud NVIDIA/Deepgram keys here (stored in Cloudflare's secret store, masked, never shown).</p>
       <div class="row"><label>Worker URL</label><input type="text" id="cloudUrl" placeholder="https://phantom-portable.xxx.workers.dev"></div>
       <div class="row"><label>Cloud token 🔒</label><input type="password" id="cloudToken" placeholder="the PHANTOM_CLOUD_TOKEN you set at deploy"></div>
+      <div class="row"><label>Test connection</label><button class="btn" onclick="testKey('cloud')">Test</button>
+        <span class="muted small">checks the worker is reachable and the token works</span></div>
       <div class="row"><label>Cloud NVIDIA key</label><input type="password" id="cloudNvidia" placeholder="paste key → Save (cloud only)"></div>
       <div class="row"><label>Cloud Deepgram key</label><input type="password" id="cloudDeepgram" placeholder="paste key → Save (cloud only)"></div>
       <div class="row">
@@ -956,10 +1001,21 @@ async function loadSettings() {
     $("cloudStatus").textContent = cc.url ? `☁️ ${cc.url_masked}${cc.token_configured ? " (token set)" : ""}` : "not configured";
   } catch (e) {}
   const vc = res.voice || {};
-  $("sttProvider").value = vc.stt?.provider || "browser";
-  $("ttsProvider").value = vc.tts?.provider || "browser";
+  $("sttProvider").value = vc.stt?.provider || "server";
+  $("ttsProvider").value = vc.tts?.provider || "server";
   $("voiceModeSel").value = vc.mode || "conversation";
   $("proactiveSel").value = vc.proactive_speech ? "1" : "0";
+  if ($("sttPriority")) $("sttPriority").value = (vc.stt_priority || ["deepgram", "groq", "local_whisper"]).join(", ");
+  if ($("ttsPriority")) $("ttsPriority").value = (vc.tts_priority || ["deepgram", "cloud", "local"]).join(", ");
+  if ($("localModelSel")) $("localModelSel").value = vc.local_model || "base";
+  if ($("vadThreshold")) {
+    $("vadThreshold").value = vc.vad_threshold ?? 0.03;
+    $("vadThresholdLbl").textContent = "sensitivity " + (vc.vad_threshold ?? 0.03);
+  }
+  if ($("autoStopMs")) $("autoStopMs").value = vc.auto_stop_ms ?? 900;
+  if ($("maxRecordMs")) $("maxRecordMs").value = vc.max_record_ms ?? 15000;
+  if ($("continuousSel")) $("continuousSel").value = vc.continuous ? "1" : "0";
+  loadVoiceStatus();
   await loadVoicePickers(vc);
   await Promise.all([loadBrainKeys(), loadEnrollStatus()]);
   await loadSchedules();
@@ -1015,15 +1071,19 @@ window.saveBrainKey = async (bid) => {
   if (key) body.api_key = key;
   if (model) body.model = model;
   if (!Object.keys(body).length) return;
-  await api(`/api/brains/${bid}/config`, { body });
-  $(`bkey-${bid}`).value = "";
-  toast(`Saved config for ${bid}`);
-  loadBrainKeys();
+  try {
+    const r = await api(`/api/brains/${bid}/config`, { method: "PUT", body });
+    $(`bkey-${bid}`).value = "";
+    toast(r.persisted ? `✓ Saved config for ${bid}` : "⚠️ Could not write to disk", r.persisted ? "ok" : "err");
+    loadBrainKeys();
+  } catch (e) { toast("✗ Save failed: " + e.message, "err"); }
 };
 window.clearBrainKey = async (bid) => {
-  await api(`/api/brains/${bid}/config`, { body: { delete_key: true } });
-  toast(`Removed own key for ${bid} — now shares Phantom's`);
-  loadBrainKeys();
+  try {
+    const r = await api(`/api/brains/${bid}/config`, { method: "PUT", body: { delete_key: true } });
+    toast(r.persisted !== false ? `✓ Removed own key for ${bid} — now shares Phantom's` : "⚠️ Could not update disk", r.persisted !== false ? "ok" : "err");
+    loadBrainKeys();
+  } catch (e) { toast("✗ " + e.message, "err"); }
 };
 
 /* voice enrollment */
@@ -1072,24 +1132,119 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   const lockCb = $("speakerLockCb");
   if (lockCb) lockCb.onchange = async () => {
-    await api("/api/voice/enroll/speaker-lock", { body: { enabled: lockCb.checked } });
-    toast(lockCb.checked ? "🔒 Speaker lock ON — only your voice wakes them" : "Speaker lock off");
+    try {
+      await api("/api/voice/enroll/speaker-lock", { method: "PUT", body: { enabled: lockCb.checked } });
+      toast(lockCb.checked ? "🔒 Speaker lock ON — only your voice wakes them" : "Speaker lock off", "ok");
+    } catch (e) { toast("✗ " + e.message, "err"); }
   };
 });
 async function saveSetting(agent, key, value) {
-  await api("/api/settings", { body: { agent, key, value } });
+  await api("/api/settings", { method: "PUT", body: { agent, key, value } });
 }
 window.saveKey = async (agentId) => {
-  const val = $(`key-${agentId}`).value.trim();
+  const input = $(`key-${agentId}`);
+  const val = input.value.trim();
   if (!val) return;
-  await api("/api/settings", { body: { agent: agentId, key: "nvidia_api_key", value: val } });
-  $(`key-${agentId}`).value = ""; toast("Key saved"); loadSettings(); loadStatus();
+  try {
+    const r = await api("/api/settings", { method: "PUT",
+      body: { agent: agentId, key: "nvidia_api_key", value: val } });
+    input.value = "";
+    toast(r.persisted ? "✓ Saved — key stored safely" : "⚠️ Could not write to disk", r.persisted ? "ok" : "err");
+    loadSettings(); loadStatus();
+  } catch (e) { toast("✗ Save failed: " + e.message, "err"); }
 };
 window.saveDeepgram = async () => {
-  const val = $("deepgramKey").value.trim();
+  const input = $("deepgramKey");
+  const val = input.value.trim();
   if (!val) return;
-  await api("/api/voice/config", { body: { deepgram_api_key: val } });
-  $("deepgramKey").value = ""; toast("Deepgram key saved (server-side)"); loadSettings();
+  try {
+    const r = await api("/api/voice/config", { method: "PUT", body: { deepgram_api_key: val } });
+    input.value = "";
+    toast(r.persisted ? "✓ Deepgram key saved (server-side)" : "⚠️ Could not write to disk", r.persisted ? "ok" : "err");
+    loadSettings();
+  } catch (e) { toast("✗ Save failed: " + e.message, "err"); }
+};
+window.saveGroq = async () => {
+  const input = $("groqKey");
+  const val = input.value.trim();
+  if (!val) return;
+  try {
+    const r = await api("/api/voice/config", { method: "PUT", body: { groq_api_key: val } });
+    input.value = "";
+    toast(r.persisted ? "✓ Groq key saved (server-side)" : "⚠️ Could not write to disk", r.persisted ? "ok" : "err");
+    loadSettings();
+  } catch (e) { toast("✗ Save failed: " + e.message, "err"); }
+};
+window.testKey = async (kind, agent) => {
+  const label = { nvidia: "NVIDIA", deepgram: "Deepgram", groq: "Groq", cloud: "Portable Phantom" }[kind] || kind;
+  toast(`⏳ Testing ${label}…`);
+  try {
+    const r = await api("/api/keys/test", { body: { kind, agent: agent || "phantom" } });
+    toast(r.message, r.ok ? "ok" : "err");
+  } catch (e) { toast("✗ " + e.message, "err"); }
+};
+
+const VOICE_STATE_ICON = { healthy: "🟢", degraded: "🟡", disabled: "🔴", unavailable: "⚪", untested: "⚪" };
+
+async function loadVoiceStatus() {
+  const box = $("voiceStatusBox");
+  if (!box) return;
+  try {
+    const [st, us] = await Promise.all([
+      api("/api/voice/status"), api("/api/voice/usage"),
+    ]);
+    const provs = (st.providers || []).map((p) => {
+      const icon = VOICE_STATE_ICON[p.state] || "⚪";
+      const active = p.active ? " <b>← active</b>" : "";
+      const err = p.last_error ? `<div class="small muted" style="margin-left:22px">${esc(p.last_error)}</div>` : "";
+      const prio = p.priority ? ` <span class="muted small">#${p.priority}</span>` : "";
+      return `<div style="margin:4px 0">${icon} ${esc(p.label)} <span class="muted small">(${esc(p.role_label)})</span>${prio}${active}${err}</div>`;
+    }).join("");
+    const lw = st.local_whisper || {};
+    const lwLine = lw.installed
+      ? `🟢 Local Whisper <span class="muted small">(${esc(lw.model)}${lw.loaded ? ", loaded" : ", idle"})</span>`
+      : `⚪ Local Whisper <span class="muted small">(${esc(lw.model)}) — ${esc(lw.reason || "not installed")}</span>`;
+    const t = us.totals || {};
+    box.innerHTML = `
+      <div class="card" style="margin-top:8px">
+        <div class="card-title">Provider status</div>
+        <div>${provs || "no providers"}</div>
+        <div style="margin-top:4px">${lwLine}</div>
+        <div class="muted small" style="margin-top:6px">Last 24h: ${t.requests || 0} requests · ${((t.audio_seconds || 0) / 60).toFixed(1)} min audio · est. cost $${(t.est_cost_usd || 0).toFixed(4)}</div>
+      </div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="muted small">provider status unavailable: ${esc(e.message)}</div>`;
+  }
+}
+
+window.testVoicePipeline = async () => {
+  try {
+    toast("🎤 Recording 2s… speak now");
+    const wav = await voice.captureWav(2);
+    if (!wav) { toast("✗ Microphone not available", "err"); return; }
+    toast("⏳ Running full pipeline (STT → Phantom → TTS)…");
+    const fd = new FormData();
+    fd.append("audio", wav, "test.wav");
+    const res = await fetch("/api/voice/test", { method: "POST", body: fd });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch (e) {}
+      toast("✗ " + detail, "err");
+      return;
+    }
+    const sttProv = res.headers.get("X-STT-Provider") || "?";
+    const ttsProv = res.headers.get("X-TTS-Provider") || "?";
+    const transcript = res.headers.get("X-Transcript") || "";
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.onended = () => URL.revokeObjectURL(url);
+    await audio.play();
+    toast(`✓ Voice system OK — STT: ${sttProv} → TTS: ${ttsProv}${transcript ? ` (heard: "${transcript.slice(0, 60)}")` : ""}`, "ok");
+    loadVoiceStatus();
+  } catch (e) {
+    toast("✗ Voice test failed: " + e.message, "err");
+  }
 };
 async function loadSchedules() {
   const res = await api("/api/schedules");
@@ -1115,7 +1270,7 @@ window.addSchedule = async () => {
     loadSchedules();
   } catch (e) { toast("Error: " + e.message); }
 };
-window.toggleSchedule = async (id, on) => { await api(`/api/schedules/${id}`, { body: { enabled: !!on } }); loadSchedules(); };
+window.toggleSchedule = async (id, on) => { await api(`/api/schedules/${id}`, { method: "PUT", body: { enabled: !!on } }); toast("✓ Schedule updated", "ok"); loadSchedules(); };
 window.deleteSchedule = async (id) => { await api(`/api/schedules/${id}`, { method: "DELETE" }); loadSchedules(); };
 window.saveApiBase = () => {
   localStorage.setItem("phai.apiBase", $("apiBase").value.trim());
@@ -1123,10 +1278,10 @@ window.saveApiBase = () => {
 };
 window.saveCloud = async () => {
   try {
-    const r = await api("/api/cloud/config", { body: {
+    const r = await api("/api/cloud/config", { method: "PUT", body: {
       url: $("cloudUrl").value.trim(), token: $("cloudToken").value.trim() } });
     $("cloudToken").value = "";
-    toast("Portable Phantom saved");
+    toast("✓ Portable Phantom saved", "ok");
     $("cloudStatus").textContent = `☁️ ${r.url_masked}${r.token_configured ? " (token set)" : ""}`;
   } catch (e) { toast("Error: " + e.message); }
 };
@@ -1145,9 +1300,11 @@ window.saveCloudKeys = async () => {
   } catch (e) { toast("Error: " + e.message); }
 };
 window.clearCloud = async () => {
-  await api("/api/cloud/config", { body: { clear: true } });
-  $("cloudUrl").value = ""; $("cloudStatus").textContent = "not configured";
-  toast("Cloud config cleared");
+  try {
+    await api("/api/cloud/config", { method: "PUT", body: { clear: true } });
+    $("cloudUrl").value = ""; $("cloudStatus").textContent = "not configured";
+    toast("✓ Cloud config cleared", "ok");
+  } catch (e) { toast("✗ " + e.message, "err"); }
 };
 window.cloudSyncAll = async () => {
   try {
@@ -1183,29 +1340,50 @@ document.addEventListener("cloud-deploy-log", (ev) => {
 /* ============================== UPDATER ============================== */
 const updater = window.phaiUpdater || null;
 let updaterState = { state: "idle" };
+let updaterVersion = "";
 function renderUpdater() {
-  const installBtn = $("updateInstallBtn"); const stateEl = $("updateState");
-  if (!updater) { if (stateEl) stateEl.textContent = "packaged app only"; return; }
+  const installBtn = $("updateInstallBtn"); const downloadBtn = $("updateDownloadBtn");
+  const releaseBtn = $("updateReleaseBtn"); const stateEl = $("updateState");
+  const verEl = $("updateVer");
+  if (verEl) verEl.textContent = updaterVersion ? `Phantom v${updaterVersion}` : "";
+  if (!updater) { if (stateEl) stateEl.textContent = "updates are for the desktop app (browser mode)"; return; }
   const s = updaterState;
-  let text = "not checked";
-  if (s.state === "checking") text = "checking…";
-  else if (s.state === "up-to-date") text = `up to date (v${s.version})`;
-  else if (s.state === "available") text = `update available: v${s.version} — downloading…`;
-  else if (s.state === "ready") text = `update ready: v${s.version} — restart to install`;
-  else if (s.state === "downloading") text = `downloading… ${s.percent || 0}%`;
+  let text = "not checked — press “Check for updates”";
+  let downloadVisible = false, installVisible = false, releaseVisible = false;
+  if (s.state === "checking") text = "checking for updates…";
+  else if (s.state === "up-to-date") text = `✓ you're on the latest version — v${s.version || updaterVersion}`;
+  else if (s.state === "available") text = `⬆ update available: v${s.version} — downloading…`;
+  else if (s.state === "downloading") text = `⬇ downloading… ${s.percent || 0}%`;
+  else if (s.state === "ready") { text = `⬆ update ready: v${s.version} — restart to install`; installVisible = true; releaseVisible = true; }
   else if (s.state === "error") {
-    text = `update error: ${s.message || ""}`;
+    text = `update check failed: ${s.message || ""}`;
+    releaseVisible = true;
     // deb installs live in root-owned /opt — electron-updater can't write there.
     const msg = String(s.message || "").toLowerCase();
     if (msg.includes("eacces") || msg.includes("permission") || msg.includes("denied")) {
-      text += " — .deb installs need sudo: use the AppImage, or run the update script from Settings.";
+      text += " — the .deb install needs sudo. Use the AppImage, or grab the new .deb from the releases page.";
     }
-  } else if (s.state === "dev") text = "dev mode";
+  } else if (s.state === "dev") text = "dev mode — updates only in the packaged app";
   if (stateEl) stateEl.textContent = text;
-  if (installBtn) installBtn.classList.toggle("hidden", s.state !== "ready");
+  if (installBtn) installBtn.classList.toggle("hidden", !installVisible);
+  if (downloadBtn) downloadBtn.classList.toggle("hidden", !downloadVisible);
+  if (releaseBtn) releaseBtn.classList.toggle("hidden", !releaseVisible);
 }
-async function checkForUpdates() {
+window.updaterDownload = () => {
   if (!updater) return;
+  updaterState = { state: "downloading", percent: 0 }; renderUpdater();
+  toast("⬇ Downloading update…");
+  updater.download();
+};
+window.updaterInstall = () => { if (updater) updater.install(); };
+window.updaterOpenReleases = () => {
+  try { window.open("https://github.com/g2code33/PHANTOM-AI/releases"); } catch (e) {}
+};
+async function checkForUpdates() {
+  if (!updater) { toast("Updates are for the desktop app — you're in a browser", "err"); return; }
+  if (!updaterVersion) {
+    try { updaterVersion = (await updater.getVersion()) || ""; } catch (e) {}
+  }
   updaterState = { state: "checking" }; renderUpdater();
   const res = await updater.check().catch((e) => ({ state: "error", message: String(e) }));
   updaterState = res || {}; renderUpdater();
@@ -1214,6 +1392,10 @@ async function checkForUpdates() {
     updater.download();
   } else if (updaterState.state === "ready") {
     toast(`⬆ Update v${updaterState.version} ready — restart to install`);
+  } else if (updaterState.state === "up-to-date") {
+    toast(`✓ You're on the latest version — v${updaterState.version || updaterVersion}`, "ok");
+  } else if (updaterState.state === "error") {
+    toast("⬆ Update check failed: " + (updaterState.message || ""), "err");
   }
 }
 window.checkForUpdates = checkForUpdates;
@@ -1275,49 +1457,96 @@ async function toggleKill() {
 $("disengageBtn") && ($("disengageBtn").onclick = () => api("/api/killswitch/disengage").then(loadStatus));
 
 /* ============================== CORE CANVAS ============================== */
+/* JARVIS HUD — real spectrum, tiered rendering.
+ * - Tier comes from the existing state machine only (voice state + presence
+ *   sleeping class); sleeping = low tier = NO continuous redraw loop.
+ * - Bars are driven by REAL audio data (mic analyser while listening, TTS
+ *   analyser while speaking). No sine-wave "telemetry".
+ * - Gauges below poll /api/hud: per-core CPU, disk/net I/O, battery, top CPU
+ *   process — every value real, "unavailable" shown honestly. */
 const coreCanvas = $("coreCanvas");
 const ctx = coreCanvas && coreCanvas.getContext("2d");
 let rafId = null;
-function drawCore(ts) {
+let hudLoopActive = false;
+const hudGauges = window.PhantomHud ? new window.PhantomHud.HudGauges() : null;
+
+function hudTierNow() {
+  const sleeping = document.body.classList.contains("presence-sleeping");
+  const state = document.body.dataset.state || "idle";
+  return window.PhantomHud ? window.PhantomHud.hudTier(state, sleeping) : (sleeping ? "low" : "full");
+}
+
+function hudApplyTier() {
+  const tier = hudTierNow();
+  document.body.classList.toggle("hud-low", tier === "low");
+  if (hudGauges) hudGauges.setTier(tier);
+  if (tier === "low") {
+    hudStopLoop();
+    drawCoreFrame(0);            // one dim static frame — no continuous redraw
+  } else {
+    hudStartLoop();
+  }
+}
+
+function hudStartLoop() {
+  if (hudLoopActive || !ctx) return;
+  hudLoopActive = true;
+  rafId = requestAnimationFrame(drawCoreFrame);
+}
+function hudStopLoop() {
+  hudLoopActive = false;
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+}
+
+function drawCoreFrame(ts) {
   if (!ctx || !coreCanvas) return;
   const w = coreCanvas.width = coreCanvas.clientWidth || 320;
   const h = coreCanvas.height = coreCanvas.clientHeight || 320;
   const cx = w / 2, cy = h / 2;
   ctx.clearRect(0, 0, w, h);
   const st = document.body.dataset.state;
-  const level = micLevelTarget || 0;
-  const bars = 40;
-  const baseR = 62;
+  const sleeping = document.body.classList.contains("presence-sleeping");
+  // REAL spectrum: mic while listening, TTS playback while speaking.
+  let freq = null;
+  if (!sleeping) {
+    if (st === "listening" && voice.micEnabled) freq = voice.getMicSpectrum ? voice.getMicSpectrum(256) : null;
+    else if (st === "speaking") freq = voice.getTtsSpectrum ? voice.getTtsSpectrum(256) : null;
+  }
+  const bars = 48;
+  const bins = window.PhantomHud ? window.PhantomHud.avgBins(freq || [], bars) : [];
+  const baseR = 58;
+  const color = st === "error" ? "rgba(240,113,139,.6)" : "rgba(110,168,254,.5)";
+  ctx.lineWidth = 1.4;
+  ctx.strokeStyle = color;
   for (let i = 0; i < bars; i++) {
-    const a = (i / bars) * Math.PI * 2 + ts / 4000;
-    let amp = 0.5;
-    if (st === "listening") amp = 0.35 + level * 2.2;
-    else if (st === "speaking") amp = 0.5 + Math.abs(Math.sin(ts / 90 + i * 0.6)) * 0.9;
-    else if (st === "thinking" || st === "executing") amp = 0.4 + Math.abs(Math.sin(ts / 220 + i)) * 0.7;
-    else amp = 0.25 + Math.sin(ts / 900 + i * 0.3) * 0.12;
-    const r = baseR + amp * 16;
+    const a = (i / bars) * Math.PI * 2;
+    const amp = bins.length ? bins[i] / 255 : 0;
+    const r = baseR + amp * 26;
     const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
-    ctx.strokeStyle = st === "error" ? "rgba(240,113,139,.55)" : "rgba(110,168,254,.4)";
-    ctx.lineWidth = 1.4;
     ctx.beginPath();
-    ctx.moveTo(cx + Math.cos(a) * (baseR - 4), cy + Math.sin(a) * (baseR - 4));
+    ctx.moveTo(cx + Math.cos(a) * (baseR - 3), cy + Math.sin(a) * (baseR - 3));
     ctx.lineTo(x, y);
     ctx.stroke();
   }
-  // thinking: orbiting particles
-  if (st === "thinking" || st === "executing" || st === "verifying") {
-    for (let i = 0; i < 14; i++) {
-      const a = (i / 14) * Math.PI * 2 + ts / 600;
-      const r = 105 + Math.sin(ts / 500 + i) * 10;
-      ctx.fillStyle = "rgba(183,155,255,.5)";
-      ctx.beginPath();
-      ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1.8, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  rafId = requestAnimationFrame(drawCore);
+  if (hudLoopActive) rafId = requestAnimationFrame(drawCoreFrame);
 }
-rafId = requestAnimationFrame(drawCore);
+
+// static segmented ticks (built once — not re-rendered per frame)
+function buildOrbTicks() {
+  const svg = $("orbTicks");
+  if (!svg) return;
+  const N = 72, cx = 160, cy = 160;
+  let s = "";
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const big = i % 6 === 0;
+    const r1 = big ? 148 : 152, r2 = 158;
+    s += `<line x1="${(cx + Math.cos(a) * r1).toFixed(1)}" y1="${(cy + Math.sin(a) * r1).toFixed(1)}" x2="${(cx + Math.cos(a) * r2).toFixed(1)}" y2="${(cy + Math.sin(a) * r2).toFixed(1)}" stroke="rgba(110,168,254,.35)" stroke-width="${big ? 2 : 1}"/>`;
+  }
+  svg.innerHTML = s;
+}
+buildOrbTicks();
+hudApplyTier();
 
 /* ============================== ONBOARDING ============================== */
 function maybeOnboarding() {
@@ -1333,7 +1562,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const voiceSel = $("onbVoice").value;
     const proactive = $("onbProactive").value === "1";
     try {
-      await api("/api/voice/config", { body: {
+      await api("/api/voice/config", { method: "PUT", body: {
         stt: { provider: voiceSel }, tts: { provider: voiceSel },
         proactive_speech: proactive } });
     } catch (e) {}
@@ -1346,10 +1575,11 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 /* ============================== INIT ============================== */
-function toast(msg) {
+function toast(msg, type = "") {
   const t = $("toast");
   t.textContent = msg;
-  t.classList.remove("hidden");
+  t.classList.remove("hidden", "toast-ok", "toast-err");
+  if (type) t.classList.add("toast-" + type);
   clearTimeout(toast._timer);
   toast._timer = setTimeout(() => t.classList.add("hidden"), 3500);
 }
@@ -1396,7 +1626,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const order = ["conversation", "push", "private"];
     const next = order[(order.indexOf(voice.mode) + 1) % order.length];
     voice.setMode(next);
-    await api("/api/voice/config", { body: { mode: next } });
+    try { await api("/api/voice/config", { method: "PUT", body: { mode: next } }); }
+    catch (e) { toast("✗ " + e.message, "err"); }
     toast(`voice mode: ${next}`);
     $("voiceModeBtn").classList.toggle("active", next !== "private");
   };
@@ -1448,30 +1679,45 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     if (id === "quietStart") saveSetting("*", "quiet.start", ev.target.value.trim());
     if (id === "quietEnd") saveSetting("*", "quiet.end", ev.target.value.trim());
-    if (id === "sttProvider") api("/api/voice/config", { body: { stt: { provider: ev.target.value } } });
-    if (id === "ttsProvider") api("/api/voice/config", { body: { tts: { provider: ev.target.value } } });
-    if (id === "voiceModeSel") { voice.setMode(ev.target.value); api("/api/voice/config", { body: { mode: ev.target.value } }); }
-    if (id === "proactiveSel") api("/api/voice/config", { body: { proactive_speech: ev.target.value === "1" } });
+    if (id === "sttProvider") { voice.sttProvider = ev.target.value; api("/api/voice/config", { method: "PUT", body: { stt: { provider: ev.target.value } } }).then(() => toast("✓ STT provider saved", "ok")).catch((e) => toast("✗ " + e.message, "err")); }
+    if (id === "ttsProvider") { voice.ttsProvider = ev.target.value; api("/api/voice/config", { method: "PUT", body: { tts: { provider: ev.target.value } } }).then(() => toast("✓ TTS provider saved", "ok")).catch((e) => toast("✗ " + e.message, "err")); }
+    if (id === "voiceModeSel") { voice.setMode(ev.target.value); api("/api/voice/config", { method: "PUT", body: { mode: ev.target.value } }); }
+    if (id === "proactiveSel") api("/api/voice/config", { method: "PUT", body: { proactive_speech: ev.target.value === "1" } });
+    if (id === "sttPriority") api("/api/voice/config", { method: "PUT", body: { stt_priority: ev.target.value.split(",").map((s) => s.trim()).filter(Boolean) } }).then(() => { toast("✓ STT priority saved", "ok"); loadVoiceStatus(); }).catch((e) => toast("✗ " + e.message, "err"));
+    if (id === "ttsPriority") api("/api/voice/config", { method: "PUT", body: { tts_priority: ev.target.value.split(",").map((s) => s.trim()).filter(Boolean) } }).then(() => { toast("✓ TTS priority saved", "ok"); loadVoiceStatus(); }).catch((e) => toast("✗ " + e.message, "err"));
+    if (id === "localModelSel") api("/api/voice/config", { method: "PUT", body: { local_model: ev.target.value } }).then(() => { toast("✓ Local Whisper model: " + ev.target.value, "ok"); loadVoiceStatus(); }).catch((e) => toast("✗ " + e.message, "err"));
+    if (id === "vadThreshold") {
+      const v = parseFloat(ev.target.value);
+      $("vadThresholdLbl").textContent = "sensitivity " + v;
+      voice.vadThreshold = v;
+      api("/api/voice/config", { method: "PUT", body: { vad_threshold: v } });
+    }
+    if (id === "autoStopMs") { voice.autoStopMs = parseInt(ev.target.value) || 900; api("/api/voice/config", { method: "PUT", body: { auto_stop_ms: voice.autoStopMs } }); }
+    if (id === "maxRecordMs") { voice.maxRecordMs = parseInt(ev.target.value) || 15000; api("/api/voice/config", { method: "PUT", body: { max_record_ms: voice.maxRecordMs } }); }
+    if (id === "continuousSel") { voice.continuous = ev.target.value === "1"; api("/api/voice/config", { method: "PUT", body: { continuous: voice.continuous } }); }
     if (id === "themeSel") applyTheme(ev.target.value);
     if (id === "voicePhantom") {
       voice.voices.phantom = ev.target.value;
-      api("/api/voice/config", { body: { voices: { phantom: ev.target.value } } });
+      api("/api/voice/config", { method: "PUT", body: { voices: { phantom: ev.target.value } } }).then(() => toast("✓ Phantom voice saved", "ok")).catch((e) => toast("✗ " + e.message, "err"));
       if (state.agent === "phantom") voice.ttsVoice = ev.target.value;
     }
     if (id === "voiceCoded") {
       voice.voices.coded = ev.target.value;
-      api("/api/voice/config", { body: { voices: { coded: ev.target.value } } });
+      api("/api/voice/config", { method: "PUT", body: { voices: { coded: ev.target.value } } }).then(() => toast("✓ Coded voice saved", "ok")).catch((e) => toast("✗ " + e.message, "err"));
       if (state.agent === "coded") voice.ttsVoice = ev.target.value;
     }
   });
 
-  // updater
+  // updater — the buttons live in Settings (rendered later); inline onclick
+  // handlers cover clicks, so guard everything here. Never let a null deref
+  // kill the rest of startup (voice.init/WS/presence) again.
   if (updater) {
     updater.onStatus((s) => { updaterState = s || {}; renderUpdater(); });
-    $("updateCheckBtn").onclick = checkForUpdates;
-    $("updateInstallBtn").onclick = () => updater.install();
+    const chkBtn = $("updateCheckBtn"); if (chkBtn) chkBtn.onclick = checkForUpdates;
+    const instBtn = $("updateInstallBtn"); if (instBtn) instBtn.onclick = () => updater.install();
+    updater.getVersion().then((v) => { updaterVersion = v || ""; renderUpdater(); }).catch(() => {});
     renderUpdater();
-    setTimeout(checkForUpdates, 4000);
+    setTimeout(checkForUpdates, 4000); // auto-check shortly after launch
   }
 
   await voice.init();

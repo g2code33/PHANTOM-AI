@@ -12,6 +12,23 @@ package in sys.path automatically; this is a safety net for onefile-style runs).
 import os
 import sys
 
+# Optional user-installed packages (e.g. `pip install --user faster-whisper`
+# for offline Local Whisper) must be importable by the frozen bundle.
+try:
+    import site as _site
+
+    for _p in (_site.getusersitepackages(),):
+        if _p and _p not in sys.path:
+            sys.path.insert(0, _p)
+    _home = os.path.expanduser("~/.local/lib")
+    if os.path.isdir(_home):
+        for _p in sorted(os.listdir(_home)):
+            _sp = os.path.join(_home, _p, "site-packages")
+            if os.path.isdir(_sp) and _sp not in sys.path:
+                sys.path.insert(0, _sp)
+except Exception:
+    pass
+
 _meipass = getattr(sys, "_MEIPASS", None)
 if _meipass:
     root = os.path.abspath(_meipass)

@@ -20,16 +20,35 @@ class PhantomVoice {
   constructor() {
     this.state = "IDLE";
     this.mode = "conversation";      // private | push | conversation
-    this.sttProvider = "browser";    // browser | deepgram
-    this.ttsProvider = "browser";    // browser | deepgram
+    this.sttProvider = "server";     // browser | deepgram | server (failover chain)
+    this.ttsProvider = "server";     // browser | deepgram | server (failover chain)
     this.ttsVoice = "";
     this.voices = { phantom: "", coded: "" };  // per-persona voices (Phase 3)
     this.currentAgent = "phantom";   // whose voice to use when speaking
     this.proactiveSpeech = false;
     this.deepgramConfigured = false;
+    this.groqConfigured = false;
     this.muted = false;              // master mute (no TTS)
     this.micEnabled = true;
     this.killEngaged = false;
+    // multi-provider voice engine settings
+    this.vadThreshold = 0.03;        // speech level threshold
+    this.autoStopMs = 900;           // silence before an utterance is sent
+    this.maxRecordMs = 15000;        // hard cap per utterance
+    this.continuous = true;          // keep listening after each utterance
+    this.lastSttProvider = "";       // which provider handled the last STT
+    this.lastTtsProvider = "";       // which provider handled the last TTS
+    this._srvRecording = false;
+    this._srvChunks = [];
+    this._srvSilenceMs = 0;
+    this._srvLastTick = 0;
+    this._srvSource = null;
+    this._srvProc = null;
+    this._srvFlushing = false;
+    this._serverAudio = null;
+    // TTS playback analyser — real audio data for the HUD spectrum (speaking)
+    this._ttsAnalyser = null;
+    this.ttsSpectrumAvailable = false;
 
     this._micStream = null;
     this._audioCtx = null;
@@ -80,6 +99,11 @@ class PhantomVoice {
       this.voices = { phantom: cfg.voices?.phantom || "", coded: cfg.voices?.coded || "" };
       this.proactiveSpeech = !!cfg.proactive_speech;
       this.deepgramConfigured = !!cfg.deepgram_configured;
+      this.groqConfigured = !!cfg.groq_configured;
+      if (typeof cfg.vad_threshold === "number") this.vadThreshold = cfg.vad_threshold;
+      if (typeof cfg.auto_stop_ms === "number") this.autoStopMs = cfg.auto_stop_ms;
+      if (typeof cfg.max_record_ms === "number") this.maxRecordMs = cfg.max_record_ms;
+      if (typeof cfg.continuous === "boolean") this.continuous = cfg.continuous;
       if (this.mode === "private") this.micEnabled = false;
     } catch (e) {
       this.onError?.("voice config unavailable: " + e.message);
@@ -139,6 +163,51 @@ class PhantomVoice {
     if (this._vadRaf) cancelAnimationFrame(this._vadRaf);
   }
 
+  // ------------------------------------------------ HUD spectrum (real data)
+  // Returns the raw frequency-domain bytes from the LIVE mic analyser
+  // (same MediaStream — no second mic stream) or null when not capturing.
+  getMicSpectrum(n = 64) {
+    if (!this._analyser) return null;
+    const data = new Uint8Array(this._analyser.frequencyBinCount);
+    this._analyser.getByteFrequencyData(data);
+    return Array.from(data);
+  }
+
+  // Returns the frequency-domain bytes of the TTS playback audio (server or
+  // Deepgram TTS routes through an AnalyserNode) or null when unavailable
+  // (e.g. system speechSynthesis voices cannot be tapped — honest "no data").
+  getTtsSpectrum(n = 64) {
+    if (!this._ttsAnalyser || !this.ttsSpectrumAvailable) return null;
+    const data = new Uint8Array(this._ttsAnalyser.frequencyBinCount);
+    this._ttsAnalyser.getByteFrequencyData(data);
+    return Array.from(data);
+  }
+
+  // Route a TTS audio element through an AnalyserNode so the HUD can draw
+  // the REAL spectrum of what Phantom/Coded is saying.
+  _wireTtsAnalyser(audio) {
+    this.ttsSpectrumAvailable = false;
+    try {
+      if (this._audioCtx && this._audioCtx.state === "closed") this._audioCtx = null;
+      if (!this._audioCtx) {
+        this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (this._audioCtx.state === "suspended") this._audioCtx.resume().catch(() => {});
+      const ctx = this._audioCtx;
+      this._ttsAnalyser = ctx.createAnalyser();
+      this._ttsAnalyser.fftSize = 512;
+      this._ttsAnalyser.smoothingTimeConstant = 0.8;
+      const src = ctx.createMediaElementSource(audio);
+      src.connect(this._ttsAnalyser);
+      this._ttsAnalyser.connect(ctx.destination);
+      this.ttsSpectrumAvailable = true;
+    } catch (e) {
+      // element-source failed — play plainly; HUD shows "system voice" honestly
+      this._ttsAnalyser = null;
+      this.ttsSpectrumAvailable = false;
+    }
+  }
+
   _vadLoop() {
     const tick = () => {
       if (!this._analyser) return;
@@ -157,7 +226,25 @@ class PhantomVoice {
   }
 
   _vad(level) {
-    const SPEECH = 0.030, SILENCE = 0.012;  // slightly more sensitive for barge
+    const SPEECH = this.vadThreshold || 0.030, SILENCE = 0.012;  // slightly more sensitive for barge
+    // server STT: gate recording on speech, flush after auto-stop silence
+    if (this.sttProvider === "server" && this.state === "LISTENING" && this._srvFlushing) {
+      return;  // wait for the in-flight transcription to finish
+    }
+    if (this.sttProvider === "server" && this.state === "LISTENING" && this.micEnabled) {
+      const now = Date.now();
+      if (!this._srvLastTick) this._srvLastTick = now;
+      if (level > SPEECH) {
+        if (!this._srvRecording) { this._srvRecording = true; this._srvChunks = []; this._srvSilenceMs = 0; }
+        this._srvSilenceMs = 0;
+        this._srvLastTick = now;
+      } else if (this._srvRecording) {
+        this._srvSilenceMs += now - this._srvLastTick;
+        this._srvLastTick = now;
+        if (this._srvSilenceMs >= this.autoStopMs) { this._srvSilenceMs = 0; this._flushServerSTT(); }
+      }
+      return;
+    }
     if (level > SPEECH) {
       this._vadBuf.push(Date.now());
       if (this._vadBuf.length > 30) this._vadBuf.shift();
@@ -192,6 +279,8 @@ class PhantomVoice {
     await this.startMic();
     if (this.sttProvider === "deepgram" && this.deepgramConfigured) {
       await this._startDeepgramListen();
+    } else if (this.sttProvider === "server") {
+      this._startServerListen();
     } else {
       this._startBrowserSTT();
     }
@@ -201,6 +290,7 @@ class PhantomVoice {
   stopListening() {
     this._stopBrowserSTT();
     this._closeDeepgramListen();
+    this._closeServerListen();
     if (this.state === "LISTENING") this.setState("IDLE");
   }
 
@@ -299,6 +389,92 @@ class PhantomVoice {
     }
   }
 
+  // ------------------------------------------- server STT (failover chain)
+  _startServerListen() {
+    this._closeServerListen();
+    if (!this._audioCtx || !this._micStream) {
+      this.onError?.("microphone not ready");
+      return;
+    }
+    this._srvRecording = false;
+    this._srvChunks = [];
+    this._srvSilenceMs = 0;
+    this._srvLastTick = 0;
+    this._srvFlushing = false;
+    const ctx = this._audioCtx;
+    const source = ctx.createMediaStreamSource(this._micStream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    proc.onaudioprocess = (ev) => {
+      if (!this._srvRecording) return;
+      this._srvChunks.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+      const dur = this._srvDurMs();
+      if (dur >= this.maxRecordMs) this._flushServerSTT();
+    };
+    source.connect(proc);
+    proc.connect(ctx.destination);
+    this._srvSource = source;
+    this._srvProc = proc;
+  }
+
+  _closeServerListen() {
+    if (this._srvSource) { try { this._srvSource.disconnect(); } catch (e) {} this._srvSource = null; }
+    if (this._srvProc) { try { this._srvProc.disconnect(); } catch (e) {} this._srvProc = null; }
+    this._srvRecording = false;
+    this._srvChunks = [];
+    this._srvFlushing = false;
+  }
+
+  _srvDurMs() {
+    // total captured audio duration at the current context sample rate
+    const ctx = this._audioCtx;
+    if (!ctx) return 0;
+    let n = 0;
+    for (const c of this._srvChunks) n += c.length;
+    return (n / ctx.sampleRate) * 1000;
+  }
+
+  async _flushServerSTT() {
+    if (this._srvFlushing || !this._srvChunks.length) return;
+    this._srvFlushing = true;
+    const ctx = this._audioCtx;
+    this._srvRecording = false;
+    const chunks = this._srvChunks;
+    this._srvChunks = [];
+    this._srvSilenceMs = 0;
+    let len = 0;
+    for (const c of chunks) len += c.length;
+    const merged = new Float32Array(len);
+    let off = 0;
+    for (const c of chunks) { merged.set(c, off); off += c.length; }
+    const wav = PhantomVoice.encodeWav(merged, ctx ? ctx.sampleRate : 48000);
+    const fd = new FormData();
+    fd.append("audio", wav, "utterance.wav");
+    fd.append("language", "en");
+    this.onInterim?.("");
+    this.setState("THINKING");
+    try {
+      const res = await fetch("/api/voice/stt", { method: "POST", body: fd });
+      if (!res.ok) {
+        let detail = res.statusText;
+        try { detail = (await res.json()).detail || detail; } catch (e) {}
+        this.onError?.("🎙️ " + detail);
+        this.setState(this.mode === "conversation" ? "LISTENING" : "IDLE");
+        this._srvFlushing = false;
+        if (this.mode === "conversation" && this.micEnabled) this._startServerListen();
+        return;
+      }
+      const data = await res.json();
+      this.lastSttProvider = data.provider || "";
+      if (data.text && data.text.trim()) {
+        this.onFinal?.(data.text.trim(), data);
+      }
+    } catch (e) {
+      this.onError?.("🎙️ speech recognition failed: " + e.message);
+    } finally {
+      this._srvFlushing = false;
+    }
+  }
+
   _pumpMicToDeepgram() {
     // PCM16 capture via ScriptProcessor, sent straight to the Deepgram socket.
     if (!this._audioCtx || !this._dgListenWs) return;
@@ -337,12 +513,17 @@ class PhantomVoice {
     this.onSpeakStart?.();
     if (this.ttsProvider === "deepgram" && this.deepgramConfigured) {
       this._speakDeepgram(item.text);
+    } else if (this.ttsProvider === "server") {
+      this._speakServer(item.text);
     } else {
       this._speakBrowser(item.text);
     }
   }
 
   _speakBrowser(text) {
+    // system voices can't be tapped by an AnalyserNode — honest "no spectrum"
+    this._ttsAnalyser = null;
+    this.ttsSpectrumAvailable = false;
     const synth = window.speechSynthesis;
     if (!synth) {
       this.onError?.("speech synthesis not supported");
@@ -364,6 +545,47 @@ class PhantomVoice {
     u.onerror = () => this._speakDone();
     this._utterance = u;
     synth.speak(u);
+  }
+
+  async _speakServer(text) {
+    // Server-side TTS failover chain (Deepgram Aura -> cloud -> local).
+    try {
+      const voice = this.voices[this.currentAgent] || this.ttsVoice || "";
+      const res = await fetch("/api/voice/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voice }),
+      });
+      if (!res.ok) {
+        let detail = res.statusText;
+        try { detail = (await res.json()).detail || detail; } catch (e) {}
+        throw new Error(detail || "TTS failed");
+      }
+      const blob = await res.blob();
+      this.lastTtsProvider = res.headers.get("X-TTS-Provider") || "";
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      this._serverAudio = audio;
+      this._wireTtsAnalyser(audio); // real spectrum for the HUD while speaking
+      audio.onended = () => { URL.revokeObjectURL(url); this._serverAudio = null; this._speakDone(); };
+      audio.onerror = () => { URL.revokeObjectURL(url); this._serverAudio = null; this._fallbackBrowserTTS(text); };
+      await audio.play();
+    } catch (e) {
+      this._fallbackBrowserTTS(text);
+      this.onError?.("🔊 " + e.message);
+    }
+  }
+
+  _fallbackBrowserTTS(text) {
+    // keep voice working even if every server TTS provider failed
+    const synth = window.speechSynthesis;
+    if (synth) {
+      this.onError?.("🔊 Server TTS unavailable — using system voice");
+      this._speakBrowser(text);
+    } else {
+      this._speaking = false;
+      this.setState(this.mode === "conversation" ? "LISTENING" : "IDLE");
+    }
   }
 
   async _speakDeepgram(text) {
@@ -410,7 +632,13 @@ class PhantomVoice {
       const audioBuf = await this._audioCtx.decodeAudioData(buf);
       const src = this._audioCtx.createBufferSource();
       src.buffer = audioBuf;
-      src.connect(this._audioCtx.destination);
+      // tap the real playback audio for the HUD spectrum
+      this._ttsAnalyser = this._audioCtx.createAnalyser();
+      this._ttsAnalyser.fftSize = 512;
+      this._ttsAnalyser.smoothingTimeConstant = 0.8;
+      src.connect(this._ttsAnalyser);
+      this._ttsAnalyser.connect(this._audioCtx.destination);
+      this.ttsSpectrumAvailable = true;
       src.onended = () => {
         if (this._dgAudioQueue.length) this._playDeepgramAudio();
         else { this._dgPlaying = false; this._speakDone(); }
@@ -426,6 +654,7 @@ class PhantomVoice {
   _speakDone() {
     this._speaking = false;
     this._utterance = null;
+    this.ttsSpectrumAvailable = false;
     this.onSpeakEnd?.();
     if (this._dgSpeakWs) { try { this._dgSpeakWs.close(); } catch (e) {} this._dgSpeakWs = null; }
     if (this._speakQueue.length) {
@@ -441,8 +670,10 @@ class PhantomVoice {
     if (this._dgSpeakWs) { try { this._dgSpeakWs.close(); } catch (e) {} this._dgSpeakWs = null; }
     this._dgAudioQueue = [];
     this._dgPlaying = false;
+    if (this._serverAudio) { try { this._serverAudio.pause(); } catch (e) {} this._serverAudio = null; }
     this._speaking = false;
     this._utterance = null;
+    this.ttsSpectrumAvailable = false;
     this.onSpeakEnd?.();
   }
 

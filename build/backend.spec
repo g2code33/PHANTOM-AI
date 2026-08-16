@@ -108,7 +108,7 @@ a = Analysis(
     datas=[(ui_dir, "ui")],
     hiddenimports=uvicorn_hidden + phantom_pkg_hidden + [
         "aiosqlite", "cryptography", "jsonschema", "psutil",
-        "numpy", "resemblyzer",
+        "numpy", "resemblyzer", "multipart",
     ],
     hookspath=[],
     hooksconfig={},

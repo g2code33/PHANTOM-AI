@@ -330,6 +330,8 @@ body[data-state="error"] #stateLabel { color: var(--red); }
 .notif-item .n-body { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .notif-item .n-actions { margin-top: 6px; display: flex; gap: 8px; }
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: rgba(16,23,40,.96); border: 1px solid var(--accent); color: var(--text); padding: 10px 18px; border-radius: 12px; z-index: 200; font-size: 13px; box-shadow: 0 8px 30px rgba(0,0,0,.5); animation: fadein .2s; }
+.toast.toast-ok { border-color: #2ecc71; color: #d4ffe8; }
+.toast.toast-err { border-color: #e74c3c; color: #ffdcd7; }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -349,6 +351,67 @@ body.presence-sleeping #stateLabel { color: var(--muted); }
 body.presence-awake #coreOrb { box-shadow: 0 0 70px rgba(110,168,254,.6), inset 0 0 40px rgba(255,255,255,.15); }
 .presence-pill { cursor: pointer; }
 .presence-pill:hover { border-color: var(--accent); color: var(--text); }
+
+/* ---------------- JARVIS HUD: layered orb + real telemetry ---------------- */
+/* depth layers: glow -> segmented ticks (static) -> 3 counter-rotating rings
+ * -> radar sweep -> core orb. Pure CSS/SVG/canvas — no WebGL. */
+#orbGlow {
+  position: absolute; inset: -46px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(110,168,254,.32), transparent 62%);
+  filter: blur(16px); opacity: .35; transition: opacity .8s ease;
+  pointer-events: none;
+}
+#orbTicks { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#orbRings { position: absolute; inset: 0; pointer-events: none; }
+.orb-ring { position: absolute; border-radius: 50%; border: 1px solid rgba(110,168,254,.16); }
+.orb-ring::after {
+  content: ""; position: absolute; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); opacity: .8;
+}
+.ring-1 { inset: 4px; border-color: rgba(110,168,254,.22); animation: ringSpin 26s linear infinite; }
+.ring-1::after { top: 50%; left: -3px; }
+.ring-2 { inset: 30px; border-style: dashed; animation: ringSpinRev 16s linear infinite; }
+.ring-2::after { top: -3px; left: 50%; }
+.ring-3 { inset: -12px; border-color: rgba(110,168,254,.10); animation: ringSpin 40s linear infinite reverse; }
+.ring-3::after { bottom: 50%; right: -3px; width: 4px; height: 4px; }
+@keyframes ringSpinRev { to { transform: rotate(-360deg); } }
+#orbSweep {
+  position: absolute; inset: -8px; border-radius: 50%;
+  background: conic-gradient(from 0deg, rgba(110,168,254,0) 0deg, rgba(110,168,254,0) 296deg,
+    rgba(110,168,254,.16) 336deg, rgba(110,168,254,.5) 348deg, rgba(110,168,254,0) 360deg);
+  animation: ringSpin 7s linear infinite; pointer-events: none;
+}
+/* glow intensity follows real state (idle dim -> listening -> thinking pulse
+ * -> speaking reactive to TTS amplitude on the canvas) */
+body[data-state="thinking"] #orbGlow, body[data-state="executing"] #orbGlow,
+body[data-state="verifying"] #orbGlow { opacity: .7; animation: glowPulse 1.5s ease-in-out infinite; }
+body[data-state="speaking"] #orbGlow { opacity: .85; }
+body[data-state="listening"] #orbGlow { opacity: .55; }
+@keyframes glowPulse { 50% { opacity: .35; } }
+
+/* low-power tier (sleeping/silenced): decoration paused, canvas static */
+body.hud-low #orbRings .orb-ring, body.hud-low #orbSweep, body.hud-low #coreRing { animation-play-state: paused !important; }
+body.hud-low #orbGlow { opacity: .07; animation: none !important; }
+body.hud-low #coreCanvas { opacity: .35; }
+body.hud-low #hudPanel { opacity: .6; }
+body.hud-low .strip-dot { animation: none; }
+
+/* real-telemetry gauges */
+#hudPanel {
+  margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px 18px; justify-content: center;
+  max-width: 740px; font-size: 11px; color: var(--muted);
+}
+.hud-gauge { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 76px; }
+.hud-gauge label { letter-spacing: 1.5px; font-size: 9px; text-transform: uppercase; }
+.hud-val { font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; color: var(--text); white-space: nowrap; }
+.cpu-bars { display: flex; align-items: flex-end; gap: 2px; height: 26px; }
+.cpu-bar { width: 5px; border-radius: 2px; background: var(--accent); opacity: .85; transition: height .6s ease; }
+.cpu-bar.warm { background: #f6c945; }
+.cpu-bar.hot { background: #f0716b; }
+@media (max-width: 820px) {
+  #hudPanel { gap: 6px 12px; }
+  .hud-gauge { min-width: 60px; }
+}
 
 /* ---------------- JOOJO yellow theme (Phase 6) ---------------- */
 body[data-theme="yellow"] {
