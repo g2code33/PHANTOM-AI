@@ -98,20 +98,35 @@ class SpeakerVerifier:
             self._load_encoder()
         return self._encoder.embed_utterance(audio)
 
+    INSTALL_HINT = (
+        "pip install --user resemblyzer torch\n"
+        "# smaller CPU-only torch (optional, keeps it light):\n"
+        "pip install --user torch --index-url https://download.pytorch.org/whl/cpu"
+    )
+
     def _load_encoder(self) -> None:
         try:
             from resemblyzer import VoiceEncoder
         except Exception as exc:  # noqa: BLE001 — missing pkg
-            self._unavailable_reason = str(exc)[:200]
+            self._unavailable_reason = (
+                "resemblyzer is not installed — speaker lock needs it. "
+                "Install once with: " + self.INSTALL_HINT.replace("\n", " / "))
             self._encoder = None
             raise SpeakerUnavailable(str(exc)) from None
 
         weights_fpath = find_resemblyzer_weights()
+        if weights_fpath is None:
+            self._unavailable_reason = (
+                "resemblyzer pretrained weights not found — reinstall resemblyzer "
+                "or set RESEMBLYZER_WEIGHTS to pretrained.pt")
+            self._encoder = None
+            raise SpeakerUnavailable(self._unavailable_reason) from None
         try:
-            self._encoder = (VoiceEncoder(weights_fpath=weights_fpath)
-                             if weights_fpath else VoiceEncoder())
-        except Exception as exc:  # noqa: BLE001 — weights missing / torch issue
-            self._unavailable_reason = str(exc)[:200]
+            self._encoder = VoiceEncoder(weights_fpath=weights_fpath)
+        except Exception as exc:  # noqa: BLE001 — torch issue
+            self._unavailable_reason = (
+                "speaker engine failed to load (torch problem): " + str(exc)[:120] +
+                " — try: " + self.INSTALL_HINT.replace("\n", " / "))
             self._encoder = None
             raise SpeakerUnavailable(str(exc)) from None
 
@@ -124,6 +139,7 @@ class SpeakerVerifier:
                     "samples_needed": ENROLL_SAMPLES_NEEDED}
         except SpeakerUnavailable as exc:
             return {"available": False, "reason": str(exc)[:200],
+                    "install_hint": self.INSTALL_HINT,
                     "threshold": self.threshold}
 
     async def enrolled(self, agent: str) -> bool:

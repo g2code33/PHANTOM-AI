@@ -103,3 +103,17 @@ passed PHAI_PORT=0 → random port per launch → the browser origin changed →
 localStorage (onboarding flag, theme, mic permission) reset each open. Fixed
 by a stable default port (47611, fallback only if busy) AND server-side
 persistence of `ui.onboarded` / `ui.userName` / `ui.theme` via /api/settings.
+
+## In-app diagnostics (no console needed)
+
+Settings → **Diagnostics** shows what's wrong without opening a terminal:
+- recent backend log lines (last 400, captured in-process) + frontend JS errors
+- version, uptime, wake state, which API keys are set (presence only — never values)
+- speaker-engine status with an actionable **install hint** when the speaker lock
+  engine (resemblyzer + torch) isn't installed: the exact `pip install --user`
+  command with a Copy button + Re-check.
+
+**Voice enrollment auto-instruct** (chosen over bundling torch into the app to
+keep the build light): when the engine is missing, the enrollment section shows
+the reason + the one-time install command; the Enroll buttons stay disabled
+until it's installed. After installing, click **Re-check** and enroll normally.

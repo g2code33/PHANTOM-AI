@@ -22,6 +22,33 @@ from .app import App
 
 log = logging.getLogger("phantom.api")
 
+# ---- in-app diagnostics: keep the last N log lines so the UI can show what
+# ---- went wrong without a terminal (Settings → Diagnostics) ---------------
+import collections as _collections
+
+DIAG_LOG = _collections.deque(maxlen=400)
+
+
+class _DiagLogHandler(logging.Handler):
+    def emit(self, record):  # noqa: D102
+        try:
+            DIAG_LOG.append(self.format(record))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _init_diag_log() -> None:
+    h = _DiagLogHandler()
+    h.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    # don't double-add on repeated module imports
+    if not any(isinstance(x, _DiagLogHandler) for x in root.handlers):
+        root.addHandler(h)
+
+
+_init_diag_log()
+
 ACCESS_TOKEN = os.environ.get("PHAI_ACCESS_TOKEN", "")
 
 
@@ -846,6 +873,33 @@ def create_app(app: App) -> FastAPI:
             raise
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"Deepgram token failed: {exc}") from None
+
+    # ---------------------------------------------------------- diagnostics
+    @fastapi.get("/api/diagnostics")
+    async def diagnostics():
+        """In-app diagnostics: recent backend log lines + key status, so the
+        user can see what's wrong without a terminal (never keys/secrets)."""
+        speaker = None
+        if app.speaker is not None:
+            try:
+                speaker = await app.speaker.available()
+            except Exception as exc:  # noqa: BLE001
+                speaker = {"available": False, "reason": str(exc)[:120]}
+        return {
+            "version": APP_VERSION,
+            "uptime_s": round(app.uptime_seconds(), 1),
+            "logs": list(DIAG_LOG),
+            "speaker": speaker,
+            "keys": {
+                "nvidia": bool(app.secrets.get("PHANTOM_NVIDIA_API_KEY")),
+                "deepgram": bool(app.secrets.get("DEEPGRAM_API_KEY")),
+                "groq": bool(app.secrets.get("GROQ_API_KEY")),
+            },
+            "wake": {
+                "state": (app.wake._state.state if getattr(app.wake, "_state", None)
+                          else "unknown"),
+            },
+        }
 
     # ------------------------------------------------------------- HUD (real)
     @fastapi.get("/api/hud")

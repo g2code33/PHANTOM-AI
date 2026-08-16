@@ -38,6 +38,20 @@ const timeAgo = (iso) => {
   return new Date(t).toLocaleDateString();
 };
 
+// ---- frontend error log (shown in Settings → Diagnostics) ----
+const FE_LOG = [];
+window.addEventListener("error", (ev) => {
+  const line = `${new Date().toISOString().slice(11, 19)} ERROR ${ev.message || ev.error || "?"} @ ${ev.filename || ""}:${ev.lineno || "?"}`;
+  FE_LOG.push(line);
+  if (FE_LOG.length > 60) FE_LOG.shift();
+});
+window.addEventListener("unhandledrejection", (ev) => {
+  const r = ev.reason || {};
+  const line = `${new Date().toISOString().slice(11, 19)} ERROR unhandled: ${r.message || r || ev}`;
+  FE_LOG.push(line);
+  if (FE_LOG.length > 60) FE_LOG.shift();
+});
+
 async function api(path, opts = {}) {
   const res = await fetch(API_BASE + path, {
     headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
@@ -967,6 +981,7 @@ async function loadSettings() {
     </div>
     <div class="settings-section"><h3>🔊 Voice enrollment (speaker lock)</h3>
       <p class="muted small">Only your voice should wake Phantom and Coded. Record 3 short phrases (2s each) for each agent.</p>
+      <div id="enrollHint" class="hidden"></div>
       <div class="row"><label>Enroll Phantom</label>
         <span id="enrollPhantomStatus" class="muted">…</span>
         <button id="enrollPhantomBtn" class="btn">🎙 Enroll</button></div>
@@ -1020,6 +1035,16 @@ async function loadSettings() {
       <pre id="cloudDeployLog" class="mono small hidden" style="max-height:220px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px;margin-top:8px"></pre>
       <p class="muted small">Key fields are sent straight to the Worker over https with your cloud token — never stored in the app, never shown back.</p>
     </div>
+    <div class="settings-section"><h3>🔧 Diagnostics</h3>
+      <p class="muted small">See what's going on without a terminal — recent backend log lines + engine status. Copy anything you want to share.</p>
+      <div class="row"><label>Status</label><span id="diagStatus" class="muted small"></span></div>
+      <pre id="diagLog" class="mono small" style="max-height:220px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px">loading…</pre>
+      <div class="row" style="margin-top:6px">
+        <button id="diagRefreshBtn" class="btn" onclick="loadDiagnostics()">Refresh</button>
+        <button class="btn" onclick="copyDiagLog()">Copy log</button>
+        <span class="muted small">frontend errors also appear here</span>
+      </div>
+    </div>
     <div class="settings-section"><h3>📱 Mobile / remote backend</h3>
       <div class="row"><label>Backend URL</label><input type="text" id="apiBase" placeholder="http://192.168.1.50:8000">
         <button class="btn" onclick="saveApiBase()">Save</button></div>
@@ -1058,6 +1083,7 @@ async function loadSettings() {
   if ($("maxRecordMs")) $("maxRecordMs").value = vc.max_record_ms ?? 15000;
   if ($("continuousSel")) $("continuousSel").value = vc.continuous ? "1" : "0";
   loadVoiceStatus();
+  loadDiagnostics();   // fire-and-forget: fill the Diagnostics log box
   await loadVoicePickers(vc);
   await Promise.all([loadBrainKeys(), loadEnrollStatus()]);
   await loadSchedules();
@@ -1129,6 +1155,36 @@ window.clearBrainKey = async (bid) => {
 };
 
 /* voice enrollment */
+async function loadDiagnostics() {
+  const logEl = $("diagLog"); const stEl = $("diagStatus");
+  if (!logEl) return;
+  try {
+    const d = await api("/api/diagnostics");
+    const lines = [
+      `version: ${d.version || "?"} · uptime ${Math.round(d.uptime_s || 0)}s · wake ${(d.wake && d.wake.state) || "?"}`,
+      `keys: NVIDIA ${d.keys?.nvidia ? "set" : "—"} · Deepgram ${d.keys?.deepgram ? "set" : "—"} · Groq ${d.keys?.groq ? "set" : "—"}`,
+      `speaker engine: ${d.speaker?.available ? "available" : "unavailable"}`,
+      "---- backend log ----",
+      ...(d.logs || []).slice(-120),
+      "---- frontend errors ----",
+      ...(FE_LOG.length ? FE_LOG.slice(-30) : ["(none)"]),
+    ];
+    logEl.textContent = lines.join("\n");
+    if (stEl) stEl.textContent = `connected · v${d.version || "?"}`;
+  } catch (e) {
+    logEl.textContent = "Could not reach backend diagnostics: " + e.message + "\n\nFrontend errors:\n" + (FE_LOG.slice(-20).join("\n") || "(none)");
+    if (stEl) stEl.textContent = "backend unreachable";
+  }
+}
+window.copyDiagLog = () => {
+  const el = $("diagLog");
+  if (!el) return;
+  const text = el.textContent || "";
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error("no clipboard")))
+    .then(() => toast("✓ Diagnostics copied", "ok"))
+    .catch(() => { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); toast("✓ Diagnostics copied", "ok"); } catch (e) { toast("Copy failed — select the log manually", "err"); } ta.remove(); });
+};
+
 async function loadEnrollStatus() {
   const [p, c] = await Promise.all([
     api("/api/voice/enroll/status?agent=phantom"),
@@ -1141,8 +1197,34 @@ async function loadEnrollStatus() {
   // disable enroll buttons + tell the user WHY when the engine can't load
   const pb = $("enrollPhantomBtn"); const cb = $("enrollCodedBtn");
   const blocked = !p.engine.available;
-  if (pb) { pb.disabled = blocked; pb.title = blocked ? "voice engine unavailable — see status" : ""; }
-  if (cb) { cb.disabled = blocked; cb.title = blocked ? "voice engine unavailable — see status" : ""; }
+  if (pb) { pb.disabled = blocked; pb.title = blocked ? "voice engine unavailable — see hint below" : ""; }
+  if (cb) { cb.disabled = blocked; cb.title = blocked ? "voice engine unavailable — see hint below" : ""; }
+  // auto-instruct: show the exact install command when the engine is missing
+  const hint = $("enrollHint");
+  if (hint) {
+    if (blocked) {
+      const reason = (p.engine.reason || "engine unavailable").replace(/</g, "&lt;");
+      const cmd = (p.engine.install_hint || "pip install --user resemblyzer torch").replace(/\n/g, "<br>").replace(/</g, "&lt;");
+      hint.className = "card";
+      hint.innerHTML = `<div style="color:#f6c945;font-weight:700">⚠️ Speaker lock engine not installed</div>
+        <div class="muted small" style="margin:4px 0">${reason}</div>
+        <div style="margin:6px 0">Run this once in a terminal, then click Re-check:</div>
+        <pre class="mono small" id="enrollCmd" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px;overflow:auto">${cmd}</pre>
+        <button class="btn" onclick="copyEnrollCmd()">Copy command</button>
+        <button class="btn" onclick="loadEnrollStatus()">Re-check</button>`;
+    } else {
+      hint.className = "hidden";
+      hint.innerHTML = "";
+    }
+  }
+}
+window.copyEnrollCmd = () => {
+  const el = $("enrollCmd");
+  if (!el) return;
+  const text = el.textContent || "";
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error("no clipboard")))
+    .then(() => toast("✓ Install command copied", "ok"))
+    .catch(() => toast("Select the command and copy manually", "err"));
 }
 async function enrollVoice(agent) {
   // pre-check the engine so the user gets a clear message instead of silence
