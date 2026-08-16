@@ -197,22 +197,34 @@
 
     _renderBattery(batt) {
       const el = this._el("sysBatt");
-      if (!el) return;
-      if (!batt || batt.available === false) {
-        el.textContent = "battery: unavailable";
-        el.title = (batt && batt.reason) || "no battery on this device";
-        return;
+      if (el) {
+        if (!batt || batt.available === false) {
+          el.textContent = "battery: unavailable";
+          el.title = (batt && batt.reason) || "no battery on this device";
+        } else {
+          el.textContent = `battery: ${batt.percent}%${batt.plugged ? " 🔌" : ""}`;
+          el.title = `battery ${batt.percent}%`;
+        }
       }
-      el.textContent = `battery: ${batt.percent}%${batt.plugged ? " 🔌" : ""}`;
-      el.title = `battery ${batt.percent}%`;
     }
 
     _renderProcess(proc, count) {
-      const el = this._el("sysProc");
-      if (el) {
-        if (!proc || !proc.name) el.textContent = "top process: —";
-        else if (proc.unavailable) el.textContent = "top process: unavailable";
-        else el.textContent = `top: ${proc.name} ${proc.cpu_percent || 0}%`;
+      const body = this._el("sysBody");
+      if (body) {
+        const batt = (this._last && this._last.battery) || null;
+        const lines = [];
+        if (proc && proc.name) {
+          lines.push(`top cpu: ${proc.name} ${proc.cpu_percent || 0}%${proc.pid ? ` (pid ${proc.pid})` : ""}`);
+        } else {
+          lines.push("top cpu: —");
+        }
+        lines.push(`processes: ${typeof count === "number" ? count : "—"}`);
+        if (batt && batt.available) {
+          lines.push(`battery: ${batt.percent}%${batt.plugged ? " 🔌" : ""}`);
+        } else {
+          lines.push("battery: unavailable");
+        }
+        body.innerHTML = lines.map((l) => `<span class="sys-line">${l.replace(/</g, "&lt;")}</span>`).join("");
       }
       const cnt = this._el("sysCount");
       if (cnt) cnt.textContent = `processes: ${typeof count === "number" ? count : "—"}`;
@@ -317,8 +329,8 @@
     const userEl = document.getElementById("sessionUser");
     const avatar = document.getElementById("sessionAvatar");
     if (osEl) osEl.textContent = "Phantom OS";
-    const userName = (window.state && window.state.userName) ||
-      localStorage.getItem("phantom.userName") || "JOOJO";
+    const st = window.phantomState || window.state || {};
+    const userName = st.userName || localStorage.getItem("phantom.userName") || "JOOJO";
     if (userEl) userEl.textContent = userName;
     if (avatar) avatar.textContent = (userName[0] || "👤").toUpperCase();
     if (verEl) {

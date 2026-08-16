@@ -54,6 +54,9 @@ KEY_ENV = {
     "health": "HEALTH_NVIDIA_API_KEY",
 }
 
+# Real app version (Electron passes it; backend reports it in /api/status)
+APP_VERSION = os.environ.get("PHAI_APP_VERSION", "dev")
+
 # Default NVIDIA NIM (OpenAI-compatible) endpoint
 NVIDIA_BASE_URL = os.environ.get("PHAI_NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 # Deepgram + Groq (voice) endpoints — env-overridable (tests point at mocks)

@@ -247,6 +247,7 @@ function startBackend(): Promise<number> {
         ...process.env,
         PHAI_HOST: "127.0.0.1",
         PHAI_PORT: String(preferredPort),
+        PHAI_APP_VERSION: app.getVersion(),
         PHAI_DATA_DIR: path.join(app.getPath("userData"), "data"),
         PYTHONUNBUFFERED: "1",
       },

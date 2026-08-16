@@ -14,8 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..agents.identities import identity, identity_summary
-from ..config import (AGENTS, DEEPGRAM_BASE_URL, GROQ_BASE_URL, KEY_ENV,
-                      NVIDIA_BASE_URL, UI_DIR, SecretRedactor, mask_key)
+from ..config import (AGENTS, APP_VERSION, DEEPGRAM_BASE_URL, GROQ_BASE_URL,
+                      KEY_ENV, NVIDIA_BASE_URL, UI_DIR, SecretRedactor, mask_key)
 from ..permissions.policy import PermissionLevel
 from ..tools.base import ToolContext, ToolError
 from .app import App
@@ -166,7 +166,7 @@ class AgentIdBody(BaseModel):
 
 
 def create_app(app: App) -> FastAPI:
-    fastapi = FastAPI(title="PHANTOM + CODED", version="0.1.0", docs_url="/api/docs")
+    fastapi = FastAPI(title="PHANTOM + CODED", version=APP_VERSION, docs_url="/api/docs")
 
     @fastapi.middleware("http")
     async def token_middleware(request: Request, call_next):
@@ -205,7 +205,7 @@ def create_app(app: App) -> FastAPI:
             except Exception as exc:  # noqa: BLE001
                 provider_statuses[agent_id] = {"ok": False, "detail": str(exc)[:200]}
         return {
-            "version": "0.1.0",
+            "version": APP_VERSION,
             "uptime_s": round(app.uptime_seconds(), 1),
             "killswitch": app.killswitch.to_dict(),
             "providers": provider_statuses,

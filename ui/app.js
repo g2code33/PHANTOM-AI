@@ -16,11 +16,13 @@ const STATE_TEXT = {
 };
 
 const state = {
+  // exposed for HUD/session badge (module-scope const is not on window)
   agent: "phantom", conversations: [], currentConv: null,
   runId: null, running: false, killEngaged: false, voiceOn: true,
   pendingConfirmations: {}, userName: localStorage.getItem("phantom.userName") || "",
   micLevel: 0, transcript: [],
 };
+window.phantomState = state;
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
