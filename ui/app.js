@@ -478,6 +478,7 @@ async function saveBriefingTime() {
 function applyTheme(theme) {
   document.body.dataset.theme = theme === "yellow" ? "yellow" : "midnight";
   localStorage.setItem("phantom.theme", theme === "yellow" ? "yellow" : "midnight");
+  _saveUiPref("ui.theme", theme === "yellow" ? "yellow" : "midnight");
 }
 function renderBriefing(b) {
   const top = $("briefingTop");
@@ -1469,6 +1470,18 @@ const ctx = coreCanvas && coreCanvas.getContext("2d");
 let rafId = null;
 let hudLoopActive = false;
 const hudGauges = window.PhantomHud ? new window.PhantomHud.HudGauges() : null;
+const spectrumStrip = window.PhantomHud ? new window.PhantomHud.SpectrumStrip() : null;
+// session/clock/moon/weather panels (started once)
+window.PhantomHud && window.PhantomHud.startClock();
+// session badge version: prefer the updater's app version; fall back to the
+// backend status version (browser/dev mode)
+if (!window.appVersion) {
+  api("/api/status").then((s) => { window.appVersion = (s && s.version) || ""; window.PhantomHud && window.PhantomHud.renderSession(); }).catch(() => {});
+}
+window.PhantomHud && window.PhantomHud.renderSession();
+window.PhantomHud && window.PhantomHud.renderMoon();
+window.PhantomHud && window.PhantomHud.loadWeather();
+setInterval(() => { if (window.PhantomHud) window.PhantomHud.loadWeather(); }, 10 * 60 * 1000);
 
 function hudTierNow() {
   const sleeping = document.body.classList.contains("presence-sleeping");
@@ -1480,6 +1493,7 @@ function hudApplyTier() {
   const tier = hudTierNow();
   document.body.classList.toggle("hud-low", tier === "low");
   if (hudGauges) hudGauges.setTier(tier);
+  if (spectrumStrip) spectrumStrip.setTier(tier);
   if (tier === "low") {
     hudStopLoop();
     drawCoreFrame(0);            // one dim static frame — no continuous redraw
@@ -1549,9 +1563,27 @@ buildOrbTicks();
 hudApplyTier();
 
 /* ============================== ONBOARDING ============================== */
-function maybeOnboarding() {
-  if (localStorage.getItem("phantom.onboarded")) return;
-  $("onboarding").classList.remove("hidden");
+async function _uiPref(key, dflt) {
+  try {
+    const s = await api("/api/settings");
+    const g = (s.settings && s.settings["*"]) || {};
+    return (key in g) ? g[key] : dflt;
+  } catch (e) { return dflt; }
+}
+async function _saveUiPref(key, value) {
+  try { await api("/api/settings", { method: "PUT", body: { agent: "*", key, value } }); }
+  catch (e) {}
+}
+async function maybeOnboarding() {
+  // server-side first (survives port changes), localStorage as a fast cache
+  let onboarded = localStorage.getItem("phantom.onboarded");
+  if (!onboarded) onboarded = (await _uiPref("ui.onboarded", false)) ? "1" : "";
+  if (!onboarded) { $("onboarding").classList.remove("hidden"); return; }
+  // restore name + theme from the server if we have them
+  const savedName = await _uiPref("ui.userName", "");
+  if (savedName) state.userName = savedName;
+  const savedTheme = await _uiPref("ui.theme", "");
+  if (savedTheme) { applyTheme(savedTheme); const t = $("themeSel"); if (t) t.value = savedTheme; }
 }
 window.addEventListener("DOMContentLoaded", () => {
   const done = $("onbDone");
@@ -1559,6 +1591,8 @@ window.addEventListener("DOMContentLoaded", () => {
     state.userName = $("onbName").value.trim() || "friend";
     localStorage.setItem("phantom.userName", state.userName);
     localStorage.setItem("phantom.onboarded", "1");
+    _saveUiPref("ui.onboarded", true);
+    _saveUiPref("ui.userName", state.userName);
     const voiceSel = $("onbVoice").value;
     const proactive = $("onbProactive").value === "1";
     try {
@@ -1715,7 +1749,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     updater.onStatus((s) => { updaterState = s || {}; renderUpdater(); });
     const chkBtn = $("updateCheckBtn"); if (chkBtn) chkBtn.onclick = checkForUpdates;
     const instBtn = $("updateInstallBtn"); if (instBtn) instBtn.onclick = () => updater.install();
-    updater.getVersion().then((v) => { updaterVersion = v || ""; renderUpdater(); }).catch(() => {});
+    updater.getVersion().then((v) => { updaterVersion = v || ""; window.appVersion = v || window.appVersion || ""; renderUpdater(); }).catch(() => {});
     renderUpdater();
     setTimeout(checkForUpdates, 4000); // auto-check shortly after launch
   }
