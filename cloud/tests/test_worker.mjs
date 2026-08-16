@@ -260,3 +260,25 @@ await t("cloud model override + mobile UI served at root", async () => {
   assert.match(html, /<!doctype html/i);
   assert.match(html, /Connect to your PC/);
 });
+
+// PWA install assets: manifest + icons served from the fixed link
+await t("manifest + icons served (PWA install)", async () => {
+  const e = makeEnv();
+  const m = await handle(req("https://phantom.local/manifest.webmanifest"), e);
+  assert.equal(m.status, 200);
+  assert.match(m.headers.get("content-type"), /manifest\+json|json/);
+  const mj = await m.json();
+  assert.equal(mj.display, "standalone");
+  assert.equal(mj.start_url, "/");
+  assert.ok(Array.isArray(mj.icons) && mj.icons.length >= 3);
+  const icon = await handle(req("https://phantom.local/icons/icon-192.png"), e);
+  assert.equal(icon.status, 200);
+  assert.match(icon.headers.get("content-type"), /image\/png/);
+  const bytes = await icon.arrayBuffer();
+  assert.ok(bytes.byteLength > 1000);
+  const apple = await handle(req("https://phantom.local/apple-touch-icon.png"), e);
+  assert.equal(apple.status, 200);
+  const root = await handle(req("https://phantom.local/"), e);
+  const html = await root.text();
+  assert.match(html, /rel="manifest"/);
+});

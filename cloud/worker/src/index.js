@@ -23,6 +23,7 @@
  */
 
 import { MOBILE_HTML } from "./mobile_embed.js";
+import { MANIFEST, ICONS } from "./mobile_assets.js";
 
 const DEFAULT_MODEL = "nvidia/llama-3.3-70b-instruct";
 const NVDIA_BASE = "https://integrate.api.nvidia.com/v1";
@@ -118,6 +119,13 @@ async function execTool(name, args, env) {
 // ---------------------------------------------------------------------------
 // NVIDIA chat (non-streaming for the Worker; the app shows typing state)
 // ---------------------------------------------------------------------------
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}
+
 async function activeModel(env) {
   const kv = (env.PHANTOM_KEYS && (await env.PHANTOM_KEYS.get("model"))) || "";
   return kv || env.NVIDIA_MODEL || DEFAULT_MODEL;
@@ -195,6 +203,21 @@ async function handle(request, env) {
   if ((path === "/" || path === "/mobile") && request.method === "GET") {
     return new Response(MOBILE_HTML, {
       headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+  }
+
+  // PWA install assets: manifest + icons must be served same-origin so iOS
+  // Safari can "Add to Home Screen" as a real app
+  if (path === "/manifest.webmanifest" && request.method === "GET") {
+    return new Response(JSON.stringify(MANIFEST), {
+      headers: { "Content-Type": "application/manifest+json; charset=utf-8",
+                 "Cache-Control": "public, max-age=3600" },
+    });
+  }
+  if (ICONS[path] && request.method === "GET") {
+    return new Response(b64ToBytes(ICONS[path]), {
+      headers: { "Content-Type": "image/png",
+                 "Cache-Control": "public, max-age=86400" },
     });
   }
 
