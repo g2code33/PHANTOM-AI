@@ -14,8 +14,12 @@
 #       Windows: choco install cloudflared    (or download)
 #
 # Usage:
-#   bash scripts/tunnel.sh            # tunnel to 127.0.0.1:8000
-#   PHAI_PORT=9000 bash scripts/tunnel.sh   # tunnel to a custom port
+#   bash scripts/tunnel.sh            # auto-detects the backend port
+#   PHAI_PORT=9000 bash scripts/tunnel.sh   # force a custom port
+#
+# Port auto-detect: tries the default dev port (8000), the packaged-app port
+# (47611), then any live Phantom port file in /tmp/phai-port-*.txt — so it
+# works whether you started `bash scripts/run.sh` or the desktop app.
 #
 # Security note: a quick tunnel is public (anyone with the URL can reach the
 # backend). Set PHAI_ACCESS_TOKEN before starting the backend, and the phone
@@ -24,7 +28,29 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PORT="${PHAI_PORT:-8000}"
+# Auto-detect the backend port: explicit PHAI_PORT wins, then try the dev
+# port (8000), the packaged-app port (47611), then any running Phantom
+# port-file (Electron writes /tmp/phai-port-<pid>.txt).
+if [ -n "${PHAI_PORT:-}" ]; then
+  PORT="$PHAI_PORT"
+else
+  PORT=""
+  for cand in 8000 47611; do
+    if curl -fsS --max-time 2 "http://127.0.0.1:${cand}/api/status" >/dev/null 2>&1; then
+      PORT="$cand"; break
+    fi
+  done
+  if [ -z "$PORT" ]; then
+    for f in /tmp/phai-port-*.txt; do
+      [ -e "$f" ] || continue
+      p="$(cat "$f" 2>/dev/null | tr -d '[:space:]')"
+      if [ -n "$p" ] && curl -fsS --max-time 2 "http://127.0.0.1:${p}/api/status" >/dev/null 2>&1; then
+        PORT="$p"; break
+      fi
+    done
+  fi
+  PORT="${PORT:-8000}"
+fi
 URL="http://127.0.0.1:${PORT}"
 
 if ! command -v cloudflared >/dev/null 2>&1; then
@@ -58,7 +84,9 @@ echo "────────────────────────�
 
 if ! curl -fsS --max-time 5 "${URL}/api/status" >/dev/null 2>&1; then
   echo "⚠️  Backend not responding at ${URL}."
-  echo "   Start it first:  ./scripts/run.sh   (or launch the Phantom app)"
+  echo "   Start it first:  ./scripts/run.sh   (dev, port 8000)"
+  echo "                   or launch the Phantom desktop app (port 47611)"
+  echo "   Then re-run:     bash scripts/tunnel.sh"
   exit 1
 fi
 echo "  ✓ backend is up"
