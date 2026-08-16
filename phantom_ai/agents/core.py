@@ -645,6 +645,7 @@ class Agent:
             briefing=self.briefing,
             monitor=self.monitor,
             cloudsync=self.cloudsync,
+            hud=getattr(self, "hud", None),
             brain_registry=self.brain_registry,
             graph=self.graph,
             proposals=self.proposals,

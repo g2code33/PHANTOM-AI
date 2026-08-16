@@ -277,6 +277,8 @@ class App:
         from ..hud.sampler import HudSampler
 
         self.hud = HudSampler()
+        for _agent in self.agents.values():
+            _agent.hud = self.hud
         await self._seed_briefing_schedule()
 
         self.scheduler = HeartbeatScheduler(

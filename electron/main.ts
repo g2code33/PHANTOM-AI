@@ -133,6 +133,11 @@ function initUpdater() {
   });
 
   ipcMain.handle("update:version", () => app.getVersion());
+
+  ipcMain.handle("app:show", () => {
+    showWindow();
+    return true;
+  });
 }
 
 // --------------------------------------------------------------------------

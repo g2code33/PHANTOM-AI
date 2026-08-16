@@ -116,6 +116,37 @@ async def _hud_status(ctx: ToolContext) -> ToolResult:
     return ToolResult.ok(text, data=info)
 
 
+async def _hud_open(ctx: ToolContext, panel: str = "") -> ToolResult:
+    """Open a HUD panel on the user's screen (cpu/memory/disk/net/weather/
+    moon/system) — the same detail view as clicking the home gauge — and
+    return the live data so you can explain it."""
+    panel = str(panel or "").strip().lower()
+    aliases = {
+        "cpu": "cpu", "processor": "cpu", "processors": "cpu", "core": "cpu",
+        "memory": "memory", "ram": "memory", "mem": "memory",
+        "disk": "disk", "storage": "disk", "drive": "disk", "io": "disk",
+        "net": "net", "network": "net", "internet": "net", "wifi": "net",
+        "weather": "weather",
+        "moon": "moon", "lunar": "moon",
+        "system": "system", "battery": "system", "info": "system",
+    }
+    key = aliases.get(panel, "")
+    if not key:
+        return ToolResult.fail("Unknown HUD panel. Use: cpu, memory, disk, net, weather, moon, system")
+    try:
+        events = getattr(ctx, "events", None)
+        if events is not None:
+            await events.publish("hud.open", {"panel": key})
+        hud = getattr(ctx, "hud", None)
+        if hud is not None:
+            snap = await hud.snapshot()
+            return ToolResult.ok(f"Opened the {panel} HUD panel on screen.",
+                                 data={"panel": key, "snapshot": snap})
+        return ToolResult.ok(f"Opened the {panel} HUD panel on screen.", data={"panel": key})
+    except Exception as exc:  # noqa: BLE001
+        return ToolResult.fail(f"Could not open HUD panel: {exc}")
+
+
 def register_system_tools(registry) -> None:
     registry.register(ToolSpec(
         name="system_info", description="Get OS, hardware, disk, and user information for this computer.",
@@ -126,6 +157,12 @@ def register_system_tools(registry) -> None:
         name="system_resources", description="Get live CPU, memory, load and disk usage.",
         purpose="Monitor resources", category="system",
         parameters={}, handler=_system_resources, permission=PermissionLevel.READ_ONLY, timeout=10,
+    ))
+    registry.register(ToolSpec(
+        name="hud_open", description="Open a HUD panel on the user's screen and read its live data. panel: cpu | memory | disk | net | weather | moon | system.",
+        purpose="Show a live system panel to the user", category="system",
+        parameters={"panel": {"type": "string", "required": True, "description": "cpu | memory | disk | net | weather | moon | system"}},
+        handler=_hud_open, permission=PermissionLevel.READ_ONLY, timeout=10,
     ))
     registry.register(ToolSpec(
         name="hud_status", description="Live HUD telemetry: per-core CPU, memory, disk/net I/O, battery, top CPU process — same real readings as the home screen. Use to report or regulate the machine (pair with process tools).",

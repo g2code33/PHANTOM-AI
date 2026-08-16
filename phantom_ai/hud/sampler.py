@@ -39,6 +39,7 @@ class HudSampler:
         out["battery"] = self._battery()
         out["process"] = self._top_process()
         out["process_count"] = self._process_count()
+        out["top_processes"] = self._top_processes(5)
         return out
 
     # ------------------------------------------------------------------
@@ -89,6 +90,13 @@ class HudSampler:
                     "write_bps": int(max(0, io.write_bytes - prev_disk.write_bytes) / dt),
                 }
             self._last_io = (now, io, prev_net)
+            try:
+                du = psutil.disk_usage("/")
+                result["usage_percent"] = round(du.percent, 1)
+                result["used_gb"] = round(du.used / (1024 ** 3), 1)
+                result["total_gb"] = round(du.total / (1024 ** 3), 1)
+            except Exception:  # noqa: BLE001
+                pass
             return result
         except Exception as exc:  # noqa: BLE001
             return {"available": False, "reason": str(exc)[:120]}
@@ -125,6 +133,32 @@ class HudSampler:
             }
         except Exception as exc:  # noqa: BLE001
             return {"available": False, "reason": str(exc)[:120]}
+
+    def _top_processes(self, n: int = 5) -> list[dict[str, Any]]:
+        """Top N processes by measured CPU between polls (real deltas)."""
+        try:
+            now = time.time()
+            candidates = []
+            for p in psutil.process_iter(["pid", "name"]):
+                try:
+                    ct = p.cpu_times()
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+                prev = self._proc_samples.get(p.pid)
+                try:
+                    name = p.name()
+                except Exception:  # noqa: BLE001
+                    name = "?"
+                self._proc_samples[p.pid] = (ct, now, name)
+                if prev is not None:
+                    dt = max(now - prev[1], 0.001)
+                    dcpu = max(0.0, (ct.user + ct.system) - (prev[0].user + prev[0].system))
+                    candidates.append((dcpu / dt * 100.0, p.pid, name))
+            candidates.sort(reverse=True)
+            return [{"name": name, "pid": pid, "cpu_percent": round(pct, 1)}
+                    for pct, pid, name in candidates[:n]]
+        except Exception:  # noqa: BLE001
+            return []
 
     def _top_process(self) -> dict[str, Any]:
         """Highest *measured* CPU process between polls (first poll: no data)."""

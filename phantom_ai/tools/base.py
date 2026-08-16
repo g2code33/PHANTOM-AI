@@ -98,6 +98,7 @@ class ToolContext:
     monitor: Any = None
     # --- Cloud sync (portable) ---
     cloudsync: Any = None
+    hud: Any = None
 
 
 async def _run_with_timeout(coro: Awaitable, timeout: float, ctx: ToolContext) -> Any:

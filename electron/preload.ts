@@ -7,6 +7,10 @@
 
 import { contextBridge, ipcRenderer } from "electron";
 
+contextBridge.exposeInMainWorld("phaiApp", {
+  showWindow: () => ipcRenderer.invoke("app:show"),
+});
+
 contextBridge.exposeInMainWorld("phaiUpdater", {
   check: () => ipcRenderer.invoke("update:check"),
   download: () => ipcRenderer.invoke("update:download"),

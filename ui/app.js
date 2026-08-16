@@ -113,6 +113,9 @@ voice.onError = (msg) => {
 /* wake word heard while Phantom is sleeping → capture + verify + wake */
 voice.onWakeWord = async (agent) => {
   if (state.killEngaged) return;
+  // wake word = bring the app to the front + Phantom splash, then continue
+  if (window.phaiApp && window.phaiApp.showWindow) { try { window.phaiApp.showWindow(); } catch (e) {} }
+  showSplash(1600);
   setPresence("WAKING", `“${agent}” heard — verifying…`);
   const wav = await voice.captureWav(2);
   if (!wav) { setPresence("IDLE", "Couldn't capture audio for verification"); return; }
@@ -287,6 +290,13 @@ function handleEvent(payload) {
     case "cloud.deploy_log":
       document.dispatchEvent(new CustomEvent("cloud-deploy-log", { detail: data.line || "" }));
       break;
+    case "hud.open": {
+      // an agent (Phantom/Coded) asked to show a panel on screen
+      const key = (data && data.panel) || "";
+      const titles = { cpu: "CPU", memory: "Memory", disk: "Disk I/O", net: "Network", weather: "Weather", moon: "Moon", system: "System" };
+      if (titles[key] && typeof openHudModal === "function") openHudModal(titles[key], key, "settings");
+      break;
+    }
     default: break;
   }
 }
@@ -1276,6 +1286,157 @@ window.clearDiagLog = async () => {
   toast("✓ Console cleared", "ok");
 };
 
+// ---- HUD panels: click any home gauge for details + manage ----
+function wireHudClickables() {
+  const map = {
+    cpuHistPanel: ["CPU", "cpu", "settings"],
+    memHistPanel: ["Memory", "memory", "settings"],
+    corePanel: ["Processor units", "cpu", "settings"],
+    diskPanel: ["Disk I/O", "disk", "settings"],
+    weatherPanel: ["Weather", "weather", "settings"],
+    moonPanel: ["Moon", "moon", "settings"],
+    netPanel: ["Network", "net", "settings"],
+    sysPanel: ["System", "system", "settings"],
+  };
+  for (const [id, [title, key, manage]] of Object.entries(map)) {
+    const el = document.getElementById(id);
+    if (!el || el._hudWired) continue;
+    el._hudWired = true;
+    el.classList.add("hud-clickable");
+    el.title = "Click for details — " + title;
+    el.addEventListener("click", (ev) => {
+      if (ev.target.closest("button, a, input, select")) return;
+      openHudModal(title, key, manage);
+    });
+  }
+}
+let hudModalTimer = null;
+async function openHudModal(title, key, manage) {
+  const modal = $("hudModal");
+  if (!modal) return;
+  $("hudModalTitle").textContent = title;
+  modal._key = key; modal._manage = manage || "settings";
+  modal.classList.remove("hidden");
+  await refreshHudModal();
+  if (hudModalTimer) clearInterval(hudModalTimer);
+  hudModalTimer = setInterval(() => { if (!$("hudModal").classList.contains("hidden")) refreshHudModal(); }, 2000);
+}
+function fmtRate(bps) {
+  const v = Number(bps) || 0;
+  if (v >= 1024 * 1024) return (v / 1024 / 1024).toFixed(1) + " MB/s";
+  if (v >= 1024) return Math.round(v / 1024) + " KB/s";
+  return Math.round(v) + " B/s";
+}
+window.fmtRate = fmtRate;
+async function refreshHudModal() {
+  const body = $("hudModalBody");
+  const modal = $("hudModal");
+  const key = modal && modal._key;
+  if (!body || !key) return;
+  try {
+    const d = await api("/api/hud");
+    const sec = (k, v) => `<h4 class="muted" style="margin:10px 0 4px;letter-spacing:1px">${k}</h4><pre class="mono small">${esc(JSON.stringify(v, null, 2))}</pre>`;
+    const bar = (pct) => `<div style="background:var(--bg3);border-radius:6px;height:8px;overflow:hidden"><div style="width:${Math.min(100, pct || 0)}%;height:100%;background:${(pct||0)>=80?"#f0716b":(pct||0)>=50?"#f6c945":"#6ea8fe"};border-radius:6px"></div></div>`;
+    const topProc = (d.top_processes || []).map((p2) => `${p2.cpu_percent}%  ${p2.name} (pid ${p2.pid})`);
+    let html = "";
+    if (key === "cpu") {
+      const c = d.cpu || {};
+      html = `<div class="hud-panel-val" style="font-size:15px">CPU total <b>${c.total ?? "?"}%</b> · ${c.cores ?? "?"} cores · load ${(c.load_avg||[]).join(" / ")}</div>`;
+      html += `<div style="margin:8px 0">${bar(c.total)}</div>`;
+      html += `<div class="cpu-bars" style="height:44px">${(c.per_core||[]).map((p2) => `<div class="cpu-bar${p2>=80?" hot":p2>=50?" warm":""}" style="height:${Math.max(3,Math.min(100,p2))}%"></div>`).join("")}</div>`;
+      html += `<div class="muted small">per-core ${(c.per_core||[]).join(" · ") || "—"}</div>`;
+      html += sec("Top processes by CPU", topProc);
+      html += `<button class="btn" style="margin-top:10px" onclick="askPhantomAbout('cpu')">🤖 Ask Phantom what's using CPU</button>`;
+    } else if (key === "memory") {
+      const m = d.memory || {};
+      html = `<div class="hud-panel-val" style="font-size:15px">Memory <b>${m.percent ?? "?"}%</b></div>`;
+      html += `<div style="margin:8px 0">${bar(m.percent)}</div>`;
+      html += `<div class="muted small">used ${((m.used_bytes||0)/1024**3).toFixed(1)} GB / ${((m.total_bytes||0)/1024**3).toFixed(1)} GB</div>`;
+      html += sec("Top processes by CPU", topProc);
+      html += `<button class="btn" style="margin-top:10px" onclick="askPhantomAbout('memory')">🤖 Ask Phantom about memory</button>`;
+    } else if (key === "disk") {
+      const ds = d.disk || {};
+      html = `<div class="hud-panel-val" style="font-size:15px">Disk I/O</div>`;
+      html += `<div class="muted small" style="margin:6px 0">read ${fmtRate(ds.read_bps)} · write ${fmtRate(ds.write_bps)}</div>`;
+      if (ds.usage_percent != null) {
+        html += `<div class="muted small">storage ${ds.usage_percent}% used — ${ds.used_gb} / ${ds.total_gb} GB</div><div style="margin:6px 0">${bar(ds.usage_percent)}</div>`;
+      }
+      html += sec("Top processes by CPU", topProc);
+      html += `<button class="btn" style="margin-top:10px" onclick="askPhantomAbout('disk')">🤖 Ask Phantom about disk usage</button>`;
+    } else if (key === "net") {
+      const n = d.net || {};
+      html = `<div class="hud-panel-val" style="font-size:15px">Network</div>`;
+      html += `<div class="muted small" style="margin:6px 0">↓ ${fmtRate(n.down_bps)} · ↑ ${fmtRate(n.up_bps)}</div>`;
+      html += `<canvas id="netModalGraph" class="hud-graph" width="400" height="90"></canvas>`;
+      html += sec("Top processes by CPU", topProc);
+      html += `<button class="btn" style="margin-top:10px" onclick="askPhantomAbout('network')">🤖 Ask Phantom about network</button>`;
+      requestAnimationFrame(() => drawNetModalGraph());
+    } else if (key === "system") {
+      html = sec("Battery", d.battery && d.battery.available ? `${d.battery.percent}%${d.battery.plugged ? " (plugged)" : ""}` : "unavailable");
+      html += sec("Process count", d.process_count ?? "?");
+      html += sec("Top processes by CPU", topProc);
+    } else if (key === "weather") {
+      const w = await api("/api/hud/weather").catch(() => ({ available: false, reason: "unavailable" }));
+      html = sec("Weather", w.available ? { current: w.current, daily: (w.daily || {}).time ? { next5: (w.daily.time||[]).slice(0,5), max: (w.daily.temperature_2m_max||[]).slice(0,5), min: (w.daily.temperature_2m_min||[]).slice(0,5) } : "no outlook" } : w.reason);
+    } else if (key === "moon") {
+      html = sec("Moon", window.PhantomHud ? (() => { const m = window.PhantomHud.moonPhase(new Date()); return `${m.icon} ${m.name} — illumination ${m.illumination}%`; })() : "unavailable");
+    } else {
+      html = sec(key, d[key]);
+    }
+    body.innerHTML = html +
+      `<div class="muted small" style="margin-top:10px">Live reading from /api/hud — every value is real. Say “Phantom, check the CPU” and he'll open this too.</div>`;
+  } catch (e) {
+    body.innerHTML = `<div class="muted small">could not refresh: ${esc(e.message)}</div>`;
+  }
+}
+function drawNetModalGraph() {
+  const c = document.getElementById("netModalGraph");
+  if (!c || !hudGauges) return;
+  const ctx = c.getContext && c.getContext("2d");
+  if (!ctx) return;
+  const down = hudGauges.netDown.get(), up = hudGauges.netUp.get();
+  const max = Math.max(1024, ...down, ...up);
+  const w = c.width, h = c.height;
+  ctx.clearRect(0, 0, w, h);
+  const draw = (vals, color) => {
+    if (!vals.length) return;
+    ctx.beginPath();
+    for (let i = 0; i < vals.length; i++) {
+      const x = vals.length === 1 ? 0 : (i / (vals.length - 1)) * w;
+      const y = h - (Math.min(vals[i], max) / max) * (h - 6) - 2;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.stroke();
+  };
+  draw(down, "rgba(110,168,254,.9)");
+  draw(up, "rgba(46,204,113,.7)");
+  ctx.fillStyle = "rgba(110,168,254,.5)";
+  ctx.font = "10px sans-serif";
+  ctx.fillText("blue = ↓ down · green = ↑ up", 6, 12);
+}
+async function askPhantomAbout(topic) {
+  const labels = { cpu: "what's using my CPU right now", memory: "how my memory looks and if I should close anything", disk: "my disk usage and if I should clean anything", network: "my network traffic and if anything looks wrong" };
+  const q = labels[topic] || ("check my " + topic);
+  const modal = $("hudModal");
+  if (modal) modal.classList.add("hidden");
+  switchPersona("phantom");
+  switchPanel("chats");
+  $("input").value = "Look at the HUD " + topic + " data and tell me " + q + ". Use your system tools to inspect.";
+  $("sendBtn").click();
+}
+window.askPhantomAbout = askPhantomAbout;
+window.hudOpenModal = openHudModal;
+window.hudRefreshModal = refreshHudModal;
+$("hudModal") && ($("hudModal").addEventListener("click", (ev) => {
+  if (ev.target.id === "hudModal") $("hudModal").classList.add("hidden");
+}));
+$("hudModalClose") && ($("hudModalClose").onclick = () => $("hudModal").classList.add("hidden"));
+$("hudModalRefresh") && ($("hudModalRefresh").onclick = () => refreshHudModal());
+$("hudModalManage") && ($("hudModalManage").onclick = () => {
+  $("hudModal").classList.add("hidden");
+  openDrawer(); switchPanel("settings");
+});
+
 window.copyDiagLog = () => {
   const el = $("diagLog");
   if (!el) return;
@@ -1722,6 +1883,15 @@ async function toggleKill() {
 }
 $("disengageBtn") && ($("disengageBtn").onclick = () => api("/api/killswitch/disengage").then(loadStatus));
 
+/* ============================== SPLASH ============================== */
+function showSplash(ms = 1800) {
+  const sp = $("splash");
+  if (!sp) return;
+  sp.classList.remove("hide");
+  clearTimeout(showSplash._t);
+  showSplash._t = setTimeout(() => sp.classList.add("hide"), ms);
+}
+
 /* ============================== CORE CANVAS ============================== */
 /* JARVIS HUD — real spectrum, tiered rendering.
  * - Tier comes from the existing state machine only (voice state + presence
@@ -2019,9 +2189,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     setTimeout(checkForUpdates, 4000); // auto-check shortly after launch
   }
 
+  showSplash(1400);
   await voice.init();
   await loadPresence();
   await loadStatus();
+  if (typeof wireHudClickables === "function") wireHudClickables();  // home gauges clickable from first paint
   await refreshNotifications();
   switchPersona("phantom");
   newConversation();
