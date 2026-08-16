@@ -40,7 +40,7 @@ fi
 
 echo "▶ 2/5  Pull ${BRANCH}"
 git fetch origin "$BRANCH"
-git merge "origin/$BRANCH" --no-edit
+git merge FETCH_HEAD --no-edit
 echo "   ✓ merged origin/${BRANCH} into $(git rev-parse --abbrev-ref HEAD)"
 
 echo "▶ 3/5  Python env (venv + minimal test deps)"
