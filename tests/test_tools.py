@@ -195,3 +195,15 @@ async def test_hud_open_tool_publishes_event_and_returns_data(tool_ctx):
     bad = await spec.handler(ctx, panel="nonsense")
     assert bad.success is False
     assert "Unknown HUD panel" in bad.output
+
+
+async def test_open_application_registered_safe(tool_ctx):
+    """open_application exists, is SAFE_ACTION (no confirm), and its
+    description says it opens apps/URLs/files/folders."""
+    from phantom_ai.tools.base import PermissionLevel
+
+    ctx = tool_ctx("phantom")
+    spec = ctx.registry_get("open_application")
+    assert spec is not None
+    assert spec.permission == PermissionLevel.SAFE_ACTION
+    assert "URL" in spec.description and "folder" in spec.description

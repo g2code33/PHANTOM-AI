@@ -64,6 +64,20 @@ class PermissionManager:
         reason = ""
         explicit_override = False
 
+        # GENERAL MODE: user chose "just do it" — routine actions (file
+        # write/copy/move/rename, close process) become safe-action (no
+        # confirm popup). Destructive/risky ones (delete, terminal with
+        # dangerous commands, kill switch etc.) stay protected.
+        general = await self.settings.get("permissions.general_mode", "*", False)
+        if general:
+            _routine = {"write_file", "copy_file", "move_file", "rename_file",
+                        "close_process", "open_application", "compress_archive",
+                        "extract_archive"}
+            if tool_name in _routine and level == PermissionLevel.CONFIRM_REQUIRED:
+                level = PermissionLevel.SAFE_ACTION
+                source = "general-mode"
+                reason = "general mode: no confirmation for routine actions"
+
         override = await self.settings.get(f"perm:{tool_name}", agent, None)
         if override is None:
             override = await self.settings.get(f"perm:global:{tool_name}", "*", None)

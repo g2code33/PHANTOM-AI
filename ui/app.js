@@ -1053,7 +1053,10 @@ async function loadSettings() {
           <span class="muted small">Fast replies use meta/llama-3.1-8b-instruct</span></div>
         <div class="row"><label>Model</label><input type="text" id="model-${agentId}" placeholder="custom model ID" title="NVIDIA model ID, e.g. meta/llama-3.3-70b-instruct or meta/llama-3.1-8b-instruct. Empty = default."></div>
         <div class="row"><label>Temperature</label><input type="text" id="temp-${agentId}" style="width:80px" title="Creativity/randomness of the model: 0 = strict &amp; factual, higher (up to 2) = more creative &amp; varied. Default 0.4 — a balanced, dependable personality."></div>
-      </div>`);
+      </div>
+      ${agentId === "phantom" ? `<div class="row" style="margin-top:6px"><label>⚡ General mode</label>
+        <select id="generalModeSel"><option value="0">off — ask before routine actions</option><option value="1">on — just do it (no confirm popups for routine things)</option></select>
+        <span class="muted small">Open apps/URLs, edit files, close processes without asking. Destructive actions stay protected.</span></div>` : ""}`);
   }
   sections.push(`
     <div class="settings-section"><h3>🎙️ Voice</h3>
@@ -1210,6 +1213,16 @@ async function loadSettings() {
       else preset.value = "custom";
     }
     $("temp-" + agentId).value = s["model.temperature"] ?? 0.4;
+  }
+  const gm = $("generalModeSel");
+  if (gm) {
+    const gv = (res.settings && res.settings["*"] && res.settings["*"]["permissions.general_mode"]) || false;
+    gm.value = gv ? "1" : "0";
+    gm.onchange = () => {
+      api("/api/settings", { method: "PUT", body: { agent: "*", key: "permissions.general_mode", value: gm.value === "1" } })
+        .then(() => toast(gm.value === "1" ? "⚡ General mode ON — I'll just do it" : "General mode off — I'll ask first", "ok"))
+        .catch((e) => toast("✗ " + e.message, "err"));
+    };
   }
   const g = res.settings && res.settings["*"] ? res.settings["*"] : {};
   $("quietStart").value = g["quiet.start"] || "";

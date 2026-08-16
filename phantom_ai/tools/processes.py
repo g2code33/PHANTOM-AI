@@ -70,9 +70,11 @@ async def _process_info(ctx: ToolContext, pid: int) -> ToolResult:
 
 async def _open_application(ctx: ToolContext, name: str = "", command: str = "",
                             arguments: list[str] | None = None) -> ToolResult:
-    """Launch an application by name (xdg-open/start) or an explicit command."""
+    """Open ANYTHING on the user's PC: an app by name ('firefox', 'code'),
+    a URL ('https://...'), a file, or a folder path. Uses the OS opener
+    (xdg-open / gio / open / start) — the same thing as double-clicking."""
     if not name and not command:
-        raise ToolError("provide either `name` (an application) or `command`", kind="invalid")
+        raise ToolError("provide `name` (app / URL / file / folder) or `command`", kind="invalid")
     if not _display_available() and not _headless_safe(command):
         raise ToolError(
             "no graphical display available in this environment — GUI applications cannot be "
@@ -190,9 +192,9 @@ def register_process_tools(registry) -> None:
     ))
     registry.register(ToolSpec(
         name="open_application",
-        description="Launch an application by name (e.g. 'firefox', 'code') or an explicit command.",
-        purpose="Launch applications", category="processes",
-        parameters={"name": {"type": "string", "description": "Application name"},
+        description="Open ANYTHING on the user's PC: an app by name ('firefox', 'code', 'spotify'), a URL ('https://...'), a file, or a folder. Use this whenever the user says 'open X'. Runs the OS opener (double-click equivalent).",
+        purpose="Open apps, URLs, files and folders", category="processes",
+        parameters={"name": {"type": "string", "description": "App name, URL, file or folder"},
                     "command": {"type": "string", "description": "Explicit executable path/command"},
                     "arguments": {"type": "array", "items": {"type": "string"}}},
         handler=_open_application, permission=PermissionLevel.SAFE_ACTION, timeout=30,
