@@ -941,7 +941,7 @@ async function loadSettings() {
           <button class="btn" onclick="saveKey('${agentId}')">Save</button>
           <button class="btn" onclick="testKey('nvidia', '${agentId}')">Test</button>
           ${k.configured ? `<span class="muted small">${esc(k.masked || "")}</span>` : ""}</div>
-        <div class="row"><label>Model</label><input type="text" id="model-${agentId}"></div>
+        <div class="row"><label>Model</label><input type="text" id="model-${agentId}" placeholder="meta/llama-3.3-70b-instruct (default)" title="NVIDIA model ID, e.g. meta/llama-3.3-70b-instruct or meta/llama-3.1-405b-instruct. Empty = default."></div>
         <div class="row"><label>Temperature</label><input type="text" id="temp-${agentId}" style="width:80px" title="Creativity/randomness of the model: 0 = strict &amp; factual, higher (up to 2) = more creative &amp; varied. Default 0.4 — a balanced, dependable personality."></div>
       </div>`);
   }
@@ -1389,8 +1389,16 @@ window.saveKey = async (agentId) => {
   try {
     const r = await api("/api/settings", { method: "PUT",
       body: { agent: agentId, key: "nvidia_api_key", value: val } });
+    // model rides along with the key: whatever the user typed (or none -> default)
+    const modelInput = $(`model-${agentId}`);
+    const model = modelInput ? modelInput.value.trim() : "";
+    if (model) {
+      await api("/api/settings", { method: "PUT",
+        body: { agent: agentId, key: "model", value: model } });
+    }
     input.value = "";
-    toast(r.persisted ? "✓ Saved — key stored safely" : "⚠️ Could not write to disk", r.persisted ? "ok" : "err");
+    const modelNote = model ? `model: ${model}` : "model: default (meta/llama-3.3-70b-instruct)";
+    toast(r.persisted ? `✓ Saved — key stored safely · ${modelNote}` : "⚠️ Could not write to disk", r.persisted ? "ok" : "err");
     loadSettings(); loadStatus();
   } catch (e) { toast("✗ Save failed: " + e.message, "err"); }
 };
