@@ -89,11 +89,15 @@ class PhantomVoice {
 
   // ---------------------------------------------------------------- config
   async init() {
+    this._installGestureUnlock();
     try {
       const res = await fetch("/api/voice/config");
       const cfg = await res.json();
       this.mode = cfg.mode || "conversation";
       this.sttProvider = cfg.stt?.provider || "browser";
+      // JARVIS: browser/system voices by default so speech ALWAYS works;
+      // switch to 'server' only when a Deepgram key is configured (better
+      // voices) — the UI can change this in Settings.
       this.ttsProvider = cfg.tts?.provider || "browser";
       this.ttsVoice = cfg.tts?.voice || "";
       this.voices = { phantom: cfg.voices?.phantom || "", coded: cfg.voices?.coded || "" };
@@ -135,6 +139,15 @@ class PhantomVoice {
   }
 
   // ---------------------------------------------------------------- mic/VAD
+  // unlock audio on the very first user gesture (click/keydown/touch)
+  _installGestureUnlock() {
+    if (this._unlockInstalled) return;
+    this._unlockInstalled = true;
+    const unlock = () => { this.unlockAudio(); };
+    ["pointerdown", "keydown", "touchstart"].forEach((ev) =>
+      window.addEventListener(ev, unlock, { once: false, passive: true }));
+  }
+
   async startMic() {
     if (!this.micEnabled || this.killEngaged) return;
     if (this._micStream) return;
@@ -499,6 +512,17 @@ class PhantomVoice {
   }
 
   // ---------------------------------------------------------------- TTS
+  // Browser autoplay policy blocks audio.play() without a prior user gesture
+  // — the JARVIS fix: unlock the AudioContext on the first click/key/tap so
+  // every reply can speak with NO interaction needed afterwards.
+  unlockAudio() {
+    try {
+      if (this._audioCtx && this._audioCtx.state === "suspended") {
+        this._audioCtx.resume().catch(() => {});
+      }
+    } catch (e) { /* ignore */ }
+  }
+
   speak(text, opts = {}) {
     if (this.muted || this.mode === "private" || this.killEngaged) return;
     const clean = String(text || "").replace(/[#*`_>]/g, "").trim();
@@ -572,7 +596,13 @@ class PhantomVoice {
       this._wireTtsAnalyser(audio); // real spectrum for the HUD while speaking
       audio.onended = () => { URL.revokeObjectURL(url); this._serverAudio = null; this._speakDone(); };
       audio.onerror = () => { URL.revokeObjectURL(url); this._serverAudio = null; this._fallbackBrowserTTS(text); };
-      await audio.play();
+      try { await audio.play(); }
+      catch (e) {
+        // autoplay may still be blocked on the first frame — resume + retry
+        await this.unlockAudio();
+        await new Promise((r) => setTimeout(r, 50));
+        await audio.play();
+      }
     } catch (e) {
       this._fallbackBrowserTTS(text);
       this.onError?.("🔊 " + e.message);

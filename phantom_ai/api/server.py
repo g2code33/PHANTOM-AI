@@ -799,7 +799,7 @@ def create_app(app: App) -> FastAPI:
     @fastapi.get("/api/voice/config")
     async def voice_config():
         stt = await app.settings.get("voice.stt", "*", {"provider": "server"})
-        tts = await app.settings.get("voice.tts", "*", {"provider": "server"})
+        tts = await app.settings.get("voice.tts", "*", {"provider": "browser"})
         mode = await app.settings.get("voice.mode", "*", "conversation")
         proactive = await app.settings.get("voice.proactive_speech", "*", False)
         # per-persona voices (Phase 3): phantom & coded each have their own
