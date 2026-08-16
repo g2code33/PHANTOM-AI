@@ -190,7 +190,7 @@ await t("config/keys sets + masks cloud keys", async () => {
   const j = await r.json();
   assert.equal(j.ok, true);
   assert.deepEqual(j.masked, { nvidia: "configured", deepgram: "configured",
-                               model: "meta/llama-3.3-70b-instruct" });
+                               groq: "not set", model: "meta/llama-3.3-70b-instruct" });
   const st = await handle(req("https://phantom.local/api/status"), e);
   const sj = await st.json();
   assert.equal(sj.keys.nvidia, "configured");
@@ -291,4 +291,45 @@ await t("sw.js served", async () => {
   assert.match(sw.headers.get("content-type"), /javascript/);
   const txt = await sw.text();
   assert.match(txt, /addEventListener\("fetch"/);
+});
+
+// voice fallbacks: Deepgram fails -> Groq transcribes; TTS serves audio
+await t("voice stt falls back deepgram -> groq", async () => {
+  const e = makeEnv();
+  e.PHANTOM_KEYS.put("deepgram", "dg-bad");
+  e.PHANTOM_KEYS.put("groq", "gsk-good");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.includes("deepgram.com/v1/listen")) return new Response(JSON.stringify({ err: "bad" }), { status: 500 });
+    if (u.includes("groq.com/openai/v1/audio/transcriptions")) {
+      const b = await init.body.getParts ? null : null;
+      return new Response(JSON.stringify({ text: "groq heard you" }));
+    }
+    return realFetch(url, init);
+  };
+  const r = await handle(req("https://phantom.local/api/voice/stt", { method: "POST", body: new Uint8Array([1,2,3]) }), e);
+  const j = await r.json();
+  assert.equal(j.provider, "groq");
+  assert.equal(j.transcript, "groq heard you");
+  globalThis.fetch = realFetch;
+});
+
+await t("voice tts serves aura audio + 503 without key", async () => {
+  const e = makeEnv();
+  delete e.DEEPGRAM_API_KEY;  // force no-key path
+  const noKey = await handle(req("https://phantom.local/api/voice/tts", { method: "POST", body: { text: "hi" } }), e);
+  assert.equal(noKey.status, 503);
+  e.PHANTOM_KEYS.put("deepgram", "dg-good");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("deepgram.com/v1/speak")) return new Response(new Uint8Array([0x49,0x44,0x33,1,2,3]), { status: 200 });
+    return realFetch(url, init);
+  };
+  const r = await handle(req("https://phantom.local/api/voice/tts", { method: "POST", body: { text: "hello there" } }), e);
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get("content-type"), /audio/);
+  const buf = await r.arrayBuffer();
+  assert.ok(buf.byteLength > 0);
+  globalThis.fetch = realFetch;
 });

@@ -240,6 +240,7 @@ async function handle(request, env) {
                   keys: {
                     nvidia: (await env.PHANTOM_KEYS.get("nvidia")) ? "configured" : "not set",
                     deepgram: (await env.PHANTOM_KEYS.get("deepgram")) ? "configured" : "not set",
+                    groq: (await env.PHANTOM_KEYS.get("groq")) ? "configured" : "not set",
                   } });
   }
 
@@ -251,18 +252,23 @@ async function handle(request, env) {
     const body = await request.json();
     const nv = String(body.nvidia_key || "").trim();
     const dg = String(body.deepgram_key || "").trim();
+    const groq = String(body.groq_key || "").trim();
     const model = String(body.model || "").trim();
     const clearNv = !!body.clear_nvidia;
     const clearDg = !!body.clear_deepgram;
+    const clearGq = !!body.clear_groq;
     let changes = [];
     if (nv) { await env.PHANTOM_KEYS.put("nvidia", nv); changes.push("nvidia"); }
     if (dg) { await env.PHANTOM_KEYS.put("deepgram", dg); changes.push("deepgram"); }
+    if (groq) { await env.PHANTOM_KEYS.put("groq", groq); changes.push("groq"); }
     if (model) { await env.PHANTOM_KEYS.put("model", model); changes.push("model"); }
     if (clearNv) { await env.PHANTOM_KEYS.delete("nvidia"); changes.push("nvidia(cleared)"); }
     if (clearDg) { await env.PHANTOM_KEYS.delete("deepgram"); changes.push("deepgram(cleared)"); }
+    if (clearGq) { await env.PHANTOM_KEYS.delete("groq"); changes.push("groq(cleared)"); }
     return json({ ok: true, updated: changes, masked: {
       nvidia: (await env.PHANTOM_KEYS.get("nvidia")) ? "configured" : "not set",
       deepgram: (await env.PHANTOM_KEYS.get("deepgram")) ? "configured" : "not set",
+      groq: (await env.PHANTOM_KEYS.get("groq")) ? "configured" : "not set",
       model: (await env.PHANTOM_KEYS.get("model")) || env.NVIDIA_MODEL || DEFAULT_MODEL,
     } });
   }
@@ -293,21 +299,73 @@ async function handle(request, env) {
     return json({ reply, tools: toolResults, mode: "portable" });
   }
 
-  // ---- voice STT (Deepgram, server-side) ----
+  // ---- voice STT: Deepgram -> Groq Whisper fallback chain ----
   if (path === "/api/voice/stt" && request.method === "POST") {
-    const dgKey = (env.PHANTOM_KEYS && (await env.PHANTOM_KEYS.get("deepgram"))) || env.DEEPGRAM_API_KEY || "";
-    if (!dgKey) return json({ error: "Deepgram not configured on the cloud side" }, 503);
     const audio = await request.arrayBuffer();
     if (!audio.byteLength) return json({ error: "empty audio" }, 400);
-    const form = new FormData();
-    form.append("audio", new Blob([audio], { type: "audio/wav" }), "voice.wav");
-    const resp = await fetch("https://api.deepgram.com/v1/listen?model=nova-2&punctuate=true",
-      { method: "POST", headers: { Authorization: "Token " + dgKey },
-        body: form });
-    if (!resp.ok) return json({ error: "Deepgram STT failed " + resp.status }, 502);
-    const data = await resp.json();
-    const transcript = data.results?.channels?.[0]?.alternatives?.[0]?.transcript || "";
-    return json({ transcript });
+    const dgKey = (env.PHANTOM_KEYS && (await env.PHANTOM_KEYS.get("deepgram"))) || env.DEEPGRAM_API_KEY || "";
+    const groqKey = (env.PHANTOM_KEYS && (await env.PHANTOM_KEYS.get("groq"))) || env.GROQ_API_KEY || "";
+    const errs = [];
+    // primary: Deepgram
+    if (dgKey) {
+      try {
+        const form = new FormData();
+        form.append("audio", new Blob([audio], { type: "audio/wav" }), "voice.wav");
+        const resp = await fetch("https://api.deepgram.com/v1/listen?model=nova-2&punctuate=true",
+          { method: "POST", headers: { Authorization: "Token " + dgKey }, body: form });
+        if (resp.ok) {
+          const data = await resp.json();
+          const t = (data.results?.channels?.[0]?.alternatives?.[0]?.transcript || "").trim();
+          if (t) return json({ transcript: t, provider: "deepgram" });
+          errs.push("no speech heard");
+        } else errs.push("Deepgram " + resp.status);
+      } catch (e) { errs.push("Deepgram error"); }
+    } else errs.push("no Deepgram key");
+    // fallback: Groq Whisper
+    if (groqKey) {
+      try {
+        const form = new FormData();
+        form.append("file", new Blob([audio], { type: "audio/wav" }), "voice.wav");
+        form.append("model", "whisper-large-v3-turbo");
+        form.append("language", "en");
+        const resp = await fetch("https://api.groq.com/openai/v1/audio/transcriptions",
+          { method: "POST", headers: { Authorization: "Bearer " + groqKey }, body: form });
+        if (resp.ok) {
+          const data = await resp.json();
+          const t = (data.text || "").trim();
+          if (t) return json({ transcript: t, provider: "groq" });
+          errs.push("no speech heard (groq)");
+        } else errs.push("Groq " + resp.status);
+      } catch (e) { errs.push("Groq error"); }
+    } else errs.push("no Groq key");
+    return json({ error: "Speech recognition unavailable — " + errs.join(", ") }, 502);
+  }
+
+  // ---- voice TTS: Deepgram Aura (phone falls back to system voices) ----
+  if (path === "/api/voice/tts" && request.method === "POST") {
+    const dgKey = (env.PHANTOM_KEYS && (await env.PHANTOM_KEYS.get("deepgram"))) || env.DEEPGRAM_API_KEY || "";
+    if (!dgKey) return json({ error: "Deepgram not configured on the cloud side" }, 503);
+    const body = await request.json();
+    const text = String(body.text || "").trim();
+    if (!text) return json({ error: "text required" }, 400);
+    const voice = String(body.voice || "aura-orion-en").trim();
+    const resp = await fetch(
+      "https://api.deepgram.com/v1/speak?model=aura-2-english&voice=" + encodeURIComponent(voice),
+      { method: "POST",
+        headers: { Authorization: "Token " + dgKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text.slice(0, 1000) }) });
+    if (!resp.ok) {
+      let d = "Deepgram TTS failed " + resp.status;
+      try { d = (await resp.json()).err_msg || d; } catch (e) {}
+      return json({ error: d }, 502);
+    }
+    const buf = await resp.arrayBuffer();
+    return new Response(buf, {
+      status: 200,
+      headers: { "Content-Type": "audio/mpeg",
+                 "X-TTS-Provider": "deepgram-aura",
+                 "Access-Control-Allow-Origin": "*" },
+    });
   }
 
   // ---- memory ----

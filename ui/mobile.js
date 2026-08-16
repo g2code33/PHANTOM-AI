@@ -431,10 +431,12 @@ $("mConnectBtn").onclick = connect;
 $("mCloudKeysBtn").onclick = async () => {
   const nv = $("mCloudNvidia").value.trim();
   const dg = $("mCloudDeepgram").value.trim();
+  const gq = $("mCloudGroq").value.trim();
   const model = $("mCloudModel").value.trim();
   const body = {};
   if (nv) body.nvidia_key = nv;
   if (dg) body.deepgram_key = dg;
+  if (gq) body.groq_key = gq;
   if (model) body.model = model;
   if (!Object.keys(body).length) { $("mCloudLog").textContent = "Paste a key or model first."; return; }
   try {
@@ -450,7 +452,7 @@ $("mCloudKeysBtn").onclick = async () => {
           return { masked: j.masked };
         })()
       : await api("/api/cloud/keys", { body });
-    $("mCloudNvidia").value = ""; $("mCloudDeepgram").value = "";
+    $("mCloudNvidia").value = ""; $("mCloudDeepgram").value = ""; $("mCloudGroq").value = "";
     $("mCloudLog").textContent = "Saved (masked): " + JSON.stringify(r.masked || {});
     toastHint("Cloud config saved");
   } catch (e) { $("mCloudLog").textContent = "✗ " + e.message; }
