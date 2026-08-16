@@ -1,4 +1,6 @@
-/* Phantom Companion — the APK is a real remote for the PC. */
+/* Phantom Companion — full phone app (tabs: Chat / Today / Settings).
+ * Modes: auto | pc | portable (cloud). Honest online/offline state with
+ * health polling + reconnection; chat works on PC (agent core) or cloud. */
 "use strict";
 
 const S = {
@@ -6,25 +8,34 @@ const S = {
   token: localStorage.getItem("phai.companion.token") || "",
   cloudBase: localStorage.getItem("phai.companion.cloud") || "",
   cloudToken: localStorage.getItem("phai.companion.cloudtoken") || "",
-  mode: "auto",            // auto | pc | portable
+  mode: "auto",
   agent: "phantom",
   ws: null,
+  wsRetries: 0,
   connected: false,
+  connLabel: "",
+  healthTimer: null,
   recording: false,
   mediaRec: null,
   chunks: [],
+  history: [],            // chat messages [{role,text}]
+  convByAgent: {},        // pc-mode conversation ids
+  polling: false,
 };
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+function effectiveBase() { return S.mode === "portable" ? S.cloudBase : S.base; }
+function effectiveToken() { return S.mode === "portable" ? S.cloudToken : S.token; }
+
 async function api(path, opts = {}) {
   const base = effectiveBase();
+  if (!base) throw new Error("no backend configured");
   const headers = { ...(opts.headers || {}) };
   const tok = effectiveToken();
   if (tok) headers["X-Access-Token"] = tok;
   if (S.mode === "portable" && opts.raw) {
-    // raw body (voice) to the portable worker
     const res = await fetch(base + path, { headers, method: opts.method || "POST", body: opts.body });
     return res;
   }
@@ -36,70 +47,347 @@ async function api(path, opts = {}) {
   }
   return res.json();
 }
-function effectiveBase() { return S.mode === "portable" ? S.cloudBase : S.base; }
-function effectiveToken() { return S.mode === "portable" ? S.cloudToken : S.token; }
 
-/* mode: auto / pc / portable */
+/* ============================ TABS ============================ */
+function switchTab(name) {
+  document.querySelectorAll(".mTab").forEach((t) => t.classList.toggle("active", t.id === "tab-" + name));
+  document.querySelectorAll(".tabBtn").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+}
+document.querySelectorAll(".tabBtn").forEach((b) => b.onclick = () => switchTab(b.dataset.tab));
+
+/* ============================ STATUS / MODE ============================ */
+function setStatus(connected, label) {
+  S.connected = connected;
+  S.connLabel = label || "";
+  const p = $("mPresence");
+  const b = $("mModeBanner");
+  const cc = $("chatConn");
+  if (!connected) {
+    p.textContent = "offline";
+    p.className = "mPill warn";
+    b.textContent = "📡 offline — check settings";
+    b.className = "mBanner off";
+  } else {
+    p.textContent = label;
+    p.className = "mPill on";
+    if (S.mode === "portable") { b.textContent = "☁️ portable cloud — PC not needed"; b.className = "mBanner portable"; }
+    else { b.textContent = "🖥️ connected to PC"; b.className = "mBanner pc"; }
+  }
+  if (cc) cc.textContent = connected ? ("● " + (label || "")) : "○ offline";
+  const send = $("chatSend"); const inp = $("chatInput");
+  if (send) send.disabled = !connected;
+  if (inp) inp.disabled = !connected;
+}
 function applyMode() {
-  const banner = $("mModeBanner");
-  const isPortable = S.mode === "portable";
-  banner.textContent = isPortable ? "☁️ portable mode" : S.mode === "auto" ? "🔄 auto — PC preferred" : "🖥️ pc mode";
-  banner.className = "mBanner" + (isPortable ? " portable" : "");
-  $("mModeToggle").classList.toggle("active", S.mode === "portable");
+  const t = $("mModeToggle");
+  t.classList.toggle("active", S.mode === "portable");
+  $("mModeLabel").textContent = S.mode === "portable" ? "cloud" : S.mode === "pc" ? "PC" : "auto";
+  document.querySelectorAll(".modeBtn").forEach((b) => b.classList.toggle("active", b.dataset.mode === S.mode));
+  const desc = $("modeDesc");
+  if (desc) desc.textContent = S.mode === "auto" ? "Auto prefers your PC, falls back to cloud." : S.mode === "pc" ? "Uses your PC only (same Wi-Fi or tunnel)." : "Uses the cloud Worker — works with your PC off.";
+}
+function setMode(m) {
+  S.mode = m;
+  localStorage.setItem("phai.companion.mode", m);
+  applyMode();
+  detectAndConnect();
+}
+$("mModeToggle").onclick = () => {
+  const order = ["auto", "pc", "portable"];
+  setMode(order[(order.indexOf(S.mode) + 1) % order.length]);
+  toastHint("mode: " + S.mode);
+};
+document.querySelectorAll(".modeBtn").forEach((b) => b.onclick = () => setMode(b.dataset.mode));
+
+async function checkHealth() {
+  if (S.mode === "portable") {
+    try { const st = await api("/api/status"); setStatus(true, "☁️ " + (st.profile_name || "portable")); return; }
+    catch (e) { setStatus(false); return; }
+  }
+  // pc or auto: probe the PC
+  if (S.base) {
+    try {
+      const st = await api("/api/companion/status");
+      setStatus(true, st.presence?.state === "listening" ? "🟢 awake" : "💤 sleeping");
+      renderToday(st);
+      return;
+    } catch (e) { /* pc down */ }
+  }
+  if (S.mode === "auto" && S.cloudBase) {
+    try { const st = await api("/api/status"); setStatus(true, "☁️ " + (st.profile_name || "portable")); return; }
+    catch (e) { setStatus(false); return; }
+  }
+  setStatus(false);
 }
 async function detectAndConnect() {
-  // auto: try PC first, fall back to portable
-  if (S.mode === "auto") {
-    if (S.base) {
-      try { await api("/api/companion/status"); S.mode = "pc"; }
-      catch (e) { S.mode = S.cloudBase ? "portable" : "pc"; }
-    } else if (S.cloudBase) { S.mode = "portable"; }
-    else { S.mode = "pc"; }
+  if (S.mode === "portable") {
+    closeWS();
+    if (!S.cloudBase) { setStatus(false); switchTab("settings"); toastHint("No cloud URL — add it in Settings"); return; }
+    await checkHealth();
+  } else {
+    if (!S.base) { setStatus(false); switchTab("settings"); toastHint("No PC URL — add it in Settings"); return; }
+    await checkHealth();
+    connectWS(); // live presence/events when PC is up
+    if (S.mode === "auto" && !S.connected && S.cloudBase) await checkHealth();
   }
-  if (S.mode === "portable" && !S.cloudBase) { toastMode("No portable URL — connect your PC"); return; }
-  applyMode();
-  if (S.mode === "pc") { connectPC(); }
-  else { connectPortable(); }
+  if (S.connected && S.mode !== "portable") refreshToday();
 }
-function toastMode(t) { const h = $("mVoiceHint"); if (h) h.textContent = t; setTimeout(() => { if (h) h.textContent = ""; }, 3500); }
 
-/* portable mode: cloud API (no WS; poll briefing/status) */
-let portableTimer = null;
-async function connectPortable() {
-  setStatus(S.cloudBase ? "connected" : "disconnected");
-  refreshPortable();
-  if (portableTimer) clearInterval(portableTimer);
-  portableTimer = setInterval(refreshPortable, 20000);
-}
-async function refreshPortable() {
+/* ============================ TODAY ============================ */
+async function refreshToday() {
   try {
-    const st = await api("/api/status");
-    $("mPresence").textContent = "☁️ portable";
-    $("mPresence").className = "mPill on";
-    const b = await api("/api/briefing");
-    renderBriefing({ spoken: b.spoken });
-    const r = await api("/api/reminders");
-    renderNotifs((r.reminders || []).map((x) => ({ title: "⏰ Reminder", body: x.text })));
-    renderConfirmations([]);
-    renderTasks([]);
-  } catch (e) { setStatus("disconnected"); }
+    const st = await api("/api/companion/status");
+    renderToday(st);
+  } catch (e) { setStatus(false); }
 }
-function connectPC() {
-  if (portableTimer) { clearInterval(portableTimer); portableTimer = null; }
-  connectWS();
-  refreshAll();
+function renderToday(st) {
+  renderBriefing(st.briefing || { spoken: st.briefing?.spoken || "No briefing yet." });
+  renderConfirmations(st.pending_confirmations || []);
+  renderTasks(st.active_tasks || []);
+  renderNotifs(st.notifications || []);
 }
-async function portableChat(text) {
+function renderBriefing(b) {
+  const el = $("mBriefing");
+  if (!b || !b.spoken) { el.innerHTML = `<div class="mEmpty">No briefing yet.</div>`; return; }
+  const parts = String(b.spoken).split(". ").filter(Boolean);
+  el.innerHTML = `<b>${esc(parts[0])}.</b>` + parts.slice(1).map((p) => `<div style="margin-top:6px">${esc(p)}</div>`).join("");
+}
+function renderConfirmations(list) {
+  const sec = $("mConfirm"); const el = $("mConfirmList");
+  el.innerHTML = "";
+  sec.classList.toggle("hidden", !list.length);
+  for (const c of list) {
+    const d = document.createElement("div");
+    d.className = "mItem";
+    d.innerHTML = `<div class="t">🔔 ${esc(c.tool)}</div><div class="d">${esc(c.what || "")}</div>
+      <div class="meta">${esc(c.action || "")}</div>
+      <div class="btnRow"><button class="btnApprove" onclick="decide('${c.id}', true)">Approve</button>
+      <button class="btnDeny" onclick="decide('${c.id}', false)">Deny</button></div>`;
+    el.appendChild(d);
+  }
+}
+window.decide = async (id, approve) => {
+  try { await api(`/api/companion/confirmations/${id}/${approve ? "approve" : "deny"}`); refreshToday(); }
+  catch (e) { toastHint(e.message); }
+};
+function renderTasks(list) {
+  const el = $("mTaskList");
+  el.innerHTML = list.length ? "" : `<div class="mEmpty">No active tasks.</div>`;
+  for (const t of list) {
+    const d = document.createElement("div");
+    d.className = "mItem";
+    d.innerHTML = `<div class="t">${esc(t.name)}</div><div class="meta"><span class="pill warn">${esc(t.status)}</span></div>`;
+    el.appendChild(d);
+  }
+}
+function renderNotifs(list) {
+  const el = $("mNotifList");
+  el.innerHTML = list.length ? "" : `<div class="mEmpty">No notifications.</div>`;
+  for (const n of list) {
+    const d = document.createElement("div");
+    d.className = "mItem";
+    d.innerHTML = `<div class="t">${esc(n.title)}</div><div class="d">${esc(n.body)}</div>`;
+    el.appendChild(d);
+  }
+}
+$("mRefresh").onclick = refreshToday;
+
+/* ============================ CHAT ============================ */
+function renderChat() {
+  const list = $("chatList");
+  list.innerHTML = "";
+  if (!S.history.length) { list.innerHTML = `<div class="mEmpty">Say hi 👋 — type below or tap the mic.</div>`; return; }
+  for (const m of S.history) {
+    const div = document.createElement("div");
+    div.className = "chatMsg " + (m.role === "user" ? "user" : "assistant");
+    div.innerHTML = `<div class="bubble"><span class="who">${m.role === "user" ? "You" : (S.agent === "coded" ? "Coded" : "Phantom")}</span>${esc(m.text)}</div>`;
+    list.appendChild(div);
+  }
+  list.scrollTop = list.scrollHeight;
+}
+function addChatMsg(role, text) {
+  S.history.push({ role, text });
+  renderChat();
+}
+function toastHint(t) { const h = $("mVoiceHint"); if (h) h.textContent = t; setTimeout(() => { if (h && h.textContent === t) h.textContent = ""; }, 4000); }
+
+async function sendChat(text) {
+  const clean = String(text || "").trim();
+  if (!clean || !S.connected) { if (!S.connected) toastHint("Offline — reconnect in Settings"); return; }
+  $("chatInput").value = "";
+  addChatMsg("user", clean);
+  if (S.mode === "portable") {
+    try {
+      const j = await api("/api/chat", { body: { text: clean } });
+      addChatMsg("assistant", j.reply || "(no reply)");
+      try { speakReply(j.reply); } catch (e) {}
+    } catch (e) { addChatMsg("assistant", "⚠️ " + e.message); }
+    return;
+  }
+  // pc mode: start a run + poll the conversation for the reply
+  addChatMsg("assistant", "");
+  const list = $("chatList");
+  if (list.lastElementChild) list.lastElementChild.classList.add("typing");
   try {
-    const j = await api("/api/chat", { body: { text } });
-    return { reply: j.reply, mode: "portable" };
-  } catch (e) { throw e; }
+    const cid = S.convByAgent[S.agent] || "";
+    const started = await api(`/api/agents/${S.agent}/chat`, { body: { text: clean, conversation_id: cid, session_id: "mobile" } });
+    S.convByAgent[S.agent] = started.conversation_id;
+    await pollReply(started.conversation_id, started.run_id);
+  } catch (e) {
+    replaceLastAssistant("⚠️ " + e.message);
+  }
 }
+async function pollReply(cid, runId) {
+  if (S.polling) return;
+  S.polling = true;
+  const before = S.history.filter((m) => m.role === "assistant").length;
+  const startedAt = Date.now();
+  try {
+    while (Date.now() - startedAt < 60000) {
+      await sleep(1400);
+      const conv = await api(`/api/conversations/${cid}`);
+      const msgs = conv.messages || [];
+      const newAsst = msgs.filter((m) => m.role === "assistant" && m.content && m.content.trim());
+      const last = newAsst[newAsst.length - 1];
+      if (last) {
+        const reply = String(last.content || "").trim();
+        // replace the typing bubble
+        const list = $("chatList");
+        const bubbles = list.querySelectorAll(".chatMsg.assistant .bubble");
+        const typing = bubbles[bubbles.length - 1];
+        if (typing) {
+          const who = typing.querySelector(".who");
+          typing.parentElement.classList.remove("typing");
+          typing.innerHTML = (who ? who.outerHTML : "") + esc(reply);
+        } else {
+          addChatMsg("assistant", reply);
+        }
+        S.history[S.history.length - 1] = { role: "assistant", text: reply };
+        try { speakReply(reply); } catch (e) {}
+        S.polling = false;
+        return;
+      }
+      // stop if the run errored
+      const run = await api(`/api/runs/${runId}`).catch(() => null);
+      if (run && run.status === "error") { replaceLastAssistant("⚠️ " + (run.error || "run failed")); break; }
+    }
+  } catch (e) {
+    replaceLastAssistant("⚠️ " + e.message);
+  }
+  S.polling = false;
+}
+function replaceLastAssistant(text) {
+  const list = $("chatList");
+  const bubbles = list.querySelectorAll(".chatMsg.assistant .bubble");
+  const typing = bubbles[bubbles.length - 1];
+  if (typing) {
+    const who = typing.querySelector(".who");
+    typing.parentElement.classList.remove("typing");
+    typing.innerHTML = (who ? who.outerHTML : "") + esc(text);
+  } else addChatMsg("assistant", text);
+  S.history[S.history.length - 1] = { role: "assistant", text };
+  renderChat();
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+$("chatSend").onclick = () => sendChat($("chatInput").value);
+$("chatInput").addEventListener("keydown", (ev) => { if (ev.key === "Enter") sendChat($("chatInput").value); });
 
-/* ---------- connect ---------- */
-function showConnect() { $("mConnect").classList.remove("hidden"); $("mMain").classList.add("hidden"); $("mVoiceBar").classList.add("hidden"); }
-function showMain() { $("mConnect").classList.add("hidden"); $("mMain").classList.remove("hidden"); $("mVoiceBar").classList.remove("hidden"); }
+/* agent switch resets the visible chat (new conversation per agent) */
+document.querySelectorAll(".mAgent").forEach((b) => b.onclick = () => {
+  S.agent = b.dataset.a;
+  document.querySelectorAll(".mAgent").forEach((x) => x.classList.toggle("active", x === b));
+  S.history = [];
+  renderChat();
+});
 
+/* ============================ VOICE ============================ */
+async function startRec() {
+  if (S.recording) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const rec = new MediaRecorder(stream);
+    S.mediaRec = rec; S.chunks = [];
+    rec.ondataavailable = (ev) => S.chunks.push(ev.data);
+    rec.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(S.chunks, { type: "audio/webm" });
+      await sendVoice(blob);
+    };
+    rec.start(); S.recording = true;
+    $("mVoiceBtn").classList.add("listening");
+    toastHint("Listening… tap again to send");
+  } catch (e) { toastHint("Mic unavailable: " + e.message); }
+}
+function stopRec() {
+  if (!S.recording) return;
+  S.recording = false;
+  $("mVoiceBtn").classList.remove("listening");
+  $("mVoiceBtn").classList.add("sending");
+  toastHint("Sending to " + (S.agent === "coded" ? "Coded" : "Phantom") + "…");
+  S.mediaRec.stop();
+}
+async function sendVoice(blob) {
+  try {
+    const buf = await blob.arrayBuffer();
+    const isPortable = S.mode === "portable";
+    if (isPortable) {
+      const res = await api("/api/voice/stt", { method: "POST", raw: true, headers: { "Content-Type": "application/octet-stream" }, body: buf });
+      const j = await res.json();
+      $("mVoiceBtn").classList.remove("sending");
+      if (!res.ok) { toastHint("✗ " + (j.error || "STT failed")); return; }
+      const text = j.transcript || "";
+      if (!text) { toastHint("no speech detected"); return; }
+      toastHint("“" + text + "”");
+      await sendChat(text);
+      return;
+    }
+    // pc mode: companion voice (PC transcribes + runs agent)
+    const res = await fetch(S.base + `/api/companion/voice?agent=${S.agent}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream", ...(S.token ? { "X-Access-Token": S.token } : {}) },
+      body: buf,
+    });
+    const j = await res.json();
+    $("mVoiceBtn").classList.remove("sending");
+    if (!res.ok) { toastHint("✗ " + (j.detail || j.error || "error")); return; }
+    toastHint("“" + j.text + "”");
+    addChatMsg("user", j.text);
+    addChatMsg("assistant", j.reply || "(no reply)");
+    try { speakReply(j.reply); } catch (e) {}
+    setTimeout(() => toastHint(""), 6000);
+  } catch (e) {
+    $("mVoiceBtn").classList.remove("sending");
+    toastHint("✗ " + e.message);
+  }
+}
+function speakReply(txt) {
+  try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(String(txt || "").replace(/[#*`_>]/g, "").slice(0, 600))); } catch (e) {}
+}
+$("mVoiceBtn").onclick = () => S.recording ? stopRec() : startRec();
+
+/* ============================ WS (pc mode live) ============================ */
+function connectWS() {
+  if (!S.base) return;
+  closeWS();
+  const proto = S.base.startsWith("https") ? "wss" : "ws";
+  const url = proto + "://" + S.base.replace(/^https?:\/\//, "") + "/ws" + (S.token ? "?token=" + encodeURIComponent(S.token) : "");
+  let ws;
+  try { ws = new WebSocket(url); } catch (e) { return; }
+  S.ws = ws;
+  ws.onmessage = (ev) => {
+    try {
+      const e = JSON.parse(ev.data);
+      if (e.event === "presence.state") { const p = e.data; if (p) setStatus(true, p.state === "listening" ? "🟢 awake" : "💤 sleeping"); }
+      if (e.event === "notification.new" || e.event === "confirmation.requested" || e.event === "task.update") refreshToday();
+    } catch (e2) {}
+  };
+  ws.onopen = () => { S.wsRetries = 0; setStatus(true, S.connLabel || "connected"); };
+  ws.onclose = () => { S.wsRetries += 1; if (S.mode !== "portable" && S.wsRetries < 6) setTimeout(connectWS, Math.min(1500 * Math.pow(2, S.wsRetries - 1), 15000)); };
+  ws.onerror = () => {};
+}
+function closeWS() { if (S.ws) { try { S.ws.onclose = null; S.ws.close(); } catch (e) {} S.ws = null; } }
+
+/* ============================ SETTINGS ============================ */
 async function connect() {
   S.base = $("mUrl").value.trim().replace(/\/+$/, "");
   S.token = $("mToken").value.trim();
@@ -109,244 +397,74 @@ async function connect() {
   localStorage.setItem("phai.companion.token", S.token);
   localStorage.setItem("phai.companion.cloud", S.cloudBase);
   localStorage.setItem("phai.companion.cloudtoken", S.cloudToken);
-  if (!S.base && !S.cloudBase) { $("mConnErr").textContent = "Enter your PC and/or portable URL"; $("mConnErr").classList.remove("hidden"); return; }
-  showMain();
-  $("mConnErr").classList.add("hidden");
-  detectAndConnect();
+  const err = $("mConnErr");
+  if (!S.base && !S.cloudBase) { err.textContent = "Enter your PC and/or portable URL"; err.classList.remove("hidden"); return; }
+  err.classList.add("hidden");
+  toastHint("connecting…");
+  switchTab("chat");
+  await detectAndConnect();
 }
 $("mConnectBtn").onclick = connect;
 
-/* ---------- WS ---------- */
-function connectWS() {
-  const proto = S.base.startsWith("https") ? "wss" : "ws";
-  const url = proto + "://" + S.base.replace(/^https?:\/\//, "") + "/ws" + (S.token ? "?token=" + encodeURIComponent(S.token) : "");
-  S.ws = new WebSocket(url);
-  S.ws.onmessage = (ev) => { try { handle(JSON.parse(ev.data)); } catch (e) {} };
-  S.ws.onclose = () => { setStatus("disconnected"); setTimeout(connectWS, 3000); };
-  S.ws.onopen = () => { setStatus("connected"); };
-}
-function handle(ev) {
-  if (ev.event === "presence.state") applyPresence(ev.data);
-  if (ev.event === "cloud.deploy_log") cloudLogLine(ev.data?.line || "");
-  if (ev.event === "notification.new") refreshAll();
-  if (ev.event === "confirmation.requested" || ev.event === "confirmation.decided") refreshAll();
-  if (ev.event === "task.update") refreshAll();
-  if (ev.event === "voice.speak" && document.hidden === false) {
-    // phone speaks proactive messages too (companion TTS)
-    try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(String(ev.data?.text || "").replace(/[#*`_>]/g, "").slice(0, 600))); } catch (e) {}
-  }
-}
-function setStatus(s) {
-  S.connected = s === "connected";
-  const p = $("mPresence");
-  p.textContent = s === "connected" ? "connected" : "offline";
-  p.className = "mPill " + (s === "connected" ? "on" : "warn");
-}
-function applyPresence(p) {
-  const el = $("mPresence");
-  if (p.state === "listening") { el.textContent = (p.active_agent === "coded" ? "💻 Coded" : "👻 Phantom") + " awake"; el.className = "mPill on"; }
-  else if (p.state === "silenced") { el.textContent = "🤫 silent"; el.className = "mPill warn"; }
-  else { el.textContent = "💤 sleeping"; el.className = "mPill"; }
-}
-
-/* ---------- refresh ---------- */
-async function refreshAll() {
-  try {
-    const st = await api("/api/companion/status");
-    applyPresence(st.presence);
-    renderBriefing(st.briefing);
-    renderConfirmations(st.pending_confirmations);
-    renderTasks(st.active_tasks);
-    renderNotifs(st.notifications);
-  } catch (e) { setStatus("disconnected"); }
-}
-function renderBriefing(b) {
-  const el = $("mBriefing");
-  if (!b || !b.spoken) { el.innerHTML = `<div class="mEmpty">No briefing yet.</div>`; return; }
-  let html = `<b>${esc(b.spoken.split(".")[0])}.</b>`;
-  const parts = b.spoken.split(". ").slice(1);
-  html += parts.map((p) => `<div style="margin-top:6px">${esc(p)}</div>`).join("");
-  el.innerHTML = html;
-}
-function renderConfirmations(list) {
-  const sec = $("mConfirm");
-  const el = $("mConfirmList");
-  el.innerHTML = "";
-  const items = list || [];
-  sec.classList.toggle("hidden", !items.length);
-  for (const c of items) {
-    const d = document.createElement("div");
-    d.className = "mItem";
-    d.innerHTML = `<div class="t">🔔 ${esc(c.tool)}</div>
-      <div class="d">${esc(c.what || "")}</div>
-      <div class="meta">${esc(c.action)}</div>
-      <div class="btnRow">
-        <button class="btnApprove" onclick="decide('${c.id}', true)">Approve</button>
-        <button class="btnDeny" onclick="decide('${c.id}', false)">Deny</button>
-      </div>`;
-    el.appendChild(d);
-  }
-}
-window.decide = async (id, approve) => {
-  try { await api(`/api/companion/confirmations/${id}/${approve ? "approve" : "deny"}`); refreshAll(); }
-  catch (e) { alert(e.message); }
-};
-function renderTasks(list) {
-  const el = $("mTaskList");
-  el.innerHTML = "";
-  const items = list || [];
-  if (!items.length) { el.innerHTML = `<div class="mEmpty">No active tasks.</div>`; return; }
-  for (const t of items) {
-    const d = document.createElement("div");
-    d.className = "mItem";
-    d.innerHTML = `<div class="t">${esc(t.name)}</div><div class="meta"><span class="pill warn">${esc(t.status)}</span></div>`;
-    el.appendChild(d);
-  }
-}
-function renderNotifs(list) {
-  const el = $("mNotifList");
-  el.innerHTML = "";
-  const items = list || [];
-  if (!items.length) { el.innerHTML = `<div class="mEmpty">No notifications.</div>`; return; }
-  for (const n of items) {
-    const d = document.createElement("div");
-    d.className = "mItem";
-    d.innerHTML = `<div class="t">${esc(n.title)}</div><div class="d">${esc(n.body)}</div>`;
-    el.appendChild(d);
-  }
-}
-$("mRefresh").onclick = refreshAll;
-
-/* ---------- voice (tap to talk → PC transcribes → agent runs) ---------- */
-async function startRec() {
-  if (S.recording) return;
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const rec = new MediaRecorder(stream);
-    S.mediaRec = rec;
-    S.chunks = [];
-    rec.ondataavailable = (ev) => S.chunks.push(ev.data);
-    rec.onstop = async () => {
-      stream.getTracks().forEach((t) => t.stop());
-      const blob = new Blob(S.chunks, { type: "audio/webm" });
-      await sendVoice(blob);
-    };
-    rec.start();
-    S.recording = true;
-    $("mVoiceBtn").classList.add("listening");
-    $("mVoiceHint").textContent = "Listening… tap again to send";
-  } catch (e) { $("mVoiceHint").textContent = "Mic unavailable: " + e.message; }
-}
-async function stopRec() {
-  if (!S.recording) return;
-  S.recording = false;
-  $("mVoiceBtn").classList.remove("listening");
-  $("mVoiceBtn").classList.add("sending");
-  $("mVoiceHint").textContent = "Sending to " + (S.agent === "coded" ? "Coded" : "Phantom") + "…";
-  S.mediaRec.stop();
-}
-async function sendVoice(blob) {
-  try {
-    const buf = await blob.arrayBuffer();
-    const isPortable = S.mode === "portable";
-    // portable: STT on the cloud worker, then cloud chat
-    if (isPortable) {
-      const res = await api("/api/voice/stt", {
-        method: "POST", raw: true,
-        headers: { "Content-Type": "application/octet-stream" },
-        body: buf });
-      const j = await res.json();
-      if (!res.ok) { $("mVoiceBtn").classList.remove("sending"); $("mVoiceHint").textContent = "✗ " + (j.error || "STT failed"); return; }
-      const text = j.transcript || "";
-      if (!text) { $("mVoiceBtn").classList.remove("sending"); $("mVoiceHint").textContent = "no speech detected"; return; }
-      $("mVoiceHint").textContent = "“" + text + "”";
-      const chat = await portableChat(text);
-      speakReply(chat.reply);
-      setTimeout(() => { $("mVoiceHint").textContent = ""; }, 6000);
-      return;
-    }
-    // pc mode: full companion voice (PC transcribes + runs the agent)
-    const res = await fetch(S.base + `/api/companion/voice?agent=${S.agent}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/octet-stream", ...(S.token ? { "X-Access-Token": S.token } : {}) },
-      body: buf,
-    });
-    const j = await res.json();
-    $("mVoiceBtn").classList.remove("sending");
-    if (!res.ok) { $("mVoiceHint").textContent = "✗ " + (j.detail || j.error || "error"); return; }
-    $("mVoiceHint").textContent = "“" + j.text + "”";
-    speakReply(j.reply);
-    setTimeout(() => { $("mVoiceHint").textContent = ""; }, 6000);
-  } catch (e) {
-    $("mVoiceBtn").classList.remove("sending");
-    $("mVoiceHint").textContent = "✗ " + e.message;
-  }
-}
-function speakReply(txt) {
-  try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(String(txt || "").replace(/[#*`_>]/g, "").slice(0, 600))); } catch (e) {}
-}
-$("mVoiceBtn").onclick = () => S.recording ? stopRec() : startRec();
-
-/* agent switch */
-document.querySelectorAll(".mAgent").forEach((b) => b.onclick = () => {
-  S.agent = b.dataset.a;
-  document.querySelectorAll(".mAgent").forEach((x) => x.classList.toggle("active", x === b));
-});
-
-/* mode toggle: auto → pc → portable → auto */
-$("mModeToggle").onclick = () => {
-  const order = ["auto", "pc", "portable"];
-  S.mode = order[(order.indexOf(S.mode) + 1) % order.length];
-  localStorage.setItem("phai.companion.mode", S.mode);
-  detectAndConnect();
-  toastMode("mode: " + S.mode);
-};
-
-/* cloud keys + redeploy via the PC (phone → PC → Worker) */
 $("mCloudKeysBtn").onclick = async () => {
   const nv = $("mCloudNvidia").value.trim();
   const dg = $("mCloudDeepgram").value.trim();
+  const model = $("mCloudModel").value.trim();
   const body = {};
   if (nv) body.nvidia_key = nv;
   if (dg) body.deepgram_key = dg;
-  if (!Object.keys(body).length) { $("mCloudLog").textContent = "Paste a key first."; return; }
+  if (model) body.model = model;
+  if (!Object.keys(body).length) { $("mCloudLog").textContent = "Paste a key or model first."; return; }
   try {
-    const r = await api("/api/cloud/keys", { body });
+    // portable mode: talk to the worker directly; pc mode: via the PC
+    const r = S.mode === "portable" && S.cloudBase
+      ? await (async () => {
+          const res = await fetch(S.cloudBase + "/api/config/keys", {
+            method: "POST", headers: { "Content-Type": "application/json", ...(S.cloudToken ? { "X-Access-Token": S.cloudToken } : {}) },
+            body: JSON.stringify(body),
+          });
+          const j = await res.json();
+          if (!res.ok) throw new Error(j.error || "cloud rejected");
+          return { masked: j.masked };
+        })()
+      : await api("/api/cloud/keys", { body });
     $("mCloudNvidia").value = ""; $("mCloudDeepgram").value = "";
-    $("mCloudLog").textContent = "Keys saved (masked): " + JSON.stringify(r.masked || {});
+    $("mCloudLog").textContent = "Saved (masked): " + JSON.stringify(r.masked || {});
+    toastHint("Cloud config saved");
   } catch (e) { $("mCloudLog").textContent = "✗ " + e.message; }
 };
 $("mRedeployBtn").onclick = async () => {
   const log = $("mCloudLog");
   log.textContent = "Redeploying via PC…";
-  try {
-    const r = await api("/api/cloud/deploy", { body: {} });
-    log.textContent = "Redeploy started on your PC — watch the PC app's log for details.";
-  } catch (e) { log.textContent = "✗ " + e.message; }
+  try { const r = await api("/api/cloud/deploy", { body: {} }); log.textContent = "Redeploy started on your PC."; }
+  catch (e) { log.textContent = "✗ " + e.message; }
 };
-function cloudLogLine(line) {
-  const log = $("mCloudLog");
-  if (log && !log.classList.contains("hidden")) log.textContent += "\n" + line;
-}
-$("mKill").onclick = async () => {
+function cloudLogLine(line) { const log = $("mCloudLog"); if (log) log.textContent += "\n" + line; }
+function killPC() {
   if (!confirm("Engage the PC kill switch? Stops voice, mic, tasks, all agents.")) return;
-  try { await api("/api/killswitch/engage", { body: "{}", headers: { "Content-Type": "application/json" } }); alert("Kill switch engaged on PC"); } catch (e) { alert(e.message); }
-};
+  (async () => { try { await api("/api/killswitch/engage", { body: "{}", headers: { "Content-Type": "application/json" } }); alert("Kill switch engaged on PC"); } catch (e) { alert(e.message); } })();
+}
+$("mKill").onclick = killPC;
+$("mKill2").onclick = killPC;
 
-/* boot */
+/* ============================ BOOT ============================ */
 (function boot() {
-  // PWA service worker (secure context only: https or localhost)
+  // PWA service worker (secure context only)
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   }
-  // restore saved mode + cloud url
   S.mode = localStorage.getItem("phai.companion.mode") || "auto";
-  S.cloudBase = localStorage.getItem("phai.companion.cloud") || "";
-  S.cloudToken = localStorage.getItem("phai.companion.cloudtoken") || "";
+  applyMode();
+  if (S.base) $("mUrl").value = S.base;
+  if (S.token) $("mToken").value = S.token;
+  if (S.cloudBase) $("mCloud").value = S.cloudBase;
+  if (S.cloudToken) $("mCloudToken").value = S.cloudToken;
+  renderChat();
   if (S.base || S.cloudBase) {
-    $("mUrl").value = S.base;
-    $("mToken").value = S.token;
-    showMain();
     detectAndConnect();
-  } else showConnect();
+    S.healthTimer = setInterval(checkHealth, 15000);
+  } else {
+    setStatus(false);
+    switchTab("settings");
+  }
 })();

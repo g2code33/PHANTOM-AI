@@ -221,6 +221,13 @@ class NVIDIAProvider(ModelProvider):
             return ProviderError("rate_limit", f"NVIDIA rate limited (HTTP 429): {body}", retryable=True, status_code=status)
         if status in (500, 502, 503, 504):
             return ProviderError("server", f"NVIDIA server error (HTTP {status}): {body}", retryable=True, status_code=status)
+        if status == 404:
+            return ProviderError(
+                "invalid_request",
+                f"NVIDIA request failed (HTTP 404) on {self.base_url}/chat/completions "
+                f"(model={self.model}): {body} — the model name may be wrong or retired. "
+                "NVIDIA IDs look like 'meta/llama-3.3-70b-instruct' (org/model). "
+                "Check https://build.nvidia.com for the exact ID.", status_code=status)
         if status == 400 and ("tool" in body.lower() or "function" in body.lower()):
             return ProviderError("unsupported_tool_calling", f"Model does not support native tool calling: {body}", status_code=status)
         return ProviderError(

@@ -106,6 +106,7 @@ async def tool_ctx(app):
             health=instance.health, profiles=instance.profiles,
             briefing=instance.briefing, monitor=instance.monitor,
             cloudsync=instance.cloudsync,
+            hud=instance.hud,
         ))
 
     yield factory

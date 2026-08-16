@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Phantom Companion</title>
-<meta name="description" content="Phantom — your personal AI companion. Remote control for your PC.">
+<meta name="description" content="Phantom — your personal AI companion. Remote control for your PC + portable cloud.">
 <!-- PWA / iOS install -->
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -16,92 +16,109 @@
 </head>
 <body data-state="disconnected">
 <div id="app">
-  <!-- top: connection + presence -->
+
+  <!-- ================= top bar ================= -->
   <header id="mTop">
     <div class="mBrand">
       <div id="mMiniCore"></div>
-      <div>
+      <div class="mBrandText">
         <strong>Phantom</strong>
-        <span id="mMode" class="mSub">companion</span>
+        <span id="mModeLabel" class="mSub">companion</span>
       </div>
     </div>
     <div id="mStatusRow">
-      <span id="mPresence" class="mPill">connecting…</span>
-      <button id="mModeToggle" class="mMode" title="Switch mode: PC / Portable">🔄</button>
+      <span id="mPresence" class="mPill">offline</span>
+      <button id="mModeToggle" class="mMode" title="Switch mode: Auto / PC / Cloud">🔄</button>
       <button id="mKill" class="mKill" title="Kill switch">⏻</button>
     </div>
   </header>
-  <div id="mModeBanner" class="mBanner">portable mode</div>
+  <div id="mModeBanner" class="mBanner">offline</div>
 
-  <!-- connect screen (first run / offline) -->
-  <div id="mConnect" class="mScreen">
+  <!-- ================= CHAT TAB ================= -->
+  <section id="tab-chat" class="mTab active">
+    <div class="chatHead">
+      <div class="mAgentRow">
+        <button class="mAgent active" data-a="phantom">👻 Phantom</button>
+        <button class="mAgent" data-a="coded">💻 Coded</button>
+      </div>
+      <span id="chatConn" class="mChatConn">—</span>
+    </div>
+    <div id="chatList" class="chatList">
+      <div class="mEmpty" id="chatEmpty">Say hi 👋 — type below or tap the mic.</div>
+    </div>
+    <div class="composer">
+      <input id="chatInput" type="text" placeholder="Message Phantom…" autocomplete="off" enterkeyhint="send">
+      <button id="chatSend" class="mSend" title="Send">➤</button>
+      <button id="mVoiceBtn" class="mMic" title="Tap to talk">🎙️</button>
+    </div>
+    <div id="mVoiceHint" class="mHint"></div>
+  </section>
+
+  <!-- ================= TODAY TAB ================= -->
+  <section id="tab-today" class="mTab">
+    <div class="mSecHead"><h3>☀️ Today</h3><button id="mRefresh" class="mMini">refresh</button></div>
+    <div id="mBriefing" class="mCard mBriefing"></div>
+
+    <div id="mConfirm" class="mSection hidden">
+      <div class="mSecHead"><h3>🔔 Needs your approval</h3></div>
+      <div id="mConfirmList" class="mStack"></div>
+    </div>
+
+    <div class="mSecHead"><h3>📋 Active tasks</h3></div>
+    <div id="mTaskList" class="mStack"></div>
+
+    <div class="mSecHead"><h3>🔔 Notifications</h3></div>
+    <div id="mNotifList" class="mStack"></div>
+  </section>
+
+  <!-- ================= SETTINGS TAB ================= -->
+  <section id="tab-settings" class="mTab">
     <div class="mCard">
       <h2>Connect to your PC</h2>
-      <p class="muted small">Enter your computer's Phantom backend address (e.g. http://192.168.1.50:8000). Your PC must be on and Phantom running.</p>
+      <p class="muted small">PC backend address (same Wi-Fi) + the cloud Portable Phantom URL. Auto mode uses your PC when reachable, cloud when not.</p>
       <input id="mUrl" type="url" placeholder="PC: http://192.168.1.50:8000" autocomplete="url">
       <input id="mToken" type="password" placeholder="PC access token (optional)">
       <input id="mCloud" type="url" placeholder="Portable: https://phantom-portable.xxx.workers.dev" autocomplete="url">
       <input id="mCloudToken" type="password" placeholder="cloud token (optional)">
-      <button id="mConnectBtn" class="mPrimary">Connect</button>
-      <p class="muted small" style="margin-top:8px">💡 Auto mode: uses your PC when reachable, portable cloud when not. The 🔄 button cycles auto → PC → portable.</p>
-      <div class="mCard" style="margin-top:10px;background:var(--mbg2)">
-        <div style="font-weight:700;margin-bottom:4px">🚀 Getting started (iPhone)</div>
-        <ol class="muted small" style="margin:0;padding-left:18px">
-          <li><b>PC:</b> keep Phantom running — <code>bash scripts/run.sh</code> or the tray app.</li>
-          <li><b>Same Wi-Fi:</b> enter <code>http://&lt;PC-IP&gt;:8000</code> above (PC on the same network) and Connect.</li>
-          <li><b>Anywhere (off campus/home):</b> on the PC run <code>bash scripts/tunnel.sh</code>, open the <code>https://…trycloudflare.com</code> URL here, then Share → <b>Add to Home Screen</b>.</li>
-          <li><b>Portable cloud:</b> deploy the Worker (<code>bash cloud/deploy.sh</code>) and paste its URL — works even with your PC off.</li>
-        </ol>
-        <p class="muted small" style="margin-top:6px">🔐 If you set an access token on the PC, enter it in the token field.</p>
-      </div>
+      <button id="mConnectBtn" class="mPrimary">Save &amp; connect</button>
       <p id="mConnErr" class="mErr hidden"></p>
     </div>
-  </div>
 
-  <!-- main companion -->
-  <div id="mMain" class="mScreen hidden">
-    <section id="mToday" class="mSection">
-      <div class="mSecHead"><h3>☀️ Today</h3><button id="mRefresh" class="mMini">refresh</button></div>
-      <div id="mBriefing" class="mCard mBriefing"></div>
-    </section>
-
-    <section id="mConfirm" class="mSection hidden">
-      <div class="mSecHead"><h3>🔔 Needs your approval</h3></div>
-      <div id="mConfirmList" class="mStack"></div>
-    </section>
-
-    <section id="mTasks" class="mSection">
-      <div class="mSecHead"><h3>📋 Active tasks</h3></div>
-      <div id="mTaskList" class="mStack"></div>
-    </section>
-
-    <section id="mNotifs" class="mSection">
-      <div class="mSecHead"><h3>🔔 Notifications</h3></div>
-      <div id="mNotifList" class="mStack"></div>
-    </section>
-
-    <section id="mCloud" class="mSection">
-      <div class="mSecHead"><h3>☁️ Portable Phantom</h3></div>
-      <div class="mCard">
-        <p class="muted small">Manage the cloud Phantom from your phone (sent to your PC, which applies it).</p>
-        <input id="mCloudNvidia" type="password" placeholder="cloud NVIDIA key (optional)">
-        <input id="mCloudDeepgram" type="password" placeholder="cloud Deepgram key (optional)">
-        <button id="mCloudKeysBtn" class="mPrimary" style="margin-top:10px">Save cloud keys</button>
-        <button id="mRedeployBtn" class="mMini" style="width:100%;margin-top:8px">🔄 Redeploy cloud (via PC)</button>
-        <div id="mCloudLog" class="mono small" style="margin-top:10px;max-height:160px;overflow:auto;background:#0a0f1c;border:1px solid var(--border);border-radius:10px;padding:8px;white-space:pre-wrap"></div>
+    <div class="mCard">
+      <div style="font-weight:700;margin-bottom:6px">🔄 Connection mode</div>
+      <div class="modeRow">
+        <button class="modeBtn" data-mode="auto">🔄 Auto</button>
+        <button class="modeBtn" data-mode="pc">🖥️ PC</button>
+        <button class="modeBtn" data-mode="portable">☁️ Cloud</button>
       </div>
-    </section>
-  </div>
-
-  <!-- voice bar (tap to talk) -->
-  <footer id="mVoiceBar" class="hidden">
-    <div id="mVoiceHint" class="mHint"></div>
-    <button id="mVoiceBtn" class="mBigMic">🎙️</button>
-    <div class="mAgentRow">
-      <button class="mAgent" data-a="phantom">👻 Phantom</button>
-      <button class="mAgent" data-a="coded">💻 Coded</button>
+      <p class="muted small" id="modeDesc">Auto prefers your PC, falls back to cloud.</p>
     </div>
-  </footer>
+
+    <div class="mCard">
+      <div style="font-weight:700;margin-bottom:6px">☁️ Cloud (portable Phantom)</div>
+      <p class="muted small">Keys + model used by the cloud Worker. Sent via your PC → Worker (masked).</p>
+      <input id="mCloudNvidia" type="password" placeholder="cloud NVIDIA key (optional)">
+      <input id="mCloudDeepgram" type="password" placeholder="cloud Deepgram key (optional)">
+      <input id="mCloudModel" type="text" placeholder="cloud model (e.g. meta/llama-3.3-70b-instruct)">
+      <button id="mCloudKeysBtn" class="mPrimary" style="margin-top:10px">Save cloud config</button>
+      <button id="mRedeployBtn" class="mMini" style="width:100%;margin-top:8px">🔄 Redeploy cloud (via PC)</button>
+      <div id="mCloudLog" class="mono small" style="margin-top:10px;max-height:120px;overflow:auto;background:#0a0f1c;border:1px solid var(--border);border-radius:10px;padding:8px;white-space:pre-wrap"></div>
+    </div>
+
+    <div class="mCard">
+      <div style="font-weight:700;margin-bottom:6px">📱 Install on iPhone</div>
+      <p class="muted small">If opened in Safari: tap <b>Share → Add to Home Screen</b> for a full-screen app icon.</p>
+      <p class="muted small" style="margin-top:6px">🔐 Kill switch stops everything on your PC.</p>
+      <button id="mKill2" class="mMini" style="width:100%;margin-top:8px;color:var(--red);border-color:var(--red)">⏻ Engage PC kill switch</button>
+    </div>
+  </section>
+
+  <!-- ================= BOTTOM TAB BAR ================= -->
+  <nav id="mTabBar">
+    <button class="tabBtn active" data-tab="chat">💬<span>Chat</span></button>
+    <button class="tabBtn" data-tab="today">☀️<span>Today</span></button>
+    <button class="tabBtn" data-tab="settings">⚙️<span>Settings</span></button>
+  </nav>
 </div>
 <script src="/mobile.js"></script>
 </body>

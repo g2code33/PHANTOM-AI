@@ -22,7 +22,7 @@ class MockState:
     def __init__(self) -> None:
         self.handler: Optional[Handler] = None
         self.requests: list[dict[str, Any]] = []
-        self.models: list[str] = ["nvidia/llama-3.3-70b-instruct", "nvidia/deepseek-r1"]
+        self.models: list[str] = ["meta/llama-3.3-70b-instruct", "nvidia/deepseek-r1"]
         self.fail_next: Optional[tuple[int, str]] = None  # (status, body)
 
 

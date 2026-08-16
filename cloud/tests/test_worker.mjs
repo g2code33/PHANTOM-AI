@@ -39,7 +39,7 @@ function makeEnv() {
     NVIDIA_API_KEY: "nvapi-test",
     DEEPGRAM_API_KEY: "dg-test",
     PHANTOM_CLOUD_TOKEN: "",
-    NVIDIA_MODEL: "nvidia/llama-3.3-70b-instruct",
+    NVIDIA_MODEL: "meta/llama-3.3-70b-instruct",
   };
 }
 
@@ -190,7 +190,7 @@ await t("config/keys sets + masks cloud keys", async () => {
   const j = await r.json();
   assert.equal(j.ok, true);
   assert.deepEqual(j.masked, { nvidia: "configured", deepgram: "configured",
-                               model: "nvidia/llama-3.3-70b-instruct" });
+                               model: "meta/llama-3.3-70b-instruct" });
   const st = await handle(req("https://phantom.local/api/status"), e);
   const sj = await st.json();
   assert.equal(sj.keys.nvidia, "configured");
@@ -281,4 +281,14 @@ await t("manifest + icons served (PWA install)", async () => {
   const root = await handle(req("https://phantom.local/"), e);
   const html = await root.text();
   assert.match(html, /rel="manifest"/);
+});
+
+// service worker for offline PWA caching
+await t("sw.js served", async () => {
+  const e = makeEnv();
+  const sw = await handle(req("https://phantom.local/sw.js"), e);
+  assert.equal(sw.status, 200);
+  assert.match(sw.headers.get("content-type"), /javascript/);
+  const txt = await sw.text();
+  assert.match(txt, /addEventListener\("fetch"/);
 });

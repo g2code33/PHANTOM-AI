@@ -551,3 +551,17 @@ input[type="time"] { width: 130px; color-scheme: dark; }
 /* transcript header (current chat + chats menu button) */
 .transcript-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px 2px; border-bottom: 1px solid rgba(110,168,254,.12); margin-bottom: 4px; }
 #currentChatLabel { letter-spacing: 1px; }
+
+/* ---------------- Phantom splash ---------------- */
+#splash { position: fixed; inset: 0; z-index: 500; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px; background: radial-gradient(800px 500px at 50% 42%, rgba(110,168,254,.12), #060810 65%);
+  opacity: 1; transition: opacity .5s ease; pointer-events: none; }
+#splash.hide { opacity: 0; }
+.splash-core { width: 84px; height: 84px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #dbe8ff, #6ea8fe 45%, #1f3358);
+  box-shadow: 0 0 60px rgba(110,168,254,.8), inset 0 0 24px rgba(255,255,255,.25);
+  animation: splashPulse 1.6s ease-in-out infinite; }
+@keyframes splashPulse { 50% { transform: scale(1.08); box-shadow: 0 0 90px rgba(110,168,254,1), inset 0 0 24px rgba(255,255,255,.3); } }
+.splash-name { font-size: 34px; font-weight: 800; letter-spacing: 10px; color: var(--text);
+  text-shadow: 0 0 30px rgba(110,168,254,.6); }
+.splash-sub { font-size: 12px; letter-spacing: 3px; color: var(--muted); }
