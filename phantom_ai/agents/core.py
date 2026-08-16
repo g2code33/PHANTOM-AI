@@ -456,7 +456,10 @@ class Agent:
                 messages,
                 tools=tools,
                 temperature=float(await self.settings.get("model.temperature", agent, 0.4)),
-                max_tokens=int(await self.settings.get("model.max_tokens", agent, 2048)),
+                # JARVIS SPEED: 800 tokens default (was 2048) — NVIDIA's free
+                # endpoint latency scales with max_tokens; 800 covers 99% of
+                # replies and returns ~2-3x faster. Configurable in settings.
+                max_tokens=int(await self.settings.get("model.max_tokens", agent, 800)),
             ):
                 if cancel_event.is_set():
                     raise ProviderError("cancelled", "cancelled by user")

@@ -126,8 +126,12 @@ voice.onWakeWord = async (agent) => {
     if (res.woken) {
       voice.currentAgent = agent;
       voice.playReadyCue();
-      setPresence("LISTENING", (agent === "coded" ? "Coded" : "Phantom") + " is ready — speak");
-      if (state.voiceOn) voice.speak("Yes, " + (state.userName || "JOOJO") + "?");
+      const name = state.userName || "JOOJO";
+      const greet = agent === "coded"
+        ? "Coded here. What are we building, " + name + "?"
+        : "I'm here, " + name + ". What do you need?";
+      setPresence("LISTENING", (agent === "coded" ? "Coded" : "Phantom") + " is awake — speak");
+      if (state.voiceOn) voice.speak(greet);
     } else if (res.need_verification) {
       setPresence("IDLE", "Voice sample needed — try again");
     } else {
@@ -1040,7 +1044,14 @@ async function loadSettings() {
           <button class="btn" onclick="saveKey('${agentId}')">Save</button>
           <button class="btn" onclick="testKey('nvidia', '${agentId}')">Test</button>
           ${k.configured ? `<span class="muted small">${esc(k.masked || "")}</span>` : ""}</div>
-        <div class="row"><label>Model</label><input type="text" id="model-${agentId}" placeholder="meta/llama-3.3-70b-instruct (default)" title="NVIDIA model ID, e.g. meta/llama-3.3-70b-instruct or meta/llama-3.1-405b-instruct. Empty = default."></div>
+        <div class="row"><label>Model preset</label>
+          <select id="modelPreset-${agentId}" onchange="applyModelPreset('${agentId}')">
+            <option value="fast">⚡ Fast (8B — snappy)</option>
+            <option value="smart" selected>🧠 Smart (70B — default)</option>
+            <option value="custom">✏️ Custom</option>
+          </select>
+          <span class="muted small">Fast replies use meta/llama-3.1-8b-instruct</span></div>
+        <div class="row"><label>Model</label><input type="text" id="model-${agentId}" placeholder="custom model ID" title="NVIDIA model ID, e.g. meta/llama-3.3-70b-instruct or meta/llama-3.1-8b-instruct. Empty = default."></div>
         <div class="row"><label>Temperature</label><input type="text" id="temp-${agentId}" style="width:80px" title="Creativity/randomness of the model: 0 = strict &amp; factual, higher (up to 2) = more creative &amp; varied. Default 0.4 — a balanced, dependable personality."></div>
       </div>`);
   }
@@ -1190,7 +1201,14 @@ async function loadSettings() {
   body.innerHTML = sections.join("");
   for (const agentId of ["phantom", "coded", "health"]) {
     const s = (res.settings && res.settings[agentId]) || {};
-    $("model-" + agentId).value = s.model || "";
+    const modelVal = s.model || "";
+    $("model-" + agentId).value = modelVal;
+    const preset = $(`modelPreset-${agentId}`);
+    if (preset) {
+      if (!modelVal) preset.value = "smart";
+      else if (modelVal.includes("8b")) preset.value = "fast";
+      else preset.value = "custom";
+    }
     $("temp-" + agentId).value = s["model.temperature"] ?? 0.4;
   }
   const g = res.settings && res.settings["*"] ? res.settings["*"] : {};
@@ -1632,6 +1650,22 @@ window.addEventListener("DOMContentLoaded", () => {
 async function saveSetting(agent, key, value) {
   await api("/api/settings", { method: "PUT", body: { agent, key, value } });
 }
+window.applyModelPreset = async (agentId) => {
+  const preset = $(`modelPreset-${agentId}`)?.value;
+  const modelInput = $(`model-${agentId}`);
+  if (!modelInput) return;
+  if (preset === "fast") {
+    modelInput.value = "meta/llama-3.1-8b-instruct";
+    await api("/api/settings", { method: "PUT", body: { agent: agentId, key: "model", value: modelInput.value } });
+    toast("⚡ Fast mode — " + modelInput.value, "ok");
+  } else if (preset === "smart") {
+    modelInput.value = "";
+    await api("/api/settings", { method: "PUT", body: { agent: agentId, key: "model", value: "" } });
+    toast("🧠 Smart mode — default model", "ok");
+  }
+  loadStatus();
+};
+
 window.saveKey = async (agentId) => {
   const input = $(`key-${agentId}`);
   const val = input.value.trim();
@@ -2016,13 +2050,15 @@ function hudTierNow() {
 function hudApplyTier() {
   const tier = hudTierNow();
   document.body.classList.toggle("hud-low", tier === "low");
+  document.body.classList.toggle("hud-medium", tier === "medium");
   if (hudGauges) hudGauges.setTier(tier);
   if (spectrumStrip) spectrumStrip.setTier(tier);
-  if (tier === "low") {
-    hudStopLoop();
-    drawCoreFrame(0);            // one dim static frame — no continuous redraw
-  } else {
+  if (tier === "full") {
     hudStartLoop();
+  } else {
+    // low/medium: one static dim frame, no continuous redraw (big CPU save)
+    hudStopLoop();
+    drawCoreFrame(0);
   }
 }
 

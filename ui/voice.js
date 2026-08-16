@@ -538,9 +538,12 @@ class PhantomVoice {
     this._speaking = true;
     this.setState("SPEAKING");
     this.onSpeakStart?.();
+    // FAST PATH: 'server' TTS without a Deepgram key would wait through a
+    // failing chain — speak instantly with system voices instead.
+    const wantsServer = (this.ttsProvider === "server" || this.ttsProvider === "deepgram") && this.deepgramConfigured;
     if (this.ttsProvider === "deepgram" && this.deepgramConfigured) {
       this._speakDeepgram(item.text);
-    } else if (this.ttsProvider === "server") {
+    } else if (wantsServer) {
       this._speakServer(item.text);
     } else {
       this._speakBrowser(item.text);
@@ -779,39 +782,75 @@ class PhantomVoice {
   }
 
   // ------------------------------------------- wake-word detection (client)
+  // Electron has NO SpeechRecognition, so browser-STT wake never worked in
+  // the app. Real approach that works everywhere: while sleeping, watch mic
+  // energy (our VAD); when speech is detected, capture ~2.5s and run it
+  // through the SERVER STT chain (Deepgram->Groq->Local); if the transcript
+  // contains "phantom"/"coded" at a word boundary -> wake. STT only runs when
+  // you actually speak while it sleeps (cheap, and works offline with local).
   async _startWakeDetection() {
     if (this._wakeActive || this.killEngaged || !this.micEnabled) return;
-    if (this.wakeEngine === "porcupine") {
-      // Picovoice Porcupine (offline, battery-light) — requires a free access
-      // key + "phantom"/"coded" wake-word models. Not yet configured: fall back.
-      this.wakeEngine = "browser";
-    }
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
     this._wakeActive = true;
-    const rec = new SR();
-    rec.lang = "en-US";
-    rec.interimResults = true;
-    rec.continuous = true;
-    rec.onresult = (ev) => {
-      let text = "";
-      for (let i = ev.resultIndex; i < ev.results.length; i++)
-        text += ev.results[i][0].transcript;
-      const m = text.toLowerCase().match(/(^|\s)(phantom|coded)(\s|$|\.|,|!|\?)/);
-      if (m) this._handleWake(m[2].toLowerCase());
-    };
-    rec.onend = () => {
-      if (this._wakeActive && !this.killEngaged) {
-        try { rec.start(); } catch (e) {}
+    this._wakeVadBuf = [];
+    this._wakeSpeechFrames = 0;
+    this._wakeCooldownUntil = 0;
+    // lightweight mic stream for energy detection (shared analyser pattern)
+    try {
+      if (!this._micStream) await this.startMic();
+    } catch (e) { this._wakeActive = false; return; }
+    this._wakeEnergyLoop();
+  }
+
+  _wakeEnergyLoop() {
+    if (!this._wakeActive) return;
+    const tick = () => {
+      if (!this._wakeActive) return;
+      if (this._analyser) {
+        const buf = new Float32Array(this._analyser.fftSize);
+        this._analyser.getFloatTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        const rms = Math.sqrt(sum / buf.length);
+        const now = Date.now();
+        if (rms > 0.045) {
+          this._wakeSpeechFrames += 1;
+          if (this._wakeSpeechFrames >= 14 && now >= this._wakeCooldownUntil) {
+            this._wakeSpeechFrames = 0;
+            this._wakeCooldownUntil = now + 6000;  // cooldown after each attempt
+            this._checkWakeByStt();
+          }
+        } else {
+          this._wakeSpeechFrames = 0;
+        }
       }
+      if (this._wakeActive) this._wakeRaf = requestAnimationFrame(tick);
     };
-    this._wakeRec = rec;
-    try { rec.start(); } catch (e) {}
+    this._wakeRaf = requestAnimationFrame(tick);
+  }
+
+  async _checkWakeByStt() {
+    // capture ~2.5s of audio and check for the wake word via server STT
+    try {
+      const wav = await this.captureWav(2.5);
+      if (!wav) return;
+      const fd = new FormData();
+      fd.append("audio", wav, "wake.wav");
+      fd.append("language", "en");
+      const res = await fetch("/api/voice/stt", { method: "POST", body: fd });
+      if (!res.ok) return;
+      const j = await res.json();
+      const text = String(j.text || "").toLowerCase();
+      const m = text.match(/(^|\s)(phantom|coded)(\s|$|\.|,|!|\?)/);
+      if (m) this._handleWake(m[2].toLowerCase());
+    } catch (e) { /* transient — try again next speech */ }
   }
 
   _stopWakeDetection() {
     this._wakeActive = false;
+    if (this._wakeRaf) { cancelAnimationFrame(this._wakeRaf); this._wakeRaf = null; }
     if (this._wakeRec) { try { this._wakeRec.onend = null; this._wakeRec.stop(); } catch (e) {} this._wakeRec = null; }
+    this._wakeVadBuf = [];
+    this._wakeSpeechFrames = 0;
   }
 
   async _handleWake(word) {

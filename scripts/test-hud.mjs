@@ -11,7 +11,7 @@ const { hudTier, avgBins, formatRate, moonPhase, Ring, sparkPath } = require("..
 // ---- rendering tiers: sleeping is the single low-power trigger ----
 assert.strictEqual(hudTier("idle", true), "low", "sleeping → low tier");
 assert.strictEqual(hudTier("listening", true), "low", "silenced+sleeping → low tier");
-assert.strictEqual(hudTier("idle", false), "full", "awake idle → full tier");
+assert.strictEqual(hudTier("idle", false), "medium", "awake idle → medium tier (CPU save)");
 assert.strictEqual(hudTier("listening", false), "full", "listening → full tier");
 assert.strictEqual(hudTier("speaking", false), "full", "speaking → full tier");
 assert.strictEqual(hudTier("thinking", false), "full", "thinking → full tier");
