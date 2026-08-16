@@ -282,3 +282,13 @@ await t("manifest + icons served (PWA install)", async () => {
   const html = await root.text();
   assert.match(html, /rel="manifest"/);
 });
+
+// service worker for offline PWA caching
+await t("sw.js served", async () => {
+  const e = makeEnv();
+  const sw = await handle(req("https://phantom.local/sw.js"), e);
+  assert.equal(sw.status, 200);
+  assert.match(sw.headers.get("content-type"), /javascript/);
+  const txt = await sw.text();
+  assert.match(txt, /addEventListener\("fetch"/);
+});

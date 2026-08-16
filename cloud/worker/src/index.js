@@ -24,6 +24,7 @@
 
 import { MOBILE_HTML } from "./mobile_embed.js";
 import { MANIFEST, ICONS } from "./mobile_assets.js";
+import { SW_JS } from "./sw_embed.js";
 
 const DEFAULT_MODEL = "nvidia/llama-3.3-70b-instruct";
 const NVDIA_BASE = "https://integrate.api.nvidia.com/v1";
@@ -212,6 +213,12 @@ async function handle(request, env) {
     return new Response(JSON.stringify(MANIFEST), {
       headers: { "Content-Type": "application/manifest+json; charset=utf-8",
                  "Cache-Control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/sw.js" && request.method === "GET") {
+    return new Response(SW_JS, {
+      headers: { "Content-Type": "text/javascript; charset=utf-8",
+                 "Cache-Control": "no-cache" },
     });
   }
   if (ICONS[path] && request.method === "GET") {
