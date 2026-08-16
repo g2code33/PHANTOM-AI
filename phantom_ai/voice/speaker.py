@@ -20,6 +20,8 @@ from __future__ import annotations
 import base64
 import io
 import math
+import os
+import sys
 import wave
 from typing import Any, Optional
 
@@ -57,6 +59,30 @@ def _encode_wav16k_mono(audio) -> bytes:
     return buf.getvalue()
 
 
+def find_resemblyzer_weights() -> str | None:
+    """Locate resemblyzer's pretrained.pt for the (possibly frozen) app.
+
+    Order: RESEMBLYZER_WEIGHTS env → bundled (_MEIPASS/resemblyzer/
+    pretrained.pt, which PyInstaller data collection places there) → the
+    package directory next to the installed resemblyzer. Returns None when
+    not found (caller reports honestly)."""
+    try:
+        import resemblyzer
+        pkg_dir = os.path.dirname(resemblyzer.__file__)
+    except Exception:  # noqa: BLE001
+        pkg_dir = ""
+    meipass = getattr(sys, "_MEIPASS", "")
+    candidates = [
+        os.environ.get("RESEMBLYZER_WEIGHTS", ""),
+        os.path.join(meipass, "resemblyzer", "pretrained.pt") if meipass else "",
+        os.path.join(pkg_dir, "pretrained.pt") if pkg_dir else "",
+    ]
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            return cand
+    return None
+
+
 class SpeakerVerifier:
     def __init__(self, secrets: SecretsStore, audit: Any,
                  threshold: float = THRESHOLD_DEFAULT) -> None:
@@ -75,9 +101,16 @@ class SpeakerVerifier:
     def _load_encoder(self) -> None:
         try:
             from resemblyzer import VoiceEncoder
+        except Exception as exc:  # noqa: BLE001 — missing pkg
+            self._unavailable_reason = str(exc)[:200]
+            self._encoder = None
+            raise SpeakerUnavailable(str(exc)) from None
 
-            self._encoder = VoiceEncoder()
-        except Exception as exc:  # noqa: BLE001 — missing pkg or blocked weights
+        weights_fpath = find_resemblyzer_weights()
+        try:
+            self._encoder = (VoiceEncoder(weights_fpath=weights_fpath)
+                             if weights_fpath else VoiceEncoder())
+        except Exception as exc:  # noqa: BLE001 — weights missing / torch issue
             self._unavailable_reason = str(exc)[:200]
             self._encoder = None
             raise SpeakerUnavailable(str(exc)) from None

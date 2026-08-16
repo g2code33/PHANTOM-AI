@@ -11,6 +11,8 @@
 
 import os
 
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+
 # PyInstaller resolves paths inside the spec relative to the CURRENT WORKING
 # DIRECTORY (where pyinstaller is invoked), NOT the spec file's folder — the
 # runtime_hooks path proved that in CI (FileNotFoundError:
@@ -101,14 +103,34 @@ phantom_pkg_hidden = [
     "phantom_ai.voice.tts",
 ]
 
+# collect data/binaries for heavy optional deps so the FROZEN app works
+# offline — resemblyzer's encoder weights (pretrained.pt) ship with the wheel
+# and must be bundled (voice enrollment/speaker-lock fail without them)
+_voice_datas = []
+try:
+    _voice_datas += collect_dynamic_libs("resemblyzer")
+    _voice_datas += collect_data_files("resemblyzer")
+except Exception:  # noqa: BLE001 — resemblyzer not installed at build time
+    _voice_datas = []
+
+# torch (CPU) is only present when the CI/dev install includes it; add it to
+# hiddenimports when available so PyInstaller's torch hook bundles it
+_torch_hidden = []
+try:
+    import torch  # noqa: F401
+    _torch_hidden = ["torch"]
+except Exception:  # noqa: BLE001
+    _torch_hidden = []
+
 a = Analysis(
     [entry],
     pathex=[repo_root],
-    binaries=[],
+    binaries=_voice_datas,
     datas=[(ui_dir, "ui")],
-    hiddenimports=uvicorn_hidden + phantom_pkg_hidden + [
+    hiddenimports=uvicorn_hidden + phantom_pkg_hidden + _torch_hidden + [
         "aiosqlite", "cryptography", "jsonschema", "psutil",
-        "numpy", "resemblyzer", "multipart", "multipart.multipart",
+        "numpy", "resemblyzer", "resemblyzer.audio", "resemblyzer.hparams",
+        "resemblyzer.voice_encoder", "multipart", "multipart.multipart",
     ],
     hookspath=[],
     hooksconfig={},

@@ -154,3 +154,37 @@ async def test_presence_survives_restart_sleeping(app, workdir):
         assert profile and "JOOJO" in profile["fields"]["display_name"]
     finally:
         await app2.shutdown()
+
+def test_find_resemblyzer_weights_meipass(tmp_path, monkeypatch):
+    """Frozen-app path: weights found via _MEIPASS bundle dir even when the
+    installed resemblyzer package has no pretrained.pt next to it."""
+    from phantom_ai.voice import speaker as sp
+
+    bundled = tmp_path / "resemblyzer" / "pretrained.pt"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"FAKEWEIGHTS")
+
+    monkeypatch.setattr(sp, "sys", type("S", (), {"_MEIPASS": str(tmp_path)})())
+    monkeypatch.delenv("RESEMBLYZER_WEIGHTS", raising=False)
+    # resemblyzer isn't installed in the test env → pkg_dir branch is empty,
+    # so the bundled _MEIPASS path must win
+    assert sp.find_resemblyzer_weights() == str(bundled)
+
+
+def test_find_resemblyzer_weights_env_wins(tmp_path, monkeypatch):
+    """Explicit RESEMBLYZER_WEIGHTS env beats everything."""
+    from phantom_ai.voice import speaker as sp
+
+    env_weights = tmp_path / "custom.pt"
+    env_weights.write_bytes(b"X")
+    monkeypatch.setenv("RESEMBLYZER_WEIGHTS", str(env_weights))
+    assert sp.find_resemblyzer_weights() == str(env_weights)
+
+
+def test_find_resemblyzer_weights_none_honest(tmp_path, monkeypatch):
+    """No weights anywhere → None (caller reports 'engine unavailable')."""
+    from phantom_ai.voice import speaker as sp
+
+    monkeypatch.delenv("RESEMBLYZER_WEIGHTS", raising=False)
+    monkeypatch.setattr(sp, "sys", type("S", (), {"_MEIPASS": str(tmp_path / "empty_meipass")})())
+    assert sp.find_resemblyzer_weights() is None

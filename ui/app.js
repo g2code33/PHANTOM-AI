@@ -123,14 +123,53 @@ voice.onWakeWord = async (agent) => {
 };
 
 /* ============================== WS ============================== */
+// Robust reconnect: backoff (1.5s → 15s cap), a max before showing
+// DISCONNECTED instead of an infinite retry loop, and an HTTP presence
+// fallback so the UI stays LIVE even when the WS won't connect.
 let ws = null;
+let wsRetries = 0;
+let wsTimer = null;
+let wsFallbackTimer = null;
+const WS_MAX_RETRIES = 5;
 function connectWS() {
+  if (wsTimer) { clearTimeout(wsTimer); wsTimer = null; }
   const base = (WS_BASE || location.origin).replace(/\/+$/, "");
   const proto = base.startsWith("https") ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${base.replace(/^https?:\/\//, "")}/ws`);
+  try {
+    ws = new WebSocket(`${proto}://${base.replace(/^https?:\/\//, "")}/ws`);
+  } catch (e) {
+    scheduleWSRetry();
+    return;
+  }
   ws.onmessage = (ev) => { try { handleEvent(JSON.parse(ev.data)); } catch (e) {} };
-  ws.onclose = () => { setPresence("DISCONNECTED"); setTimeout(connectWS, 1500); };
-  ws.onopen = () => { ws.send(JSON.stringify({ type: "ping" })); if (!state.running) setPresence("IDLE"); };
+  ws.onclose = () => {
+    wsRetries += 1;
+    if (wsRetries > WS_MAX_RETRIES) {
+      setPresence("DISCONNECTED");
+      startPresenceFallback();   // keep the UI live via HTTP polls
+      return;                    // no infinite reconnect loop
+    }
+    scheduleWSRetry();
+  };
+  ws.onopen = () => {
+    wsRetries = 0;
+    stopPresenceFallback();
+    try { ws.send(JSON.stringify({ type: "ping" })); } catch (e) {}
+    if (!state.running) setPresence("IDLE");
+  };
+}
+function scheduleWSRetry() {
+  const delay = Math.min(1500 * Math.pow(2, wsRetries - 1), 15000);
+  wsTimer = setTimeout(connectWS, delay);
+}
+function stopPresenceFallback() {
+  if (wsFallbackTimer) { clearInterval(wsFallbackTimer); wsFallbackTimer = null; }
+}
+// HTTP presence poll fallback: when WS is down we still show real state.
+function startPresenceFallback() {
+  if (wsFallbackTimer) return;
+  loadPresence();
+  wsFallbackTimer = setInterval(loadPresence, 4000);
 }
 
 let sentenceBuf = "";
@@ -1095,11 +1134,27 @@ async function loadEnrollStatus() {
     api("/api/voice/enroll/status?agent=phantom"),
     api("/api/voice/enroll/status?agent=coded"),
   ]);
-  $("enrollPhantomStatus").textContent = p.enrolled ? "✅ enrolled" : (p.engine.available ? "not enrolled" : "engine unavailable: " + (p.engine.reason || "").slice(0, 60));
-  $("enrollCodedStatus").textContent = c.enrolled ? "✅ enrolled" : (c.engine.available ? "not enrolled" : "engine unavailable");
-  $("speakerLockCb").checked = p.speaker_lock;
+  const fmt = (r) => r.enrolled ? "✅ enrolled" : (r.engine.available ? "not enrolled" : "⚠️ " + (r.engine.reason || "engine unavailable").slice(0, 80));
+  const pe = $("enrollPhantomStatus"); if (pe) pe.textContent = fmt(p);
+  const ce = $("enrollCodedStatus"); if (ce) ce.textContent = fmt(c);
+  const lock = $("speakerLockCb"); if (lock) lock.checked = p.speaker_lock;
+  // disable enroll buttons + tell the user WHY when the engine can't load
+  const pb = $("enrollPhantomBtn"); const cb = $("enrollCodedBtn");
+  const blocked = !p.engine.available;
+  if (pb) { pb.disabled = blocked; pb.title = blocked ? "voice engine unavailable — see status" : ""; }
+  if (cb) { cb.disabled = blocked; cb.title = blocked ? "voice engine unavailable — see status" : ""; }
 }
 async function enrollVoice(agent) {
+  // pre-check the engine so the user gets a clear message instead of silence
+  try {
+    const st = await api(`/api/voice/enroll/status?agent=${agent}`);
+    if (!st.engine || !st.engine.available) {
+      const why = (st.engine && st.engine.reason) || "voice engine unavailable";
+      toast("Voice enrollment unavailable: " + why.slice(0, 120), "err");
+      loadEnrollStatus();
+      return;
+    }
+  } catch (e) { /* let the loop surface errors */ }
   toast(`🎙 Speak 3 short phrases for ${agent}…`);
   for (let i = 1; i <= 3; i++) {
     $("voiceHint").textContent = `Enrollment ${i}/3 — speak now…`;
@@ -1112,8 +1167,9 @@ async function enrollVoice(agent) {
       method: "POST",
       body: b64 ? atob(b64) : "",
     }).catch((e) => ({ error: e.message }));
-    if (res.error) { toast("Enroll failed: " + res.error); return; }
-    if (res.enrolled) { toast(`✅ ${agent} voice enrolled`); break; }
+    if (res.error) { toast("Enroll failed: " + res.error, "err"); return; }
+    if (res.enrolled) { toast(`✅ ${agent} voice enrolled`, "ok"); break; }
+    else toast(`✓ sample ${i} captured (${res.samples || 1}/${res.samples_needed || 3})`, "ok");
   }
   $("voiceHint").textContent = "";
   loadEnrollStatus();
@@ -1390,15 +1446,21 @@ async function checkForUpdates() {
   updaterState = { state: "checking" }; renderUpdater();
   const res = await updater.check().catch((e) => ({ state: "error", message: String(e) }));
   updaterState = res || {}; renderUpdater();
-  if (updaterState.state === "available") {
-    toast(`⬆ Update v${updaterState.version} found — downloading…`);
+  const st = updaterState;
+  if (st.state === "available") {
+    toast(`⬆ Update v${st.version} found — downloading…`);
     updater.download();
-  } else if (updaterState.state === "ready") {
-    toast(`⬆ Update v${updaterState.version} ready — restart to install`);
-  } else if (updaterState.state === "up-to-date") {
-    toast(`✓ You're on the latest version — v${updaterState.version || updaterVersion}`, "ok");
-  } else if (updaterState.state === "error") {
-    toast("⬆ Update check failed: " + (updaterState.message || ""), "err");
+  } else if (st.state === "ready") {
+    toast(`⬆ Update v${st.version} downloaded — restart to install`, "ok");
+  } else if (st.state === "up-to-date") {
+    toast(`✓ You're on the latest — v${st.version || updaterVersion}`, "ok");
+  } else if (st.state === "error") {
+    const msg = String(st.message || "");
+    toast("⬆ Update check failed: " + (msg || "no detail"), "err");
+  } else if (st.state === "dev") {
+    toast("Dev mode — updates only in the packaged app", "err");
+  } else if (!st.state || st.state === "idle") {
+    toast("⬆ No update info returned — check the releases page", "err");
   }
 }
 window.checkForUpdates = checkForUpdates;
