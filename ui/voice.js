@@ -264,15 +264,19 @@ class PhantomVoice {
     if (level > SPEECH) {
       this._vadBuf.push(Date.now());
       if (this._vadBuf.length > 30) this._vadBuf.shift();
-      // barge-in: the moment the user speaks while we speak → stop and
-      // listen for their redirect (like two people talking). One hot frame
-      // = instant; jitter is filtered by the level threshold itself.
+      // NAME-GATED INTERRUPT (JARVIS-style): while speaking, he KEEPS
+      // TALKING until he hears his own name — then he stops and listens for
+      // the redirect ("Phantom, actually open Spotify"). He never cuts off
+      // mid-sentence on random sound.
       if (this.state === "SPEAKING" && this.micEnabled) {
-        if (this._hotFrames === undefined) this._hotFrames = 0;
-        this._hotFrames += 1;
-        if (this._hotFrames >= 1) {
-          this._hotFrames = 0;
-          this.bargeIn();
+        const now = Date.now();
+        if (now >= (this._interruptCooldown || 0)) {
+          this._hotFrames = (this._hotFrames || 0) + 1;
+          if (this._hotFrames >= 8) {           // sustained speech while he talks
+            this._hotFrames = 0;
+            this._interruptCooldown = now + 5000;
+            this._checkInterruptByName();
+          }
         }
       }
     } else {
@@ -846,6 +850,28 @@ class PhantomVoice {
       if (this._wakeActive) this._wakeRaf = requestAnimationFrame(tick);
     };
     this._wakeRaf = requestAnimationFrame(tick);
+  }
+
+  // While speaking, listen for his own name; when heard, stop and let the
+  // user redirect (server STT — works in Electron, no SpeechRecognition).
+  async _checkInterruptByName() {
+    try {
+      const wav = await this.captureWav(2.5);
+      if (!wav) return;
+      const fd = new FormData();
+      fd.append("audio", wav, "int.wav");
+      fd.append("language", "en");
+      const res = await fetch("/api/voice/stt", { method: "POST", body: fd });
+      if (!res.ok) return;
+      const j = await res.json();
+      const text = String(j.text || "").toLowerCase();
+      const mine = this.currentAgent === "coded" ? "coded" : "phantom";
+      const m = text.match(/(^|\s)(phantom|coded)(\s|$|\.|,|!|\?)/);
+      if (m && m[2] === mine) {
+        this.bargeIn();               // stop speaking, return to listening
+        this.onInterrupt?.();
+      }
+    } catch (e) { /* transient */ }
   }
 
   async _checkWakeByStt() {

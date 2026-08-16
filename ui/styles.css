@@ -578,3 +578,8 @@ input[type="time"] { width: 130px; color-scheme: dark; }
 .speak-replay { float: right; margin-left: 8px; background: none; border: 1px solid var(--border);
   border-radius: 8px; color: var(--accent); font-size: 12px; padding: 2px 7px; cursor: pointer; opacity: .7; }
 .speak-replay:hover { opacity: 1; border-color: var(--accent); }
+
+/* multi-task status bar */
+#multiRunBar { margin-top: 10px; padding: 6px 14px; border-radius: 20px;
+  background: rgba(110,168,254,.12); border: 1px solid rgba(110,168,254,.35);
+  color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .5px; text-align: center; }

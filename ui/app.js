@@ -19,6 +19,10 @@ const state = {
   // exposed for HUD/session badge (module-scope const is not on window)
   agent: "phantom", conversations: [], currentConv: null,
   runId: null, running: false, killEngaged: false, voiceOn: true,
+  // MULTI-TASKING: per-agent run state — Phantom and Coded can work at the
+  // same time on separate tasks, and each can command the other.
+  runs: {},            // agent -> { runId, running }
+  convs: {},           // agent -> current conversation id
   pendingConfirmations: {}, userName: localStorage.getItem("phantom.userName") || "",
   micLevel: 0, transcript: [],
 };
@@ -209,42 +213,44 @@ function pushChunkToSpeech(text) {
 
 function handleEvent(payload) {
   const { event, data, agent, run_id } = payload;
+  // MULTI-TASK: events are routed per agent — both can stream at once.
+  const run = agentRun(agent);
+  const isFocused = agent === state.agent && run_id === state.runId;
   switch (event) {
     case "agent.chunk":
-      if (run_id === state.runId) {
-        appendChunk(data.text);
+      if (run_id === run.runId) {
+        if (isFocused) appendChunk(data.text);
         if (state.voiceOn) pushChunkToSpeech(data.text);
       }
       break;
     case "agent.run_started":
-      if (run_id === state.runId) {
-        state.running = true; setPresence("THINKING");
-        showRunIndicator(); setContextLine(data);
+      if (run_id === run.runId) {
+        setAgentRunning(agent, run_id);
+        if (isFocused) { setPresence("THINKING"); showRunIndicator(); setContextLine(data); }
       }
       break;
     case "tool.started":
-      if (run_id === state.runId) setPresence("EXECUTING");
+      if (isFocused) setPresence("EXECUTING");
       addToolCard(data, "started"); addActivity("tool", `🔧 ${data.name}`, "tool-start");
       break;
     case "tool.completed":
-      if (run_id === state.runId) setPresence("THINKING");
+      if (isFocused) setPresence("THINKING");
       updateToolCard(data, true);
       addActivity("tool", `✓ ${data.name} · ${(data.latency_ms || 0).toFixed(0)}ms`, "tool-ok");
       break;
     case "tool.error":
-      if (run_id === state.runId) setPresence("THINKING");
+      if (isFocused) setPresence("THINKING");
       updateToolCard(data, false);
       addActivity("tool", `✗ ${data.name}: ${data.message}`, "tool-err");
       break;
     case "agent.run_completed":
-      if (run_id === state.runId) {
-        state.running = false; hideRunIndicator(); setContextLine(null);
-        finalizeAssistantMessage(data);
-        loadConversations();
+      if (run_id === run.runId) {
+        setAgentDone(agent);
+        if (isFocused) { hideRunIndicator(); setContextLine(null); finalizeAssistantMessage(data); loadConversations(); }
         flushSpeech();
         if (data.status === "ok" && state.voiceOn && data.content && voice.mode !== "private") {
-          voice.speak(data.content); // full reply in case chunks were missed
-        } else {
+          voice.speak(data.content); // voice-first: both agents' replies are spoken
+        } else if (!anyRunning()) {
           resumeListeningAfterReply();
         }
       }
@@ -309,8 +315,8 @@ function handleEvent(payload) {
 
 function resumeListeningAfterReply() {
   if (voice.mode === "conversation" && !state.killEngaged && voice.micEnabled) {
-    setTimeout(() => { if (!state.running) voice.startListening(); }, 350);
-  } else {
+    setTimeout(() => { if (!anyRunning()) voice.startListening(); }, 350);
+  } else if (!anyRunning()) {
     setPresence("IDLE");
   }
 }
@@ -470,27 +476,30 @@ function hideRunIndicator() {
 /* ============================== CHAT ============================== */
 async function sendMessage(text, opts = {}) {
   const clean = String(text || "").trim();
-  if (!clean || state.running) return;
+  // MULTI-TASK: only block if THIS agent is busy — Phantom can be working
+  // while you ask Coded something, and vice versa.
+  const target = (opts && opts.agent) || state.agent;
+  if (!clean || agentRun(target).running) return;
   if (state.killEngaged) { toast("⛔ Kill switch is engaged"); return; }
   if (opts.via === "voice") {
     voice.stopListening(); // pause recognition while thinking/replying
   }
-  addMessageEl("user", clean);
+  if (target === state.agent) addMessageEl("user", clean);
   setPresence("THINKING");
   try {
-    const res = await api(`/api/agents/${state.agent}/chat`, {
-      body: { text: clean, conversation_id: state.currentConv || "", session_id: "web" },
+    const convId = state.convs[target] || "";
+    const res = await api(`/api/agents/${target}/chat`, {
+      body: { text: clean, conversation_id: convId, session_id: "web" },
     });
-    state.runId = res.run_id;
-    state.currentConv = res.conversation_id;
+    state.convs[target] = res.conversation_id;
+    if (target === state.agent) state.currentConv = res.conversation_id;
     activeStreamEl = null;
     sentenceBuf = "";
     loadConversations();
   } catch (err) {
-    state.running = false;
-    addMessageEl("error", `Could not start: ${err.message}`);
-    setPresence("ERROR");
-    setTimeout(() => setPresence("IDLE"), 2500);
+    setAgentDone(target);
+    if (target === state.agent) { addMessageEl("error", `Could not start: ${err.message}`); setPresence("ERROR"); setTimeout(() => setPresence("IDLE"), 2500); }
+    else toast("✗ " + (AGENTS[target]?.name || target) + ": " + err.message, "err");
   }
 }
 
@@ -551,7 +560,7 @@ async function newConversation() {
 }
 
 function switchPersona(agent) {
-  if (state.running) { toast("Wait for the current run to finish"); return; }
+  if (agentRun(agent).running) { toast(`${AGENTS[agent]?.name || agent} is working — wait for it to finish`); return; }
   state.agent = agent;
   voice.currentAgent = agent;   // replies use this persona's voice
   document.querySelectorAll(".seg").forEach((b) => b.classList.toggle("active", b.dataset.persona === agent));
