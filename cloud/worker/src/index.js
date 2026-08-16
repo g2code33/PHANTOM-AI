@@ -22,6 +22,8 @@
  * tools, no health vault. That is the design (portable = safe by construction).
  */
 
+import { MOBILE_HTML } from "./mobile_embed.js";
+
 const DEFAULT_MODEL = "nvidia/llama-3.3-70b-instruct";
 const NVDIA_BASE = "https://integrate.api.nvidia.com/v1";
 
@@ -116,9 +118,14 @@ async function execTool(name, args, env) {
 // ---------------------------------------------------------------------------
 // NVIDIA chat (non-streaming for the Worker; the app shows typing state)
 // ---------------------------------------------------------------------------
+async function activeModel(env) {
+  const kv = (env.PHANTOM_KEYS && (await env.PHANTOM_KEYS.get("model"))) || "";
+  return kv || env.NVIDIA_MODEL || DEFAULT_MODEL;
+}
+
 async function chatOnce(messages, tools, env) {
   const body = {
-    model: env.NVIDIA_MODEL || DEFAULT_MODEL,
+    model: await activeModel(env),
     messages,
     temperature: 0.4,
     max_tokens: 1200,
@@ -183,17 +190,11 @@ async function handle(request, env) {
 
   if (request.method === "OPTIONS") return json({ ok: true });
 
-  // bare root: informational (no data, no auth) so a browser visit isn't a
-  // confusing 401 — this is an API, not a page
-  if (path === "/" && request.method === "GET") {
-    return json({
-      service: "Phantom portable worker",
-      ok: true,
-      message: "This is the Phantom cloud API, not a website. Open the companion "
-        + "in the app (PC: Settings -> Portable Phantom) or add /mobile via the "
-        + "PC's Cloudflare tunnel for the phone UI.",
-      endpoints: ["/api/chat", "/api/voice/stt", "/api/memory", "/api/profile",
-                  "/api/reminders", "/api/briefing", "/api/status"],
+  // the fixed workers.dev link IS the phone companion: serve the embedded
+  // mobile UI at / and /mobile (public — no secrets in it)
+  if ((path === "/" || path === "/mobile") && request.method === "GET") {
+    return new Response(MOBILE_HTML, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   }
 
@@ -205,6 +206,7 @@ async function handle(request, env) {
                   profile_name: (profile && profile.display_name) || "User",
                   has_nvidia: !!env.NVIDIA_API_KEY,
                   has_deepgram: !!env.DEEPGRAM_API_KEY,
+                  model: await activeModel(env),
                   keys: {
                     nvidia: (await env.PHANTOM_KEYS.get("nvidia")) ? "configured" : "not set",
                     deepgram: (await env.PHANTOM_KEYS.get("deepgram")) ? "configured" : "not set",
@@ -219,16 +221,19 @@ async function handle(request, env) {
     const body = await request.json();
     const nv = String(body.nvidia_key || "").trim();
     const dg = String(body.deepgram_key || "").trim();
+    const model = String(body.model || "").trim();
     const clearNv = !!body.clear_nvidia;
     const clearDg = !!body.clear_deepgram;
     let changes = [];
     if (nv) { await env.PHANTOM_KEYS.put("nvidia", nv); changes.push("nvidia"); }
     if (dg) { await env.PHANTOM_KEYS.put("deepgram", dg); changes.push("deepgram"); }
+    if (model) { await env.PHANTOM_KEYS.put("model", model); changes.push("model"); }
     if (clearNv) { await env.PHANTOM_KEYS.delete("nvidia"); changes.push("nvidia(cleared)"); }
     if (clearDg) { await env.PHANTOM_KEYS.delete("deepgram"); changes.push("deepgram(cleared)"); }
     return json({ ok: true, updated: changes, masked: {
       nvidia: (await env.PHANTOM_KEYS.get("nvidia")) ? "configured" : "not set",
       deepgram: (await env.PHANTOM_KEYS.get("deepgram")) ? "configured" : "not set",
+      model: (await env.PHANTOM_KEYS.get("model")) || env.NVIDIA_MODEL || DEFAULT_MODEL,
     } });
   }
   // ---- chat (with cloud tool loop, max 4 iterations) ----

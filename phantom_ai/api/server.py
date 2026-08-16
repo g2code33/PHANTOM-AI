@@ -1581,6 +1581,8 @@ def create_app(app: App) -> FastAPI:
             payload["nvidia_key"] = str(body["nvidia_key"]).strip()
         if body.get("deepgram_key"):
             payload["deepgram_key"] = str(body["deepgram_key"]).strip()
+        if body.get("model"):
+            payload["model"] = str(body["model"]).strip()
         if body.get("clear_nvidia"):
             payload["clear_nvidia"] = True
         if body.get("clear_deepgram"):

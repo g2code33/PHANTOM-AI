@@ -189,7 +189,8 @@ await t("config/keys sets + masks cloud keys", async () => {
     { method: "POST", body: { nvidia_key: "nvapi-cloud-123", deepgram_key: "dg-cloud-456" } }), e);
   const j = await r.json();
   assert.equal(j.ok, true);
-  assert.deepEqual(j.masked, { nvidia: "configured", deepgram: "configured" });
+  assert.deepEqual(j.masked, { nvidia: "configured", deepgram: "configured",
+                               model: "nvidia/llama-3.3-70b-instruct" });
   const st = await handle(req("https://phantom.local/api/status"), e);
   const sj = await st.json();
   assert.equal(sj.keys.nvidia, "configured");
@@ -226,4 +227,36 @@ await t("chat uses app-stored nvidia key", async () => {
     await handle(req("https://phantom.local/api/chat", { method: "POST", body: { text: "hi" } }), e);
     assert.match(used, /nvapi-from-app/);
   } finally { globalThis.fetch = realFetch; }
+});
+
+// cloud model override (set from the app) + the fixed-link mobile UI
+await t("cloud model override + mobile UI served at root", async () => {
+  const e = makeEnv();
+  const set = await handle(req("https://phantom.local/api/config/keys",
+    { method: "POST", body: { model: "nvidia/llama-3.1-8b-instruct" } }), e);
+  const sj = await set.json();
+  assert.equal(sj.masked.model, "nvidia/llama-3.1-8b-instruct");
+  const st = await handle(req("https://phantom.local/api/status"), e);
+  assert.equal((await st.json()).model, "nvidia/llama-3.1-8b-instruct");
+  // chat must use the overridden model
+  const realFetch = globalThis.fetch;
+  let usedModel = "";
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("integrate.api.nvidia.com")) {
+      usedModel = JSON.parse(init.body).model;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "hi" } }] }));
+    }
+    return realFetch(url, init);
+  };
+  const chat = await handle(req("https://phantom.local/api/chat",
+    { method: "POST", body: { text: "hello" } }), e);
+  assert.equal(chat.status, 200);
+  assert.equal(usedModel, "nvidia/llama-3.1-8b-instruct");
+  globalThis.fetch = realFetch;
+  // /mobile serves the embedded companion UI (html)
+  const mob = await handle(req("https://phantom.local/mobile"), e);
+  assert.equal(mob.status, 200);
+  const html = await mob.text();
+  assert.match(html, /<!doctype html/i);
+  assert.match(html, /Connect to your PC/);
 });

@@ -166,6 +166,10 @@ set_secret DEEPGRAM_API_KEY
 set_secret PHANTOM_CLOUD_TOKEN
 
 # 4) deploy
+# embed the mobile UI into the Worker so the workers.dev link IS the companion
+echo " Step 3.5 — embedding mobile UI…"
+node build-embed.mjs || { echo "   ❌ could not build mobile embed"; exit 1; }
+
 echo " Step 4 — deploying…"
 DEPLOY_OUT=$(wr deploy 2>&1 | tee /tmp/phantom-deploy.log)
 echo "$DEPLOY_OUT"

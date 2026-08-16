@@ -1046,6 +1046,8 @@ async function loadSettings() {
         <span class="muted small">checks the worker is reachable and the token works</span></div>
       <div class="row"><label>Cloud NVIDIA key</label><input type="password" id="cloudNvidia" placeholder="same NVIDIA key as your PC (nvapi-…)"></div>
       <div class="row"><label>Cloud Deepgram key</label><input type="password" id="cloudDeepgram" placeholder="same Deepgram key as your PC"></div>
+      <div class="row"><label>Cloud model</label><input type="text" id="cloudModel" placeholder="nvidia/llama-3.3-70b-instruct (default)" title="NVIDIA model the cloud Phantom uses when your PC is off. Leave empty for the default.">
+        <span class="muted small" id="cloudModelHint"></span></div>
       <div class="row">
         <button class="btn" onclick="saveCloud()">Save config</button>
         <button class="btn" onclick="saveCloudKeys()">Save keys</button>
@@ -1523,14 +1525,18 @@ window.saveCloud = async () => {
 window.saveCloudKeys = async () => {
   const nv = $("cloudNvidia").value.trim();
   const dg = $("cloudDeepgram").value.trim();
+  const model = $("cloudModel").value.trim();
   const body = {};
   if (nv) body.nvidia_key = nv;
   if (dg) body.deepgram_key = dg;
-  if (!Object.keys(body).length) { toast("Paste a key first"); return; }
+  if (model) body.model = model;
+  if (!Object.keys(body).length) { toast("Paste a key or model first"); return; }
   try {
     const r = await api("/api/cloud/keys", { body });
     $("cloudNvidia").value = ""; $("cloudDeepgram").value = "";
-    toast("Cloud keys saved (masked) — " + JSON.stringify(r.masked || {}));
+    toast("Cloud config saved (masked) — " + JSON.stringify(r.masked || {}));
+    const hint = $("cloudModelHint");
+    if (hint) hint.textContent = (r.masked && r.masked.model) ? "active: " + r.masked.model : "";
     loadSettings();
   } catch (e) { toast("Error: " + e.message); }
 };
