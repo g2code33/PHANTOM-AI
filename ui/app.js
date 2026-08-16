@@ -268,10 +268,12 @@ function handleEvent(payload) {
     case "confirmation.requested":
       if (data.confirmation) state.pendingConfirmations[data.confirmation.id] = data;
       showConfirmation(data);
+      loadApprovals();  // keep the Approvals tab in sync
       break;
     case "confirmation.decided":
       if (data.confirmation) delete state.pendingConfirmations[data.confirmation.id];
       hideConfirmation(data.confirmation && data.confirmation.id);
+      loadApprovals();
       break;
     case "notification.new":
       toast(`🔔 ${data.notification?.title || "Notification"}`);
@@ -577,6 +579,7 @@ function switchPanel(panel) {
   if (panel === "tasks") loadTasks();
   if (panel === "audit") { loadAuditEvents(); loadAudit(); }
   if (panel === "permissions") loadPermissions();
+  if (panel === "approvals") loadApprovals();
   if (panel === "settings") loadSettings();
 }
 
@@ -940,6 +943,54 @@ async function loadAudit() {
     list.appendChild(d);
   }
 }
+
+async function loadApprovals() {
+  try {
+    const res = await api("/api/confirmations");
+    const list = res.confirmations || [];
+    const badge = $("approvalsBadge");
+    if (badge) {
+      badge.textContent = list.length;
+      badge.classList.toggle("hidden", list.length === 0);
+    }
+    const el = $("approvalsList");
+    if (!el) return;
+    el.innerHTML = "";
+    if (!list.length) {
+      el.innerHTML = `<div class="muted small">No pending approvals — everything is decided. 🎉</div>`;
+      return;
+    }
+    for (const c of list) {
+      const card = document.createElement("div");
+      card.className = "card";
+      const agentEmoji = AGENTS[c.agent]?.emoji || "🤖";
+      const args = Object.entries(c.arguments || {}).slice(0, 4)
+        .map(([k, v]) => `<span class="muted small">${esc(k)}: ${esc(String(v).slice(0, 80))}</span>`).join(" · ");
+      card.innerHTML = `
+        <div class="card-title">${agentEmoji} ${esc(c.agent)} · <span class="pill warn">${esc(c.tool_name)}</span>
+          <span class="muted small">${timeAgo(c.requested_at)}</span></div>
+        <div class="muted small" style="margin:4px 0">${esc(c.reason || "")}</div>
+        ${args ? `<div class="muted small mono" style="margin:4px 0">${args}</div>` : ""}
+        <div class="muted small" style="margin:2px 0">Impact: ${esc(c.impact || "")} · Risk: ${esc(c.risk || "")}</div>
+        <div class="btnRow" style="margin-top:8px">
+          <button class="btn btn-primary" onclick="decideApproval('${c.id}', true)">Approve</button>
+          <button class="btn btn-danger" onclick="decideApproval('${c.id}', false)">Deny</button>
+        </div>`;
+      el.appendChild(card);
+    }
+  } catch (e) {
+    const el = $("approvalsList");
+    if (el) el.innerHTML = `<div class="muted small">Could not load approvals: ${esc(e.message)}</div>`;
+  }
+}
+window.decideApproval = async (cid, approve) => {
+  try {
+    await api(`/api/confirmations/${cid}/${approve ? "approve" : "deny"}`, { method: "POST", body: { decided_by: "user" } });
+    toast(approve ? "✓ Approved" : "✗ Denied", approve ? "ok" : "err");
+    loadApprovals();
+    hideConfirmation(cid);
+  } catch (e) { toast("✗ " + e.message, "err"); }
+};
 
 async function loadPermissions() {
   const agent = $("permAgent").value;
@@ -2242,6 +2293,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadPresence();
   await loadStatus();
   if (typeof wireHudClickables === "function") wireHudClickables();  // home gauges clickable from first paint
+  loadApprovals();  // badge count on the drawer
   await refreshNotifications();
   switchPersona("phantom");
   newConversation();

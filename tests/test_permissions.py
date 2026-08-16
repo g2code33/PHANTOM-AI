@@ -111,3 +111,31 @@ async def test_approval_is_scoped_to_single_action(app, workdir):
             "phantom", "delete_file", {"path": f2}, "c", "s",
             interactive=False, confirm_timeout=0.001)
     assert os.path.exists(f2)
+
+
+async def _perm_client(app):
+    import httpx
+    from phantom_ai.api.server import create_app
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(app)),
+                             base_url="http://test")
+
+
+async def test_pending_confirmations_list_and_decide_later(app):
+    """Skipped approvals persist — they can be listed and decided later."""
+    instance, _state, _wd = app
+    # create a pending confirmation directly via the manager
+    row = await instance.confirmations.create(
+        agent="phantom", conversation_id="c1", tool_name="write_file",
+        arguments={"path": "/tmp/x.txt"}, reason="test",
+        impact="writes a file", risk="high")
+    # list across agents (the Approvals tab)
+    async with await _perm_client(instance) as c:
+        res = await c.get("/api/confirmations")
+        ids = [x["id"] for x in res.json()["confirmations"]]
+        assert row["id"] in ids
+        # decide it later
+        r = await c.post(f"/api/confirmations/{row['id']}/approve",
+                         json={"decided_by": "user"})
+        assert r.status_code == 200
+        res2 = await c.get("/api/confirmations")
+        assert row["id"] not in [x["id"] for x in res2.json()["confirmations"]]
