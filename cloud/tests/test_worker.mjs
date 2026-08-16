@@ -39,7 +39,7 @@ function makeEnv() {
     NVIDIA_API_KEY: "nvapi-test",
     DEEPGRAM_API_KEY: "dg-test",
     PHANTOM_CLOUD_TOKEN: "",
-    NVIDIA_MODEL: "nvidia/llama-3.3-70b-instruct",
+    NVIDIA_MODEL: "meta/llama-3.3-70b-instruct",
   };
 }
 
@@ -190,7 +190,7 @@ await t("config/keys sets + masks cloud keys", async () => {
   const j = await r.json();
   assert.equal(j.ok, true);
   assert.deepEqual(j.masked, { nvidia: "configured", deepgram: "configured",
-                               model: "nvidia/llama-3.3-70b-instruct" });
+                               model: "meta/llama-3.3-70b-instruct" });
   const st = await handle(req("https://phantom.local/api/status"), e);
   const sj = await st.json();
   assert.equal(sj.keys.nvidia, "configured");

@@ -7,7 +7,7 @@
    (or export `PHANTOM_NVIDIA_API_KEY` / `CODED_NVIDIA_API_KEY` before starting).
    Keys are stored in `data/secrets.json` (chmod 600) or read from the environment; they are
    never shown in full in the UI and never written into conversation records.
-3. Choose a model per agent (defaults: `nvidia/llama-3.3-70b-instruct`). Any NVIDIA NIM-compatible
+3. Choose a model per agent (defaults: `meta/llama-3.3-70b-instruct`). Any NVIDIA NIM-compatible
    model works; models without native function calling automatically fall back to the
    text-based `<tool_call>` protocol.
 

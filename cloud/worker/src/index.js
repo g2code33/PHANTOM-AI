@@ -26,7 +26,7 @@ import { MOBILE_HTML } from "./mobile_embed.js";
 import { MANIFEST, ICONS } from "./mobile_assets.js";
 import { SW_JS } from "./sw_embed.js";
 
-const DEFAULT_MODEL = "nvidia/llama-3.3-70b-instruct";
+const DEFAULT_MODEL = "meta/llama-3.3-70b-instruct";
 const NVDIA_BASE = "https://integrate.api.nvidia.com/v1";
 
 const SYSTEM_PROMPT = `You are PHANTOM — the user's personal AI companion (portable/cloud mode).

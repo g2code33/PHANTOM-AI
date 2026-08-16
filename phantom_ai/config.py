@@ -71,10 +71,10 @@ BASE_URL_ENV = {
 }
 
 DEFAULT_MODELS = {
-    "phantom": os.environ.get("PHANTOM_DEFAULT_MODEL", "nvidia/llama-3.3-70b-instruct"),
-    "coded": os.environ.get("CODED_DEFAULT_MODEL", "nvidia/llama-3.3-70b-instruct"),
-    "evolution": os.environ.get("EVOLUTION_DEFAULT_MODEL", "nvidia/llama-3.3-70b-instruct"),
-    "health": os.environ.get("HEALTH_DEFAULT_MODEL", "nvidia/llama-3.3-70b-instruct"),
+    "phantom": os.environ.get("PHANTOM_DEFAULT_MODEL", "meta/llama-3.3-70b-instruct"),
+    "coded": os.environ.get("CODED_DEFAULT_MODEL", "meta/llama-3.3-70b-instruct"),
+    "evolution": os.environ.get("EVOLUTION_DEFAULT_MODEL", "meta/llama-3.3-70b-instruct"),
+    "health": os.environ.get("HEALTH_DEFAULT_MODEL", "meta/llama-3.3-70b-instruct"),
 }
 
 AGENTS = ("phantom", "coded")

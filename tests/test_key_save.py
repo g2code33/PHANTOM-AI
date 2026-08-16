@@ -48,7 +48,7 @@ def _mock_app() -> FastAPI:
     @app.get("/v1/models")
     async def nvidia_models(request: Request):
         if request.headers.get("Authorization") == f"Bearer {VALID_NVIDIA}":
-            return {"object": "list", "data": [{"id": "nvidia/llama-3.3-70b-instruct"}]}
+            return {"object": "list", "data": [{"id": "meta/llama-3.3-70b-instruct"}]}
         return JSONResponse(status_code=401, content={"error": {"message": "unauthorized"}})
 
     @app.get("/projects")

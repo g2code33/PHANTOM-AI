@@ -1046,7 +1046,7 @@ async function loadSettings() {
         <span class="muted small">checks the worker is reachable and the token works</span></div>
       <div class="row"><label>Cloud NVIDIA key</label><input type="password" id="cloudNvidia" placeholder="same NVIDIA key as your PC (nvapi-…)"></div>
       <div class="row"><label>Cloud Deepgram key</label><input type="password" id="cloudDeepgram" placeholder="same Deepgram key as your PC"></div>
-      <div class="row"><label>Cloud model</label><input type="text" id="cloudModel" placeholder="nvidia/llama-3.3-70b-instruct (default)" title="NVIDIA model the cloud Phantom uses when your PC is off. Leave empty for the default.">
+      <div class="row"><label>Cloud model</label><input type="text" id="cloudModel" placeholder="meta/llama-3.3-70b-instruct (default)" title="NVIDIA model the cloud Phantom uses when your PC is off. Leave empty for the default.">
         <span class="muted small" id="cloudModelHint"></span></div>
       <div class="row">
         <button class="btn" onclick="saveCloud()">Save config</button>

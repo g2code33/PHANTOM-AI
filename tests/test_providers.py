@@ -22,7 +22,7 @@ from phantom_ai.providers.nvidia import NVIDIAProvider
 @pytest.fixture
 def provider(mock_server):
     state, base_url = mock_server
-    prov = NVIDIAProvider(api_key="nvapi-test-key", model="nvidia/llama-3.3-70b-instruct",
+    prov = NVIDIAProvider(api_key="nvapi-test-key", model="meta/llama-3.3-70b-instruct",
                           base_url=base_url)
     yield prov, state
     asyncio.get_event_loop().run_until_complete(prov.aclose())
@@ -35,7 +35,7 @@ async def test_streaming_concatenates_content(mock_server):
         return {"content": "Hello from NVIDIA mock!", "tool_calls": []}
 
     state.handler = handler
-    prov = NVIDIAProvider(api_key="nvapi-test-key", model="nvidia/llama-3.3-70b-instruct",
+    prov = NVIDIAProvider(api_key="nvapi-test-key", model="meta/llama-3.3-70b-instruct",
                           base_url=base_url)
     try:
         parts = []
@@ -48,7 +48,7 @@ async def test_streaming_concatenates_content(mock_server):
         assert "".join(parts) == "Hello from NVIDIA mock!"
         assert done is not None
         assert done.usage.total_tokens == 59
-        assert done.model == "nvidia/llama-3.3-70b-instruct"
+        assert done.model == "meta/llama-3.3-70b-instruct"
     finally:
         await prov.aclose()
 
@@ -62,7 +62,7 @@ async def test_tool_call_streaming(mock_server):
                                                             "arguments": {"path": "/tmp/x"}}}]}
 
     state.handler = handler
-    prov = NVIDIAProvider(api_key="nvapi-test-key", model="nvidia/llama-3.3-70b-instruct",
+    prov = NVIDIAProvider(api_key="nvapi-test-key", model="meta/llama-3.3-70b-instruct",
                           base_url=base_url)
     try:
         calls = []
