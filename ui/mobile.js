@@ -92,6 +92,17 @@ function setMode(m) {
   applyMode();
   detectAndConnect();
 }
+// hard refresh: bust the service-worker cache + reload fresh
+$("mRefreshBtn").onclick = async () => {
+  toastHint("refreshing…");
+  try {
+    const regs = await (navigator.serviceWorker ? navigator.serviceWorker.getRegistrations() : []);
+    await Promise.all(regs.map((r) => r.unregister()));
+  } catch (e) {}
+  try { caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))); } catch (e) {}
+  location.reload();
+};
+
 $("mModeToggle").onclick = () => {
   const order = ["auto", "pc", "portable"];
   setMode(order[(order.indexOf(S.mode) + 1) % order.length]);
