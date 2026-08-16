@@ -26,3 +26,6 @@ build/pyinstaller-work/
 
 # Cloudflare local deploy override (real KV ids — never commit)
 cloud/worker/wrangler.local.toml
+
+# Python packaging artifacts
+*.egg-info/
