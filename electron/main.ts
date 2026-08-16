@@ -79,6 +79,10 @@ function sendUpdateStatus(status: Record<string, unknown>) {
 // self-update wiring
 // --------------------------------------------------------------------------
 
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 function initUpdater() {
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
@@ -94,7 +98,7 @@ function initUpdater() {
   autoUpdater.on("update-downloaded", (info) =>
     sendUpdateStatus({ state: "ready", version: info.version }));
   autoUpdater.on("error", (err) =>
-    sendUpdateStatus({ state: "error", message: String(err?.message || err) }));
+    sendUpdateStatus({ state: "error", message: errMsg(err) }));
 
   ipcMain.handle("update:check", async () => {
     if (!app.isPackaged) {
@@ -108,7 +112,7 @@ function initUpdater() {
       // "checking" (which stuck the button on 'checking for updates…').
       return { ...updateStatus, result: true };
     } catch (err) {
-      return { state: "error", message: String(err?.message || err) };
+      return { state: "error", message: errMsg(err) };
     }
   });
 
@@ -249,7 +253,11 @@ function startBackend(): Promise<number> {
       cwd: root,
       env: {
         ...process.env,
-        PHAI_HOST: "127.0.0.1",
+        // bind to all interfaces so the iPhone companion can reach the
+        // backend over the LAN (http://<PC-IP>:<port>). The Electron window
+        // itself still connects via 127.0.0.1. Set PHAI_HOST=127.0.0.1 to
+        // force localhost-only if you don't want LAN access.
+        PHAI_HOST: process.env.PHAI_HOST || "0.0.0.0",
         PHAI_PORT: String(preferredPort),
         PHAI_APP_VERSION: app.getVersion(),
         PHAI_DATA_DIR: path.join(app.getPath("userData"), "data"),
