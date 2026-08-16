@@ -429,28 +429,21 @@ body.hud-low .strip-dot { animation: none; }
 .hud-panel-val.big { font-size: 13px; letter-spacing: .5px; }
 .hud-graph { display: block; width: 100%; height: 64px; background: rgba(8,12,24,.55); border-radius: 8px; }
 
-/* top bar */
-#hudTop {
-  position: fixed; top: 0; left: 0; right: 0; z-index: 30;
-  display: flex; justify-content: space-between; align-items: flex-start;
-  padding: 14px 22px; pointer-events: none;
-}
-#sessionBadge { display: flex; align-items: center; gap: 10px; pointer-events: auto; }
-.avatar {
-  width: 40px; height: 40px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 18px; font-weight: 700;
-  background: radial-gradient(circle at 35% 30%, #2c4a7c, #12203c 70%);
-  border: 1px solid rgba(110,168,254,.5);
-  box-shadow: 0 0 18px rgba(110,168,254,.35);
-}
-.session-text { line-height: 1.25; }
-#sessionOs { font-size: 12px; font-weight: 800; letter-spacing: 2.5px; color: var(--text); }
-#sessionVer { font-size: 10px; color: var(--accent); font-family: "SFMono-Regular", Consolas, monospace; }
-#clockBlock { text-align: right; pointer-events: auto; }
-#clockTime { font-size: 30px; font-weight: 300; letter-spacing: 2px; color: var(--text); font-variant-numeric: tabular-nums; text-shadow: 0 0 18px rgba(110,168,254,.35); }
-#clockDate { letter-spacing: 1px; }
+/* session badge + clock, merged INTO the topbar (no more overlap) */
+#sessionBadge { display: flex; align-items: center; gap: 8px; margin-left: 14px; padding-left: 14px; border-left: 1px solid rgba(110,168,254,.2); }
+#sessionBadge .avatar { width: 26px; height: 26px; font-size: 12px; }
+#sessionBadge .session-text { line-height: 1.1; }
+#sessionOs { font-size: 10px; font-weight: 800; letter-spacing: 1.5px; color: var(--text); }
+#sessionVer { font-size: 9px; color: var(--accent); font-family: "SFMono-Regular", Consolas, monospace; }
+#sessionUser { font-size: 9px; }
+#clockBlock { text-align: right; margin-left: 8px; line-height: 1.1; }
+#clockTime { font-size: 20px; font-weight: 300; letter-spacing: 1px; color: var(--text); font-variant-numeric: tabular-nums; text-shadow: 0 0 14px rgba(110,168,254,.3); }
+#clockDate { font-size: 9px; letter-spacing: .5px; }
+/* keep the header from overflowing on narrow windows */
+#topbar { flex-wrap: wrap; row-gap: 6px; }
+#topControls { flex-wrap: wrap; row-gap: 6px; }
 
+/* side columns */
 /* side columns */
 #hudLeft { position: fixed; left: 18px; top: 50%; transform: translateY(-50%); z-index: 25; display: flex; flex-direction: column; gap: 12px; }
 #hudRight { position: fixed; right: 18px; top: 50%; transform: translateY(-50%); z-index: 25; display: flex; flex-direction: column; gap: 12px; }
@@ -544,3 +537,17 @@ body[data-state] #stateLabel, body[data-state] #stateSub { transition: color .3s
 .panel-head-row h3 { margin: 0; }
 
 input[type="time"] { width: 130px; color-scheme: dark; }
+
+/* ---------------- HUD detail modal (clickable gauges) ---------------- */
+.hud-clickable { cursor: pointer; }
+.hud-clickable:hover { border-color: rgba(110,168,254,.5) !important; }
+.hud-modal { position: fixed; inset: 0; z-index: 300; background: rgba(4,6,12,.7); display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+.hud-modal-card { width: min(560px, 92vw); max-height: 82vh; display: flex; flex-direction: column; background: linear-gradient(160deg, rgba(20,30,54,.96), rgba(10,16,30,.98)); border: 1px solid rgba(110,168,254,.3); border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,.6); overflow: hidden; }
+.hud-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid rgba(110,168,254,.15); font-weight: 700; letter-spacing: 1px; }
+.hud-modal-body { padding: 12px 16px; overflow-y: auto; }
+.hud-modal-body pre { white-space: pre-wrap; word-break: break-word; }
+.hud-modal-foot { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid rgba(110,168,254,.15); }
+
+/* transcript header (current chat + chats menu button) */
+.transcript-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px 2px; border-bottom: 1px solid rgba(110,168,254,.12); margin-bottom: 4px; }
+#currentChatLabel { letter-spacing: 1px; }
