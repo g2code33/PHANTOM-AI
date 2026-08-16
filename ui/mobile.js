@@ -224,7 +224,9 @@ async function sendChat(text) {
     } catch (e) { addChatMsg("assistant", "⚠️ " + e.message); }
     return;
   }
-  // pc mode: start a run + poll the conversation for the reply
+  // pc mode: start a run + poll the conversation for the reply.
+  // MULTI-TASK: each agent polls its own run — Phantom can be replying while
+  // you send Coded a separate task.
   addChatMsg("assistant", "");
   const list = $("chatList");
   if (list.lastElementChild) list.lastElementChild.classList.add("typing");
@@ -232,15 +234,15 @@ async function sendChat(text) {
     const cid = S.convByAgent[S.agent] || "";
     const started = await api(`/api/agents/${S.agent}/chat`, { body: { text: clean, conversation_id: cid, session_id: "mobile" } });
     S.convByAgent[S.agent] = started.conversation_id;
-    await pollReply(started.conversation_id, started.run_id);
+    await pollReply(S.agent, started.conversation_id, started.run_id);
   } catch (e) {
     replaceLastAssistant("⚠️ " + e.message);
   }
 }
-async function pollReply(cid, runId) {
-  if (S.polling) return;
-  S.polling = true;
-  const before = S.history.filter((m) => m.role === "assistant").length;
+async function pollReply(agent, cid, runId) {
+  if (S.pollingByAgent && S.pollingByAgent[agent]) return;
+  S.pollingByAgent = S.pollingByAgent || {};
+  S.pollingByAgent[agent] = true;
   const startedAt = Date.now();
   try {
     while (Date.now() - startedAt < 60000) {
@@ -251,30 +253,35 @@ async function pollReply(cid, runId) {
       const last = newAsst[newAsst.length - 1];
       if (last) {
         const reply = String(last.content || "").trim();
-        // replace the typing bubble
-        const list = $("chatList");
-        const bubbles = list.querySelectorAll(".chatMsg.assistant .bubble");
-        const typing = bubbles[bubbles.length - 1];
-        if (typing) {
-          const who = typing.querySelector(".who");
-          typing.parentElement.classList.remove("typing");
-          typing.innerHTML = (who ? who.outerHTML : "") + esc(reply);
-        } else {
-          addChatMsg("assistant", reply);
+        if (agent === S.agent) {
+          // replace the typing bubble (only when this agent is the visible one)
+          const list = $("chatList");
+          const bubbles = list.querySelectorAll(".chatMsg.assistant .bubble");
+          const typing = bubbles[bubbles.length - 1];
+          if (typing) {
+            const who = typing.querySelector(".who");
+            typing.parentElement.classList.remove("typing");
+            typing.innerHTML = (who ? who.outerHTML : "") + esc(reply);
+          } else {
+            addChatMsg("assistant", reply);
+          }
+          S.history[S.history.length - 1] = { role: "assistant", text: reply };
         }
-        S.history[S.history.length - 1] = { role: "assistant", text: reply };
         try { speakReply(reply); } catch (e) {}
-        S.polling = false;
+        S.pollingByAgent[agent] = false;
         return;
       }
       // stop if the run errored
       const run = await api(`/api/runs/${runId}`).catch(() => null);
-      if (run && run.status === "error") { replaceLastAssistant("⚠️ " + (run.error || "run failed")); break; }
+      if (run && run.status === "error") {
+        if (agent === S.agent) replaceLastAssistant("⚠️ " + (run.error || "run failed"));
+        break;
+      }
     }
   } catch (e) {
-    replaceLastAssistant("⚠️ " + e.message);
+    if (agent === S.agent) replaceLastAssistant("⚠️ " + e.message);
   }
-  S.polling = false;
+  S.pollingByAgent[agent] = false;
 }
 function replaceLastAssistant(text) {
   const list = $("chatList");
