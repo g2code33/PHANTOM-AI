@@ -1191,6 +1191,7 @@ async function loadSettings() {
         <button class="btn mini-btn" onclick="diagTab('network')">Network/WS</button>
         <button class="btn mini-btn" onclick="diagTab('system')">System</button>
         <button class="btn mini-btn" onclick="loadDiagnostics()">Refresh</button>
+        <button class="btn mini-btn" onclick="voiceSelfTest()">🎤 Test voice</button>
         <button class="btn mini-btn" onclick="copyDiagLog()">Copy</button>
         <button class="btn mini-btn" onclick="exportDiagLog()">Export file</button>
         <button class="btn mini-btn" onclick="clearDiagLog()">Clear console</button>
@@ -1383,6 +1384,32 @@ async function loadDiagnostics() {
     if (stEl) stEl.textContent = "backend unreachable";
   }
 }
+window.voiceSelfTest = async () => {
+  const out = $("diagLog");
+  const log = (t) => { out.textContent += "\n" + t; out.scrollTop = out.scrollHeight; };
+  out.textContent += "\n---- voice self-test ----\n";
+  try {
+    const cfg = await api("/api/voice/config");
+    log(`config: stt=${cfg.stt?.provider} tts=${cfg.tts?.provider} dg=${cfg.deepgram_configured} groq=${cfg.groq_configured}`);
+    log(`browser SpeechRecognition: ${(window.SpeechRecognition || window.webkitSpeechRecognition) ? "yes" : "NO"}`);
+    log(`speechSynthesis: ${window.speechSynthesis ? "yes (" + window.speechSynthesis.getVoices().length + " voices)" : "NO"}`);
+    log(`micEnabled: ${voice.micEnabled} · mode: ${voice.mode} · state: ${voice.state}`);
+  } catch (e) { log("config error: " + e.message); }
+  try {
+    log("capturing 2s… speak now");
+    const wav = await voice.captureWav(2);
+    if (!wav) { log("✗ mic capture returned nothing"); return; }
+    log("✓ captured " + Math.round(wav.size / 1024) + " KB");
+    const fd = new FormData();
+    fd.append("audio", wav, "test.wav");
+    fd.append("language", "en");
+    const res = await fetch("/api/voice/stt", { method: "POST", body: fd });
+    if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch (e) {} log("✗ STT: " + d); return; }
+    const j = await res.json();
+    log(`✓ STT heard: "${j.text}" (${j.provider || "?"})`);
+  } catch (e) { log("✗ mic/STT: " + e.message); }
+};
+
 window.replRun = () => {
   const inp = $("replInput"); const out = $("replOut");
   if (!inp || !out) return;

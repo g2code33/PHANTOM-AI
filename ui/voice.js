@@ -301,7 +301,13 @@ class PhantomVoice {
     if (this.sttProvider === "deepgram" && this.deepgramConfigured) {
       await this._startDeepgramListen();
     } else if (this.sttProvider === "server") {
-      this._startServerListen();
+      // server STT needs a key; without one, fall back to browser STT so
+      // voice ALWAYS hears the user (the 'not responding to voice' bug).
+      if (!this.deepgramConfigured && !this.groqConfigured) {
+        this._startBrowserSTT();
+      } else {
+        this._startServerListen();
+      }
     } else {
       this._startBrowserSTT();
     }
@@ -875,7 +881,29 @@ class PhantomVoice {
   }
 
   async _checkWakeByStt() {
-    // capture ~2.5s of audio and check for the wake word via server STT
+    // capture ~2.5s and check for the wake word.
+    // Browser + no cloud keys -> use Web Speech (works with zero config).
+    // Otherwise (Electron, or keys set) -> server STT chain.
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SR && !this.deepgramConfigured && !this.groqConfigured) {
+      try {
+        const wav = await this.captureWav(2.5);
+        if (!wav) return;
+        const rec = new SR();
+        rec.lang = "en-US";
+        rec.interimResults = false;
+        rec.onresult = (ev) => {
+          let t = "";
+          for (let i = ev.resultIndex; i < ev.results.length; i++) t += ev.results[i][0].transcript;
+          const m = t.toLowerCase().match(/(^|\s)(phantom|coded)(\s|$|\.|,|!|\?)/);
+          if (m) this._handleWake(m[2].toLowerCase());
+        };
+        rec.onerror = () => {};
+        rec.start();
+        setTimeout(() => { try { rec.stop(); } catch (e) {} }, 4000);
+      } catch (e) { /* ignore */ }
+      return;
+    }
     try {
       const wav = await this.captureWav(2.5);
       if (!wav) return;
