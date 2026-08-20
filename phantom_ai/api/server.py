@@ -798,7 +798,7 @@ def create_app(app: App) -> FastAPI:
     # ------------------------------------------------------------------ voice
     @fastapi.get("/api/voice/config")
     async def voice_config():
-        stt = await app.settings.get("voice.stt", "*", {"provider": "server"})
+        stt = await app.settings.get("voice.stt", "*", {"provider": "auto"})
         tts = await app.settings.get("voice.tts", "*", {"provider": "browser"})
         mode = await app.settings.get("voice.mode", "*", "conversation")
         proactive = await app.settings.get("voice.proactive_speech", "*", False)

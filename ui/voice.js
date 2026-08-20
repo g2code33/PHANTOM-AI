@@ -298,10 +298,22 @@ class PhantomVoice {
     if (this.killEngaged || !this.micEnabled) return;
     if (this.state === "LISTENING" || this.state === "THINKING") return;
     await this.startMic();
-    if (this.sttProvider === "deepgram" && this.deepgramConfigured) {
+    const eff = this._effectiveStt();
+    if (eff === "deepgram") {
       await this._startDeepgramListen();
-    } else if (this.sttProvider === "server") {
-      this._startServerListen();
+    } else if (eff === "server") {
+      if (!this.deepgramConfigured && !this.groqConfigured) {
+        if (this._canBrowserSTT()) {
+          this._startBrowserSTT();
+        } else {
+          this.onError?.("Voice input needs a Deepgram or Groq key in Settings (this app has no browser speech recognition). Add a key, then tap 🎙️ again.");
+          this.setState("ERROR");
+          setTimeout(() => { if (this.state === "ERROR") this.setState("IDLE"); }, 4000);
+          return;
+        }
+      } else {
+        this._startServerListen();
+      }
     } else {
       this._startBrowserSTT();
     }
@@ -313,6 +325,30 @@ class PhantomVoice {
     this._closeDeepgramListen();
     this._closeServerListen();
     if (this.state === "LISTENING") this.setState("IDLE");
+  }
+
+  _canBrowserSTT() {
+    return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  }
+  _isElectron() {
+    return !!(window.navigator && /electron/i.test(window.navigator.userAgent || ""));
+  }
+
+  // Pick the BEST STT that can actually work RIGHT NOW:
+  //  - browser STT if available (Chrome/Edge, zero config)
+  //  - else server chain (Electron has NO SpeechRecognition — which is why a
+  //    'browser' default killed voice in the desktop app even after keys)
+  _effectiveStt() {
+    const want = this.sttProvider;
+    if (want === "deepgram" && this.deepgramConfigured) return "deepgram";
+    if (want === "server") return "server";
+    if (want === "browser") {
+      if (this._canBrowserSTT()) return "browser";
+      return "server";
+    }
+    // "auto" (default): browser when available, else server chain
+    if (this._canBrowserSTT()) return "browser";
+    return "server";
   }
 
   _startBrowserSTT() {
@@ -875,7 +911,29 @@ class PhantomVoice {
   }
 
   async _checkWakeByStt() {
-    // capture ~2.5s of audio and check for the wake word via server STT
+    // capture ~2.5s and check for the wake word.
+    // Browser + no cloud keys -> use Web Speech (works with zero config).
+    // Otherwise (Electron, or keys set) -> server STT chain.
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SR && !this.deepgramConfigured && !this.groqConfigured) {
+      try {
+        const wav = await this.captureWav(2.5);
+        if (!wav) return;
+        const rec = new SR();
+        rec.lang = "en-US";
+        rec.interimResults = false;
+        rec.onresult = (ev) => {
+          let t = "";
+          for (let i = ev.resultIndex; i < ev.results.length; i++) t += ev.results[i][0].transcript;
+          const m = t.toLowerCase().match(/(^|\s)(phantom|coded)(\s|$|\.|,|!|\?)/);
+          if (m) this._handleWake(m[2].toLowerCase());
+        };
+        rec.onerror = () => {};
+        rec.start();
+        setTimeout(() => { try { rec.stop(); } catch (e) {} }, 4000);
+      } catch (e) { /* ignore */ }
+      return;
+    }
     try {
       const wav = await this.captureWav(2.5);
       if (!wav) return;

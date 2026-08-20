@@ -92,6 +92,19 @@ function setMode(m) {
   applyMode();
   detectAndConnect();
 }
+// hard refresh: bust the service-worker cache + reload fresh
+async function hardRefresh() {
+  toastHint("refreshing…");
+  try {
+    const regs = await (navigator.serviceWorker ? navigator.serviceWorker.getRegistrations() : []);
+    await Promise.all(regs.map((r) => r.unregister()));
+  } catch (e) {}
+  try { caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))); } catch (e) {}
+  location.reload();
+}
+$("mRefreshBtn").onclick = hardRefresh;
+$("mRefreshBtn2").onclick = hardRefresh;
+
 $("mModeToggle").onclick = () => {
   const order = ["auto", "pc", "portable"];
   setMode(order[(order.indexOf(S.mode) + 1) % order.length]);
@@ -224,7 +237,9 @@ async function sendChat(text) {
     } catch (e) { addChatMsg("assistant", "⚠️ " + e.message); }
     return;
   }
-  // pc mode: start a run + poll the conversation for the reply
+  // pc mode: start a run + poll the conversation for the reply.
+  // MULTI-TASK: each agent polls its own run — Phantom can be replying while
+  // you send Coded a separate task.
   addChatMsg("assistant", "");
   const list = $("chatList");
   if (list.lastElementChild) list.lastElementChild.classList.add("typing");
@@ -232,15 +247,15 @@ async function sendChat(text) {
     const cid = S.convByAgent[S.agent] || "";
     const started = await api(`/api/agents/${S.agent}/chat`, { body: { text: clean, conversation_id: cid, session_id: "mobile" } });
     S.convByAgent[S.agent] = started.conversation_id;
-    await pollReply(started.conversation_id, started.run_id);
+    await pollReply(S.agent, started.conversation_id, started.run_id);
   } catch (e) {
     replaceLastAssistant("⚠️ " + e.message);
   }
 }
-async function pollReply(cid, runId) {
-  if (S.polling) return;
-  S.polling = true;
-  const before = S.history.filter((m) => m.role === "assistant").length;
+async function pollReply(agent, cid, runId) {
+  if (S.pollingByAgent && S.pollingByAgent[agent]) return;
+  S.pollingByAgent = S.pollingByAgent || {};
+  S.pollingByAgent[agent] = true;
   const startedAt = Date.now();
   try {
     while (Date.now() - startedAt < 60000) {
@@ -251,30 +266,35 @@ async function pollReply(cid, runId) {
       const last = newAsst[newAsst.length - 1];
       if (last) {
         const reply = String(last.content || "").trim();
-        // replace the typing bubble
-        const list = $("chatList");
-        const bubbles = list.querySelectorAll(".chatMsg.assistant .bubble");
-        const typing = bubbles[bubbles.length - 1];
-        if (typing) {
-          const who = typing.querySelector(".who");
-          typing.parentElement.classList.remove("typing");
-          typing.innerHTML = (who ? who.outerHTML : "") + esc(reply);
-        } else {
-          addChatMsg("assistant", reply);
+        if (agent === S.agent) {
+          // replace the typing bubble (only when this agent is the visible one)
+          const list = $("chatList");
+          const bubbles = list.querySelectorAll(".chatMsg.assistant .bubble");
+          const typing = bubbles[bubbles.length - 1];
+          if (typing) {
+            const who = typing.querySelector(".who");
+            typing.parentElement.classList.remove("typing");
+            typing.innerHTML = (who ? who.outerHTML : "") + esc(reply);
+          } else {
+            addChatMsg("assistant", reply);
+          }
+          S.history[S.history.length - 1] = { role: "assistant", text: reply };
         }
-        S.history[S.history.length - 1] = { role: "assistant", text: reply };
         try { speakReply(reply); } catch (e) {}
-        S.polling = false;
+        S.pollingByAgent[agent] = false;
         return;
       }
       // stop if the run errored
       const run = await api(`/api/runs/${runId}`).catch(() => null);
-      if (run && run.status === "error") { replaceLastAssistant("⚠️ " + (run.error || "run failed")); break; }
+      if (run && run.status === "error") {
+        if (agent === S.agent) replaceLastAssistant("⚠️ " + (run.error || "run failed"));
+        break;
+      }
     }
   } catch (e) {
-    replaceLastAssistant("⚠️ " + e.message);
+    if (agent === S.agent) replaceLastAssistant("⚠️ " + e.message);
   }
-  S.polling = false;
+  S.pollingByAgent[agent] = false;
 }
 function replaceLastAssistant(text) {
   const list = $("chatList");
@@ -424,10 +444,12 @@ $("mConnectBtn").onclick = connect;
 $("mCloudKeysBtn").onclick = async () => {
   const nv = $("mCloudNvidia").value.trim();
   const dg = $("mCloudDeepgram").value.trim();
+  const gq = $("mCloudGroq").value.trim();
   const model = $("mCloudModel").value.trim();
   const body = {};
   if (nv) body.nvidia_key = nv;
   if (dg) body.deepgram_key = dg;
+  if (gq) body.groq_key = gq;
   if (model) body.model = model;
   if (!Object.keys(body).length) { $("mCloudLog").textContent = "Paste a key or model first."; return; }
   try {
@@ -443,7 +465,7 @@ $("mCloudKeysBtn").onclick = async () => {
           return { masked: j.masked };
         })()
       : await api("/api/cloud/keys", { body });
-    $("mCloudNvidia").value = ""; $("mCloudDeepgram").value = "";
+    $("mCloudNvidia").value = ""; $("mCloudDeepgram").value = ""; $("mCloudGroq").value = "";
     $("mCloudLog").textContent = "Saved (masked): " + JSON.stringify(r.masked || {});
     toastHint("Cloud config saved");
   } catch (e) { $("mCloudLog").textContent = "✗ " + e.message; }

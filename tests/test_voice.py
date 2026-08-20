@@ -24,8 +24,9 @@ async def test_voice_config_defaults(app):
         res = await client.get("/api/voice/config")
         assert res.status_code == 200
         cfg = res.json()
-        assert cfg["stt"]["provider"] == "server"
-        # JARVIS default: browser/system TTS so speech works with zero config
+        # JARVIS default: stt=auto (browser where available, server in
+        # Electron), tts=browser so speech works with zero config
+        assert cfg["stt"]["provider"] == "auto"
         assert cfg["tts"]["provider"] == "browser"
         assert cfg["stt_priority"] == ["deepgram", "groq", "local_whisper"]
         assert cfg["tts_priority"] == ["deepgram", "cloud", "local"]
@@ -110,7 +111,7 @@ async def test_status_includes_voice_config(app):
     async with await _client(instance) as client:
         data = (await client.get("/api/status")).json()
         assert "voice" in data
-        assert data["voice"]["stt"]["provider"] in ("browser", "deepgram", "server")
+        assert data["voice"]["stt"]["provider"] in ("auto", "browser", "deepgram", "server")
 
 
 async def test_heartbeat_proactive_speech_off_by_default(app):

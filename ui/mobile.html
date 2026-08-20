@@ -28,6 +28,7 @@
     </div>
     <div id="mStatusRow">
       <span id="mPresence" class="mPill">offline</span>
+      <button id="mRefreshBtn" class="mMode" title="Hard refresh (reload the app)">⟳</button>
       <button id="mModeToggle" class="mMode" title="Switch mode: Auto / PC / Cloud">🔄</button>
       <button id="mKill" class="mKill" title="Kill switch">⏻</button>
     </div>
@@ -99,6 +100,7 @@
       <p class="muted small">Keys + model used by the cloud Worker. Sent via your PC → Worker (masked).</p>
       <input id="mCloudNvidia" type="password" placeholder="cloud NVIDIA key (optional)">
       <input id="mCloudDeepgram" type="password" placeholder="cloud Deepgram key (optional)">
+      <input id="mCloudGroq" type="password" placeholder="cloud Groq key — STT fallback (optional)">
       <input id="mCloudModel" type="text" placeholder="cloud model (e.g. meta/llama-3.3-70b-instruct)">
       <button id="mCloudKeysBtn" class="mPrimary" style="margin-top:10px">Save cloud config</button>
       <button id="mRedeployBtn" class="mMini" style="width:100%;margin-top:8px">🔄 Redeploy cloud (via PC)</button>
@@ -108,6 +110,7 @@
     <div class="mCard">
       <div style="font-weight:700;margin-bottom:6px">📱 Install on iPhone</div>
       <p class="muted small">If opened in Safari: tap <b>Share → Add to Home Screen</b> for a full-screen app icon.</p>
+      <button id="mRefreshBtn2" class="mMini" style="width:100%;margin-top:8px">⟳ Refresh app (hard reload)</button>
       <p class="muted small" style="margin-top:6px">🔐 Kill switch stops everything on your PC.</p>
       <button id="mKill2" class="mMini" style="width:100%;margin-top:8px;color:var(--red);border-color:var(--red)">⏻ Engage PC kill switch</button>
     </div>
