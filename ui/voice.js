@@ -298,13 +298,19 @@ class PhantomVoice {
     if (this.killEngaged || !this.micEnabled) return;
     if (this.state === "LISTENING" || this.state === "THINKING") return;
     await this.startMic();
-    if (this.sttProvider === "deepgram" && this.deepgramConfigured) {
+    const eff = this._effectiveStt();
+    if (eff === "deepgram") {
       await this._startDeepgramListen();
-    } else if (this.sttProvider === "server") {
-      // server STT needs a key; without one, fall back to browser STT so
-      // voice ALWAYS hears the user (the 'not responding to voice' bug).
+    } else if (eff === "server") {
       if (!this.deepgramConfigured && !this.groqConfigured) {
-        this._startBrowserSTT();
+        if (this._canBrowserSTT()) {
+          this._startBrowserSTT();
+        } else {
+          this.onError?.("Voice input needs a Deepgram or Groq key in Settings (this app has no browser speech recognition). Add a key, then tap 🎙️ again.");
+          this.setState("ERROR");
+          setTimeout(() => { if (this.state === "ERROR") this.setState("IDLE"); }, 4000);
+          return;
+        }
       } else {
         this._startServerListen();
       }
@@ -319,6 +325,30 @@ class PhantomVoice {
     this._closeDeepgramListen();
     this._closeServerListen();
     if (this.state === "LISTENING") this.setState("IDLE");
+  }
+
+  _canBrowserSTT() {
+    return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  }
+  _isElectron() {
+    return !!(window.navigator && /electron/i.test(window.navigator.userAgent || ""));
+  }
+
+  // Pick the BEST STT that can actually work RIGHT NOW:
+  //  - browser STT if available (Chrome/Edge, zero config)
+  //  - else server chain (Electron has NO SpeechRecognition — which is why a
+  //    'browser' default killed voice in the desktop app even after keys)
+  _effectiveStt() {
+    const want = this.sttProvider;
+    if (want === "deepgram" && this.deepgramConfigured) return "deepgram";
+    if (want === "server") return "server";
+    if (want === "browser") {
+      if (this._canBrowserSTT()) return "browser";
+      return "server";
+    }
+    // "auto" (default): browser when available, else server chain
+    if (this._canBrowserSTT()) return "browser";
+    return "server";
   }
 
   _startBrowserSTT() {

@@ -1070,9 +1070,9 @@ async function loadSettings() {
   sections.push(`
     <div class="settings-section"><h3>🎙️ Voice</h3>
       <div class="row"><label>STT provider</label>
-        <select id="sttProvider"><option value="server">auto (Deepgram → Groq → local)</option><option value="browser">browser (offline)</option><option value="deepgram">deepgram (online)</option></select></div>
+        <select id="sttProvider"><option value="auto" selected>auto (browser ↔ server)</option><option value="server">server (Deepgram → Groq → local)</option><option value="browser">browser (offline)</option><option value="deepgram">deepgram streaming (online)</option></select></div>
       <div class="row"><label>TTS provider</label>
-        <select id="ttsProvider"><option value="server">auto (Deepgram Aura → cloud → local)</option><option value="browser">browser (system voices)</option><option value="deepgram">deepgram Aura (online)</option></select></div>
+        <select id="ttsProvider"><option value="browser" selected>browser (system voices — always works)</option><option value="server">server (Deepgram Aura → cloud → local)</option><option value="deepgram">deepgram Aura (online)</option></select></div>
       <div class="row"><label>STT priority</label>
         <input type="text" id="sttPriority" placeholder="deepgram, groq, local_whisper" style="flex:1"></div>
       <div class="row"><label>TTS priority</label>
@@ -1244,8 +1244,8 @@ async function loadSettings() {
     $("cloudStatus").textContent = cc.url ? `☁️ ${cc.url_masked}${cc.token_configured ? " (token set)" : ""}` : "not configured";
   } catch (e) {}
   const vc = res.voice || {};
-  $("sttProvider").value = vc.stt?.provider || "server";
-  $("ttsProvider").value = vc.tts?.provider || "server";
+  $("sttProvider").value = vc.stt?.provider || "auto";
+  $("ttsProvider").value = vc.tts?.provider || "browser";
   $("voiceModeSel").value = vc.mode || "conversation";
   $("proactiveSel").value = vc.proactive_speech ? "1" : "0";
   if ($("sttPriority")) $("sttPriority").value = (vc.stt_priority || ["deepgram", "groq", "local_whisper"]).join(", ");
@@ -1391,9 +1391,14 @@ window.voiceSelfTest = async () => {
   try {
     const cfg = await api("/api/voice/config");
     log(`config: stt=${cfg.stt?.provider} tts=${cfg.tts?.provider} dg=${cfg.deepgram_configured} groq=${cfg.groq_configured}`);
+    const eff = voice._effectiveStt ? voice._effectiveStt() : "?";
+    log(`ELECTRON: ${voice._isElectron ? voice._isElectron() : "?"} · EFFECTIVE STT: ${eff}`);
     log(`browser SpeechRecognition: ${(window.SpeechRecognition || window.webkitSpeechRecognition) ? "yes" : "NO"}`);
     log(`speechSynthesis: ${window.speechSynthesis ? "yes (" + window.speechSynthesis.getVoices().length + " voices)" : "NO"}`);
     log(`micEnabled: ${voice.micEnabled} · mode: ${voice.mode} · state: ${voice.state}`);
+    if (!cfg.deepgram_configured && !cfg.groq_configured && eff === "server") {
+      log("⚠️ no STT key + no browser STT → voice input can't work. Add a Deepgram or Groq key in Settings.");
+    }
   } catch (e) { log("config error: " + e.message); }
   try {
     log("capturing 2s… speak now");
