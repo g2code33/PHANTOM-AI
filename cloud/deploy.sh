@@ -152,6 +152,13 @@ echo " Step 3 — secrets…"
 set_secret() {
   local name="$1"
   local val="${!name:-}"
+  # already set on Cloudflare? keep it — no re-prompt, no re-upload
+  if [ -z "$val" ]; then
+    if wr secret list 2>/dev/null | grep -q ""$name""; then
+      echo "   ${name} already set — keeping"
+      return
+    fi
+  fi
   if [ -z "$val" ] && [ "${NONINTERACTIVE:-}" != "1" ]; then
     read -r -s -p "   ${name}: " val; echo
   fi
