@@ -481,7 +481,7 @@ async function startRec() {
     };
     rec.start(); S.recording = true;
     $("mVoiceBtn").classList.add("listening");
-    toastHint("Listening… tap again to send");
+    toastHint("🎙️ recording… release to send");
   } catch (e) { toastHint("Mic unavailable: " + e.message); }
 }
 function stopRec() {
@@ -489,7 +489,7 @@ function stopRec() {
   S.recording = false;
   $("mVoiceBtn").classList.remove("listening");
   $("mVoiceBtn").classList.add("sending");
-  toastHint("Sending to " + (S.agent === "coded" ? "Coded" : "Phantom") + "…");
+  toastHint("📤 Sending to " + (S.agent === "coded" ? "Coded" : "Phantom") + "…");
   S.mediaRec.stop();
 }
 async function sendVoice(blob) {
@@ -544,7 +544,17 @@ function speakReply(txt) {
     speechSynthesis.speak(u);
   } catch (e) {}
 }
-$("mVoiceBtn").onclick = () => S.recording ? stopRec() : startRec();
+// HOLD-TO-TALK on the phone: press & hold to record, release to send.
+// In PC mode this sends the audio to Phantom on the PC (companion/voice);
+// in cloud mode to the Worker. Tap still toggles as a fallback.
+const mVoiceBtn = $("mVoiceBtn");
+mVoiceBtn.onpointerdown = (ev) => {
+  ev.preventDefault();
+  if (!S.recording) startRec();
+};
+mVoiceBtn.onpointerup = () => { if (S.recording) stopRec(); };
+mVoiceBtn.onpointercancel = () => { if (S.recording) stopRec(); };
+mVoiceBtn.onclick = (ev) => { ev.preventDefault(); }; // pointer handlers do it
 
 /* ============================ WS (pc mode live) ============================ */
 function connectWS() {

@@ -231,6 +231,8 @@ function stopReplyWatcher(agent) {
 function startReplyWatcher(agent, convId, runId) {
   stopReplyWatcher(agent);
   const startedAt = Date.now();
+  state.watchSeen = state.watchSeen || {};   // agent -> last assistant content shown
+  state.watchSeen[agent] = state.watchSeen[agent] || "";
   const tick = async () => {
     try {
       const conv = await api(`/api/conversations/${convId}`);
@@ -238,21 +240,32 @@ function startReplyWatcher(agent, convId, runId) {
       const asst = msgs.filter((m) => m.role === "assistant" && m.content && m.content.trim());
       const last = asst[asst.length - 1];
       const content = last ? String(last.content).trim() : "";
-      if (content && content !== (state.lastReplyFor[agent] || "")) {
-        // new reply arrived — render (if this agent is focused) + speak
-        state.lastReplyFor[agent] = content;
-        stopReplyWatcher(agent);
-        setAgentDone(agent);
-        if (agent === state.agent) {
-          hideRunIndicator(); setContextLine(null);
-          addMessageEl("assistant", content);
-          loadConversations();
+      if (content) {
+        const seen = state.watchSeen[agent] || "";
+        if (content !== seen) {
+          // DELTA-STREAM: speak/append only the NEW text (works even with the
+          // WebSocket down — replies flow in live via HTTP polling)
+          const delta = content.startsWith(seen) ? content.slice(seen.length) : content;
+          state.watchSeen[agent] = content;
+          state.lastReplyFor[agent] = content;
+          if (agent === state.agent) {
+            hideRunIndicator(); setContextLine(null);
+            // progressive bubble: grow the last assistant message
+            const bubbles = document.querySelectorAll("#messages .msg.assistant .md");
+            if (bubbles.length) {
+              const lastEl = bubbles[bubbles.length - 1];
+              lastEl.textContent = content;
+              const host = $("messages"); if (host) host.scrollTop = host.scrollHeight;
+            } else {
+              addMessageEl("assistant", content);
+            }
+            loadConversations();
+          }
+          if (state.voiceOn && !state.killEngaged && voice.mode !== "private" && delta.trim()) {
+            flushSpeech();
+            voice.speak(delta);
+          }
         }
-        flushSpeech();
-        if (state.voiceOn && !state.killEngaged && voice.mode !== "private") {
-          voice.speak(content);
-        } else if (!anyRunning()) resumeListeningAfterReply();
-        return;
       }
       const run = await api(`/api/runs/${runId}`).catch(() => null);
       if (run && run.status === "error") {
@@ -263,7 +276,7 @@ function startReplyWatcher(agent, convId, runId) {
       }
     } catch (e) { /* transient */ }
     if (Date.now() - startedAt < 90000) {
-      state.watchers[agent] = setTimeout(tick, 1500);   // keep polling
+      state.watchers[agent] = setTimeout(tick, 1100);   // keep polling (~streaming)
     } else {
       stopReplyWatcher(agent); setAgentDone(agent);      // watchdog: never stuck
       if (agent === state.agent) { hideRunIndicator(); setContextLine(null); }
@@ -322,6 +335,8 @@ function handleEvent(payload) {
     case "agent.run_completed":
       if (run_id === run.runId) {
         state.lastReplyFor[agent] = (data.content || "").trim();
+        state.watchSeen = state.watchSeen || {};
+        state.watchSeen[agent] = (data.content || "").trim();
         stopReplyWatcher(agent);
         setAgentDone(agent);
         if (isFocused) { hideRunIndicator(); setContextLine(null); finalizeAssistantMessage(data); loadConversations(); }

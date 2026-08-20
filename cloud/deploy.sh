@@ -55,6 +55,9 @@ if ! wr whoami >/dev/null 2>&1; then
   wr whoami >/dev/null 2>&1 || { echo "❌ Login did not complete." >&2; exit 1; }
 fi
 echo " ✓ logged in"
+# remember the current account id (used to spot ids that are actually the
+# account id, not namespace ids)
+CF_ACCOUNT_ID="$(wr whoami 2>/dev/null | grep -oE '[a-f0-9]{32}' | head -1 || true)"
 
 # seed the local override from the repo toml (first run)
 if [ ! -f "$LOCAL_CFG" ]; then
@@ -75,6 +78,11 @@ placeholder_of() {
 # true if the given KV namespace id exists on the CURRENT Cloudflare account
 kv_exists_on_account() {
   local id="$1"
+  # an id identical to the account id is NOT a namespace id (it was copied
+  # from `wrangler whoami` by mistake) — treat as invalid so we recreate
+  if [ -n "$id" ] && [ "$id" = "${CF_ACCOUNT_ID:-}" ]; then
+    return 1
+  fi
   wr kv namespace list 2>/dev/null | grep -q "\"$id\""
 }
 
@@ -89,13 +97,18 @@ set_kv_id() {
   if [ -z "$id" ] || [ "$id" = "$placeholder" ]; then
     echo "   creating $binding…"
     local out
-    out=$(wr kv namespace create "$binding" 2>&1 || true)
-    id=$(echo "$out" | python3 -c "import sys,json
+    for _try in 1 2 3; do
+      out=$(wr kv namespace create "$binding" 2>&1 || true)
+      id=$(echo "$out" | python3 -c "import sys,json
 try: print(json.load(sys.stdin)['id'])
 except Exception: print('')" 2>/dev/null || true)
-    if [ -z "$id" ]; then
-      id=$(echo "$out" | grep -oE '[a-f0-9]{32}' | head -1 || true)
-    fi
+      if [ -z "$id" ]; then
+        id=$(echo "$out" | grep -oE '[a-f0-9]{32}' | head -1 || true)
+      fi
+      [ -n "$id" ] && break
+      echo "   retrying create $binding ($_try/3)…"
+      sleep 2
+    done
     if [ -z "$id" ]; then
       echo "   ❌ could not create $binding (wrangler said: $out)" >&2
       exit 1
@@ -108,15 +121,19 @@ except Exception: print('')" 2>/dev/null || true)
     # deploy never 500s against a stale namespace. (Self-healing: no need to
     # delete wrangler.local.toml manually when switching accounts.)
     echo "   $binding id ($id) not found on this Cloudflare account — recreating…"
-    local out
-    out=$(wr kv namespace create "$binding" 2>&1 || true)
-    local new_id
-    new_id=$(echo "$out" | python3 -c "import sys,json
+    local out new_id
+    for _try in 1 2 3; do
+      out=$(wr kv namespace create "$binding" 2>&1 || true)
+      new_id=$(echo "$out" | python3 -c "import sys,json
 try: print(json.load(sys.stdin)['id'])
 except Exception: print('')" 2>/dev/null || true)
-    if [ -z "$new_id" ]; then
-      new_id=$(echo "$out" | grep -oE '[a-f0-9]{32}' | head -1 || true)
-    fi
+      if [ -z "$new_id" ]; then
+        new_id=$(echo "$out" | grep -oE '[a-f0-9]{32}' | head -1 || true)
+      fi
+      [ -n "$new_id" ] && break
+      echo "   retrying create $binding ($_try/3)…"
+      sleep 2
+    done
     if [ -z "$new_id" ]; then
       echo "   ❌ could not recreate $binding (wrangler said: $out)" >&2
       exit 1
