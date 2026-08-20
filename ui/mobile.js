@@ -21,12 +21,88 @@ const S = {
   history: [],            // chat messages [{role,text}]
   convByAgent: {},        // pc-mode conversation ids
   polling: false,
+  accToken: localStorage.getItem("phai.account.token") || "",
+  accUser: localStorage.getItem("phai.account.user") || "",
 };
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 function effectiveBase() { return S.mode === "portable" ? S.cloudBase : S.base; }
+
+// ---- ACCOUNT: register/login/config sync via the cloud worker ----
+async function accountApi(path, body, token) {
+  const host = S.cloudBase || location.origin;
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers["X-Account-Token"] = token;
+  const res = await fetch(host + path, { method: "POST", headers, body: JSON.stringify(body) });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || ("HTTP " + res.status));
+  return j;
+}
+async function accountRegister() {
+  const u = $("mAccUser").value.trim().toLowerCase();
+  const p = $("mAccPass").value;
+  if (u.length < 3 || p.length < 6) { $("mAccStatus").textContent = "Username ≥3 chars, password ≥6."; return; }
+  try {
+    const j = await accountApi("/api/account/register", { username: u, password: p });
+    applyAccount(j);
+  } catch (e) { $("mAccStatus").textContent = "✗ " + e.message; }
+}
+async function accountLogin() {
+  const u = $("mAccUser").value.trim().toLowerCase();
+  const p = $("mAccPass").value;
+  if (!u || !p) { $("mAccStatus").textContent = "Enter username + password."; return; }
+  try {
+    const j = await accountApi("/api/account/login", { username: u, password: p });
+    applyAccount(j);
+  } catch (e) { $("mAccStatus").textContent = "✗ " + e.message; }
+}
+function applyAccount(j) {
+  S.accToken = j.token; S.accUser = j.username;
+  localStorage.setItem("phai.account.token", j.token);
+  localStorage.setItem("phai.account.user", j.username);
+  // apply the saved config so a new phone connects straight away
+  const c = j.config || {};
+  if (c.pc_url) { S.base = c.pc_url; localStorage.setItem("phai.companion.url", c.pc_url); if ($("mUrl")) $("mUrl").value = c.pc_url; }
+  if (c.pc_token) { S.token = c.pc_token; localStorage.setItem("phai.companion.token", c.pc_token); if ($("mToken")) $("mToken").value = c.pc_token; }
+  if (c.cloud_url) { S.cloudBase = c.cloud_url; localStorage.setItem("phai.companion.cloud", c.cloud_url); if ($("mCloud")) $("mCloud").value = c.cloud_url; }
+  if (c.cloud_token) { S.cloudToken = c.cloud_token; localStorage.setItem("phai.companion.cloudtoken", c.cloud_token); if ($("mCloudToken")) $("mCloudToken").value = c.cloud_token; }
+  if (c.mode) setMode(c.mode);
+  renderAccountUI();
+  toastHint("✓ Signed in as " + j.username);
+  detectAndConnect();
+}
+async function accountSync() {
+  try {
+    const j = await accountApi("/api/account/config", {
+      pc_url: S.base, pc_token: S.token, cloud_url: S.cloudBase,
+      cloud_token: S.cloudToken, mode: S.mode, agent: S.agent,
+    }, S.accToken);
+    $("mAccStatus").textContent = "✓ Settings saved to your account.";
+    toastHint("✓ Account settings saved");
+  } catch (e) { $("mAccStatus").textContent = "✗ " + e.message; }
+}
+function accountSignOut() {
+  S.accToken = ""; S.accUser = "";
+  localStorage.removeItem("phai.account.token");
+  localStorage.removeItem("phai.account.user");
+  renderAccountUI();
+  toastHint("Signed out");
+}
+function renderAccountUI() {
+  const st = $("mAccStatus");
+  const sync = $("mAccSync"), out = $("mAccOut");
+  if (S.accToken && S.accUser) {
+    if (st) st.textContent = "✓ Signed in as " + S.accUser;
+    if (sync) sync.classList.remove("hidden");
+    if (out) out.classList.remove("hidden");
+  } else {
+    if (st) st.textContent = "Not signed in.";
+    if (sync) sync.classList.add("hidden");
+    if (out) out.classList.add("hidden");
+  }
+}
 function effectiveToken() { return S.mode === "portable" ? S.cloudToken : S.token; }
 
 async function api(path, opts = {}) {
@@ -110,6 +186,11 @@ async function hardRefresh() {
 }
 $("mRefreshBtn").onclick = hardRefresh;
 $("mRefreshBtn2").onclick = hardRefresh;
+
+$("mAccLogin").onclick = accountLogin;
+$("mAccRegister").onclick = accountRegister;
+$("mAccSync").onclick = accountSync;
+$("mAccOut").onclick = accountSignOut;
 
 $("mModeToggle").onclick = () => {
   const order = ["auto", "pc", "portable"];
@@ -540,11 +621,26 @@ $("mKill2").onclick = killPC;
   if (S.cloudBase) $("mCloud").value = S.cloudBase;
   if (S.cloudToken) $("mCloudToken").value = S.cloudToken;
   renderChat();
-  if (S.base || S.cloudBase) {
+  renderAccountUI();
+  // account auto-restore: sign in on any phone -> fetch saved config -> connect
+  if (S.accToken) {
+    accountApi("/api/account/config", {}, S.accToken)
+      .then((j) => {
+        if (j.config) {
+          const c = j.config;
+          if (c.pc_url) { S.base = c.pc_url; localStorage.setItem("phai.companion.url", c.pc_url); if ($("mUrl")) $("mUrl").value = c.pc_url; }
+          if (c.pc_token) { S.token = c.pc_token; localStorage.setItem("phai.companion.token", c.pc_token); }
+          if (c.cloud_url) { S.cloudBase = c.cloud_url; localStorage.setItem("phai.companion.cloud", c.cloud_url); if ($("mCloud")) $("mCloud").value = c.cloud_url; }
+          if (c.cloud_token) { S.cloudToken = c.cloud_token; localStorage.setItem("phai.companion.cloudtoken", c.cloud_token); }
+          if (c.mode) setMode(c.mode);
+          renderAccountUI();
+        }
+        detectAndConnect();
+      })
+      .catch(() => { S.accToken = ""; localStorage.removeItem("phai.account.token"); renderAccountUI(); detectAndConnect(); });
+  } else if (S.base || S.cloudBase) {
     detectAndConnect();
-    S.healthTimer = setInterval(checkHealth, 15000);
-  } else {
-    setStatus(false);
-    switchTab("settings");
   }
+  S.healthTimer = setInterval(checkHealth, 15000);
+  if (!S.base && !S.cloudBase) { setStatus(false); switchTab("settings"); }
 })();

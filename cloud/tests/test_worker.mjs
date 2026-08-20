@@ -333,3 +333,46 @@ await t("voice tts serves aura audio + 503 without key", async () => {
   assert.ok(buf.byteLength > 0);
   globalThis.fetch = realFetch;
 });
+
+// ---- accounts: register/login + config sync (sign in on any phone) ----
+await t("account register + login + config sync", async () => {
+  const e = makeEnv();
+  const reg = await handle(req("https://phantom.local/api/account/register",
+    { method: "POST", body: { username: "joojo", password: "secret123" } }), e);
+  assert.equal(reg.status, 200);
+  const rj = await reg.json();
+  assert.equal(rj.ok, true);
+  assert.ok(rj.token && rj.username === "joojo");
+
+  // save config with the token
+  const save = await handle(req("https://phantom.local/api/account/config",
+    { method: "POST", headers: { "X-Account-Token": rj.token },
+      body: { pc_url: "http://192.168.1.50:47611", pc_token: "ptok",
+              cloud_url: "https://phantom-portable.g2phantom33.workers.dev",
+              cloud_token: "ctok", mode: "auto" } }), e);
+  assert.equal(save.status, 200);
+  const sj = await save.json();
+  assert.equal(sj.config.cloud_url, "https://phantom-portable.g2phantom33.workers.dev");
+
+  // login on a "different phone" -> returns the saved config
+  const login = await handle(req("https://phantom.local/api/account/login",
+    { method: "POST", body: { username: "joojo", password: "secret123" } }), e);
+  const lj = await login.json();
+  assert.equal(lj.ok, true);
+  assert.equal(lj.config.pc_url, "http://192.168.1.50:47611");
+  assert.equal(lj.config.mode, "auto");
+
+  // wrong password rejected
+  const bad = await handle(req("https://phantom.local/api/account/login",
+    { method: "POST", body: { username: "joojo", password: "nope" } }), e);
+  assert.equal(bad.status, 401);
+
+  // config without token rejected
+  const noTok = await handle(req("https://phantom.local/api/account/config"), e);
+  assert.equal(noTok.status, 401);
+
+  // duplicate username rejected
+  const dup = await handle(req("https://phantom.local/api/account/register",
+    { method: "POST", body: { username: "joojo", password: "whatever1" } }), e);
+  assert.equal(dup.status, 409);
+});

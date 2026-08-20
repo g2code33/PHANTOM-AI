@@ -191,6 +191,57 @@ function authOk(request, env) {
 }
 
 // ---------------------------------------------------------------------------
+// ACCOUNTS: register/login + sync the companion config (URLs, tokens, mode)
+// so the user can sign in on ANY phone and connect straight away.
+// Passwords are salted + hashed (PBKDF2/SHA-256 via WebCrypto) — never stored
+// in plaintext. Stored in the PHANTOM_KEYS KV under acct:* prefixes.
+// ---------------------------------------------------------------------------
+function randHex(bytes = 16) {
+  const a = new Uint8Array(bytes);
+  crypto.getRandomValues(a);
+  return [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function hashPassword(password, salt) {
+  const enc = new TextEncoder();
+  const km = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: enc.encode(salt), iterations: 100000, hash: "SHA-256" },
+    km, 256);
+  return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function registerAccount(env, username, password) {
+  if (!username || username.length < 3) return json({ error: "username must be at least 3 characters" }, 400);
+  if (!password || password.length < 6) return json({ error: "password must be at least 6 characters" }, 400);
+  const existing = await env.PHANTOM_KEYS.get("acct:" + username);
+  if (existing) return json({ error: "username already taken" }, 409);
+  const salt = randHex(16);
+  const hash = await hashPassword(password, salt);
+  await env.PHANTOM_KEYS.put("acct:" + username, "1");
+  await env.PHANTOM_KEYS.put("acctpass:" + username, salt + ":" + hash);
+  return createSession(env, username);
+}
+async function loginAccount(env, username, password) {
+  const row = await env.PHANTOM_KEYS.get("acctpass:" + username);
+  if (!row) return json({ error: "no such account" }, 401);
+  const [salt, hash] = String(row).split(":");
+  const check = await hashPassword(password, salt || "");
+  if (check !== hash) return json({ error: "wrong password" }, 401);
+  return createSession(env, username);
+}
+async function createSession(env, username) {
+  const token = randHex(24);
+  await env.PHANTOM_KEYS.put("accttok:" + token, username);
+  const cfg = (await env.PHANTOM_KEYS.get("acctcfg:" + username)) || "{}";
+  return json({ ok: true, token, username, config: JSON.parse(cfg) });
+}
+async function accountFromToken(env, request) {
+  const tok = request.headers.get("X-Account-Token") || "";
+  if (!tok) return null;
+  return (await env.PHANTOM_KEYS.get("accttok:" + tok)) || null;
+}
+
+
+// ---------------------------------------------------------------------------
 // router
 // ---------------------------------------------------------------------------
 async function handle(request, env) {
@@ -230,6 +281,38 @@ async function handle(request, env) {
 
   // status is intentionally UNauthenticated: it only reports presence and
   // masked key-config state (never secrets) — so Test connection works
+  // ---- accounts: register / login (public) ----
+  if (path === "/api/account/register" && request.method === "POST") {
+    const body = await request.json();
+    return await registerAccount(env, String(body.username || "").trim().toLowerCase(), String(body.password || ""));
+  }
+  if (path === "/api/account/login" && request.method === "POST") {
+    const body = await request.json();
+    return await loginAccount(env, String(body.username || "").trim().toLowerCase(), String(body.password || ""));
+  }
+  // account-authenticated config sync
+  if (path === "/api/account/config" && request.method === "GET") {
+    const user = await accountFromToken(env, request);
+    if (!user) return json({ error: "not signed in" }, 401);
+    const cfg = (await env.PHANTOM_KEYS.get("acctcfg:" + user)) || "{}";
+    return json({ ok: true, username: user, config: JSON.parse(cfg) });
+  }
+  if (path === "/api/account/config" && request.method === "POST") {
+    const user = await accountFromToken(env, request);
+    if (!user) return json({ error: "not signed in" }, 401);
+    const body = await request.json();
+    const cfg = {
+      pc_url: String(body.pc_url || "").trim(),
+      pc_token: String(body.pc_token || "").trim(),
+      cloud_url: String(body.cloud_url || "").trim(),
+      cloud_token: String(body.cloud_token || "").trim(),
+      mode: ["auto", "pc", "portable"].includes(body.mode) ? body.mode : "auto",
+      agent: body.agent === "coded" ? "coded" : "phantom",
+    };
+    await env.PHANTOM_KEYS.put("acctcfg:" + user, JSON.stringify(cfg));
+    return json({ ok: true, config: cfg });
+  }
+
   if (path === "/api/status" && request.method === "GET") {
     const profile = await kvGet(env.PHANTOM_PROFILE, "profile", null);
     return json({ ok: true, mode: "portable", cloud: true,
