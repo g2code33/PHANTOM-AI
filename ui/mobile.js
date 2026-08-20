@@ -43,6 +43,12 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     let d = res.statusText;
     try { const j = await res.json(); d = j.detail || j.error || d; } catch (e) {}
+    if (res.status === 401 && S.mode === "portable") {
+      setStatus(false);
+      switchTab("settings");
+      toastHint("Cloud needs its token — paste it in Settings");
+      throw new Error("unauthorized — add the cloud token in Settings");
+    }
     throw new Error(d || `HTTP ${res.status}`);
   }
   return res.json();
@@ -112,38 +118,75 @@ $("mModeToggle").onclick = () => {
 };
 document.querySelectorAll(".modeBtn").forEach((b) => b.onclick = () => setMode(b.dataset.mode));
 
+// Cloud-mode Today data: briefing + reminders (needs the cloud token).
+let portableTimer = null;
+async function refreshPortable() {
+  try {
+    const b = await api("/api/briefing");
+    renderBriefing({ spoken: b.spoken });
+    const r = await api("/api/reminders");
+    renderNotifs((r.reminders || []).map((x) => ({ title: "⏰ Reminder", body: x.text })));
+    renderConfirmations([]);
+    renderTasks([]);
+  } catch (e) { /* token missing handled by api() */ }
+}
+
+// Check one endpoint; returns true when reachable.
 async function checkHealth() {
   if (S.mode === "portable") {
-    try { const st = await api("/api/status"); setStatus(true, "☁️ " + (st.profile_name || "portable")); return; }
-    catch (e) { setStatus(false); return; }
+    try { const st = await api("/api/status"); setStatus(true, "☁️ " + (st.profile_name || "portable")); refreshPortable(); return true; }
+    catch (e) { setStatus(false); return false; }
   }
-  // pc or auto: probe the PC
+  // pc or auto: probe the PC (only when a PC URL exists)
   if (S.base) {
     try {
       const st = await api("/api/companion/status");
       setStatus(true, st.presence?.state === "listening" ? "🟢 awake" : "💤 sleeping");
       renderToday(st);
-      return;
+      return true;
     } catch (e) { /* pc down */ }
   }
-  if (S.mode === "auto" && S.cloudBase) {
-    try { const st = await api("/api/status"); setStatus(true, "☁️ " + (st.profile_name || "portable")); return; }
-    catch (e) { setStatus(false); return; }
-  }
   setStatus(false);
+  return false;
 }
+// Connect with REAL fallback: auto prefers the PC when reachable, otherwise
+// uses the cloud — even when no PC URL is configured (the bug: opening the
+// workers.dev link sat on 'No PC URL' forever).
 async function detectAndConnect() {
+  if (S.mode === "auto") {
+    let pcOk = false;
+    if (S.base) pcOk = await checkHealth();
+    if (pcOk) {
+      connectWS();
+      if (S.connected) refreshToday();
+      return;
+    }
+    if (S.cloudBase) {
+      S.mode = "portable";
+      localStorage.setItem("phai.companion.mode", "portable");
+      applyMode();
+      toastHint("☁️ using portable cloud");
+      await checkHealth();
+      return;
+    }
+    setStatus(false);
+    switchTab("settings");
+    toastHint("Add your PC URL or cloud URL in Settings");
+    return;
+  }
   if (S.mode === "portable") {
     closeWS();
     if (!S.cloudBase) { setStatus(false); switchTab("settings"); toastHint("No cloud URL — add it in Settings"); return; }
+    if (portableTimer) clearInterval(portableTimer);
+    portableTimer = setInterval(refreshPortable, 20000);
     await checkHealth();
-  } else {
-    if (!S.base) { setStatus(false); switchTab("settings"); toastHint("No PC URL — add it in Settings"); return; }
-    await checkHealth();
-    connectWS(); // live presence/events when PC is up
-    if (S.mode === "auto" && !S.connected && S.cloudBase) await checkHealth();
+    return;
   }
-  if (S.connected && S.mode !== "portable") refreshToday();
+  if (portableTimer) { clearInterval(portableTimer); portableTimer = null; }
+  // pc mode
+  if (!S.base) { setStatus(false); switchTab("settings"); toastHint("No PC URL — add it in Settings"); return; }
+  const ok = await checkHealth();
+  if (ok) { connectWS(); refreshToday(); }
 }
 
 /* ============================ TODAY ============================ */
