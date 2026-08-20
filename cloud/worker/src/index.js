@@ -231,8 +231,17 @@ async function loginAccount(env, username, password) {
 async function createSession(env, username) {
   const token = randHex(24);
   await env.PHANTOM_KEYS.put("accttok:" + token, username);
-  const cfg = (await env.PHANTOM_KEYS.get("acctcfg:" + username)) || "{}";
-  return json({ ok: true, token, username, config: JSON.parse(cfg) });
+  const cfg = JSON.parse((await env.PHANTOM_KEYS.get("acctcfg:" + username)) || "{}");
+  cfg.keys = await cloudKeysStatus(env);
+  return json({ ok: true, token, username, config: cfg });
+}
+// masked per-key status from the Worker's live key store
+async function cloudKeysStatus(env) {
+  return {
+    nvidia: (await env.PHANTOM_KEYS.get("nvidia")) ? "configured" : "not set",
+    deepgram: (await env.PHANTOM_KEYS.get("deepgram")) ? "configured" : "not set",
+    groq: (await env.PHANTOM_KEYS.get("groq")) ? "configured" : "not set",
+  };
 }
 async function accountFromToken(env, request) {
   const tok = request.headers.get("X-Account-Token") || "";
@@ -294,8 +303,9 @@ async function handle(request, env) {
   if (path === "/api/account/config" && request.method === "GET") {
     const user = await accountFromToken(env, request);
     if (!user) return json({ error: "not signed in" }, 401);
-    const cfg = (await env.PHANTOM_KEYS.get("acctcfg:" + user)) || "{}";
-    return json({ ok: true, username: user, config: JSON.parse(cfg) });
+    const cfg = JSON.parse((await env.PHANTOM_KEYS.get("acctcfg:" + user)) || "{}");
+    cfg.keys = await cloudKeysStatus(env);
+    return json({ ok: true, username: user, config: cfg });
   }
   if (path === "/api/account/config" && request.method === "POST") {
     const user = await accountFromToken(env, request);
@@ -309,7 +319,16 @@ async function handle(request, env) {
       mode: ["auto", "pc", "portable"].includes(body.mode) ? body.mode : "auto",
       agent: body.agent === "coded" ? "coded" : "phantom",
     };
+    // cloud keys ride with the account: stored per-account AND activated on
+    // this Worker so a new phone logging in gets working keys immediately
+    const nv = String(body.nvidia_key || "").trim();
+    const dg = String(body.deepgram_key || "").trim();
+    const gq = String(body.groq_key || "").trim();
+    if (nv) { cfg.nvidia_key = nv; await env.PHANTOM_KEYS.put("nvidia", nv); }
+    if (dg) { cfg.deepgram_key = dg; await env.PHANTOM_KEYS.put("deepgram", dg); }
+    if (gq) { cfg.groq_key = gq; await env.PHANTOM_KEYS.put("groq", gq); }
     await env.PHANTOM_KEYS.put("acctcfg:" + user, JSON.stringify(cfg));
+    cfg.keys = await cloudKeysStatus(env);
     return json({ ok: true, config: cfg });
   }
 

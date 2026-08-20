@@ -62,6 +62,18 @@ function applyAccount(j) {
   S.accToken = j.token; S.accUser = j.username;
   localStorage.setItem("phai.account.token", j.token);
   localStorage.setItem("phai.account.user", j.username);
+  if (j.config && j.config.keys) S.accKeys = j.config.keys;
+  if (j.config && j.config.nvidia_key) {
+    // restore + activate the account's keys on this Worker
+    const act = { nvidia_key: j.config.nvidia_key };
+    if (j.config.deepgram_key) act.deepgram_key = j.config.deepgram_key;
+    if (j.config.groq_key) act.groq_key = j.config.groq_key;
+    fetch(S.cloudBase + "/api/config/keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(S.cloudToken ? { "X-Access-Token": S.cloudToken } : {}) },
+      body: JSON.stringify(act),
+    }).catch(() => {});
+  }
   // apply the saved config so a new phone connects straight away
   const c = j.config || {};
   if (c.pc_url) { S.base = c.pc_url; localStorage.setItem("phai.companion.url", c.pc_url); if ($("mUrl")) $("mUrl").value = c.pc_url; }
@@ -75,11 +87,16 @@ function applyAccount(j) {
 }
 async function accountSync() {
   try {
+    const nv = $("mCloudNvidia") ? $("mCloudNvidia").value.trim() : "";
+    const dg = $("mCloudDeepgram") ? $("mCloudDeepgram").value.trim() : "";
+    const gq = $("mCloudGroq") ? $("mCloudGroq").value.trim() : "";
     const j = await accountApi("/api/account/config", {
       pc_url: S.base, pc_token: S.token, cloud_url: S.cloudBase,
       cloud_token: S.cloudToken, mode: S.mode, agent: S.agent,
+      nvidia_key: nv, deepgram_key: dg, groq_key: gq,
     }, S.accToken);
-    $("mAccStatus").textContent = "✓ Settings saved to your account.";
+    $("mAccStatus").textContent = "✓ Settings + keys saved to your account.";
+    renderAccountUI();
     toastHint("✓ Account settings saved");
   } catch (e) { $("mAccStatus").textContent = "✗ " + e.message; }
 }
@@ -94,7 +111,12 @@ function renderAccountUI() {
   const st = $("mAccStatus");
   const sync = $("mAccSync"), out = $("mAccOut");
   if (S.accToken && S.accUser) {
-    if (st) st.textContent = "✓ Signed in as " + S.accUser;
+    const k = S.accKeys || {};
+    const parts = [];
+    parts.push(k.nvidia ? "NVIDIA ✓" : "NVIDIA —");
+    parts.push(k.deepgram ? "Deepgram ✓" : "Deepgram —");
+    parts.push(k.groq ? "Groq ✓" : "Groq —");
+    if (st) st.textContent = "✓ " + S.accUser + " · " + parts.join(" · ");
     if (sync) sync.classList.remove("hidden");
     if (out) out.classList.remove("hidden");
   } else {
@@ -633,6 +655,17 @@ $("mKill2").onclick = killPC;
           if (c.cloud_url) { S.cloudBase = c.cloud_url; localStorage.setItem("phai.companion.cloud", c.cloud_url); if ($("mCloud")) $("mCloud").value = c.cloud_url; }
           if (c.cloud_token) { S.cloudToken = c.cloud_token; localStorage.setItem("phai.companion.cloudtoken", c.cloud_token); }
           if (c.mode) setMode(c.mode);
+          if (c.keys) S.accKeys = c.keys;
+          if (c.nvidia_key) {
+            const act = { nvidia_key: c.nvidia_key };
+            if (c.deepgram_key) act.deepgram_key = c.deepgram_key;
+            if (c.groq_key) act.groq_key = c.groq_key;
+            fetch(S.cloudBase + "/api/config/keys", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...(S.cloudToken ? { "X-Access-Token": S.cloudToken } : {}) },
+              body: JSON.stringify(act),
+            }).catch(() => {});
+          }
           renderAccountUI();
         }
         detectAndConnect();

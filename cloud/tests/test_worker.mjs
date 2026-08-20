@@ -376,3 +376,30 @@ await t("account register + login + config sync", async () => {
     { method: "POST", body: { username: "joojo", password: "whatever1" } }), e);
   assert.equal(dup.status, 409);
 });
+
+// account config now carries cloud keys + per-key status
+await t("account config carries keys + individual status", async () => {
+  const e = makeEnv();
+  const reg = await handle(req("https://phantom.local/api/account/register",
+    { method: "POST", body: { username: "jojo2", password: "secret456" } }), e);
+  const rj = await reg.json();
+  // save config WITH keys
+  const save = await handle(req("https://phantom.local/api/account/config",
+    { method: "POST", headers: { "X-Account-Token": rj.token },
+      body: { cloud_url: "https://phantom-portable.g2phantom33.workers.dev",
+              cloud_token: "ctok", mode: "portable",
+              nvidia_key: "nvapi-acct", deepgram_key: "dg-acct", groq_key: "gsk-acct" } }), e);
+  const sj = await save.json();
+  assert.equal(sj.config.keys.nvidia, "configured");
+  assert.equal(sj.config.keys.deepgram, "configured");
+  assert.equal(sj.config.keys.groq, "configured");
+  // worker keys activated too
+  assert.equal(await e.PHANTOM_KEYS.get("nvidia"), "nvapi-acct");
+  assert.equal(await e.PHANTOM_KEYS.get("groq"), "gsk-acct");
+  // login on "another phone" -> config + keys status return
+  const login = await handle(req("https://phantom.local/api/account/login",
+    { method: "POST", body: { username: "jojo2", password: "secret456" } }), e);
+  const lj = await login.json();
+  assert.equal(lj.config.nvidia_key, "nvapi-acct");
+  assert.equal(lj.config.keys.deepgram, "configured");
+});

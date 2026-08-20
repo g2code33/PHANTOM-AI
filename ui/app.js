@@ -1456,6 +1456,10 @@ async function loadDiagnostics() {
       lines.push(`disk R ${sys.disk?.read_bps ?? 0} B/s · W ${sys.disk?.write_bps ?? 0} B/s · net ↓${sys.net?.down_bps ?? 0} ↑${sys.net?.up_bps ?? 0}`);
       lines.push(`battery: ${sys.battery?.available ? sys.battery.percent + "%" : "unavailable"}`);
       lines.push(`processes: ${sys.process_count ?? "?"} · top cpu: ${sys.process?.name || "—"} ${sys.process?.cpu_percent || 0}%`);
+      const topName = String(sys.process?.name || "").toLowerCase();
+      if (topName.startsWith("k") && /compact|kswapd|kworker/.test(topName)) {
+        lines.push("⚠️ kernel thread pegging CPU (" + topName + ") — this is the OS, not Phantom. Usually memory pressure: close heavy apps, check swap, or disable THP defrag (echo never | sudo tee /sys/kernel/mm/transparent_hugepage/defrag).");
+      }
       lines.push(`pending asyncio tasks: ${d.pending_tasks ?? "?"} · ws subscribers: ${d.ws_subscribers ?? "?"}`);
     }
     logEl.textContent = lines.join("\n");
