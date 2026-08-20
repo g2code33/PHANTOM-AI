@@ -599,18 +599,33 @@ $("mCloudKeysBtn").onclick = async () => {
   if (model) body.model = model;
   if (!Object.keys(body).length) { $("mCloudLog").textContent = "Paste a key or model first."; return; }
   try {
-    // portable mode: talk to the worker directly; pc mode: via the PC
-    const r = S.mode === "portable" && S.cloudBase
-      ? await (async () => {
-          const res = await fetch(S.cloudBase + "/api/config/keys", {
-            method: "POST", headers: { "Content-Type": "application/json", ...(S.cloudToken ? { "X-Access-Token": S.cloudToken } : {}) },
-            body: JSON.stringify(body),
-          });
-          const j = await res.json();
-          if (!res.ok) throw new Error(j.error || "cloud rejected");
-          return { masked: j.masked };
-        })()
-      : await api("/api/cloud/keys", { body });
+    // portable mode: talk to the worker directly; pc mode: via the PC.
+    // FIX for 'unauthorized': if you're signed into an ACCOUNT, save through
+    // the account (activates the keys — no cloud token needed). Otherwise
+    // use the cloud token and explain clearly when it's missing/wrong.
+    let r;
+    if (S.mode === "portable" && S.cloudBase) {
+      if (S.accToken) {
+        const j = await accountApi("/api/account/config",
+          { cloud_url: S.cloudBase, cloud_token: S.cloudToken, mode: S.mode,
+            agent: S.agent, nvidia_key: nv, deepgram_key: dg, groq_key: gq }, S.accToken);
+        r = { masked: j.config && j.config.keys };
+      } else {
+        if (!S.cloudToken) {
+          $("mCloudLog").textContent = "✗ No cloud token set — add it above (or sign in with your account) then save.";
+          return;
+        }
+        const res = await fetch(S.cloudBase + "/api/config/keys", {
+          method: "POST", headers: { "Content-Type": "application/json", "X-Access-Token": S.cloudToken },
+          body: JSON.stringify(body),
+        });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.error || "cloud rejected (401 = wrong/missing cloud token)");
+        r = { masked: j.masked };
+      }
+    } else {
+      r = await api("/api/cloud/keys", { body });
+    }
     $("mCloudNvidia").value = ""; $("mCloudDeepgram").value = ""; $("mCloudGroq").value = "";
     $("mCloudLog").textContent = "Saved (masked): " + JSON.stringify(r.masked || {});
     toastHint("Cloud config saved");

@@ -814,17 +814,44 @@ class PhantomVoice {
     }, 120);
   }
 
+  // HOLD-TO-TALK (bulletproof): recording starts IMMEDIATELY on press — no
+  // VAD threshold can block it — and flushes on release. This ALWAYS hears
+  // you, in any mode, even if auto-VAD is misconfigured.
   async pushToTalkStart() {
     if (this.killEngaged) return;
     if (this.state === "SPEAKING") this.bargeIn();
     this.micEnabled = true;
     this.stopSpeaking();
+    await this.startMic();
+    const eff = this._effectiveStt ? this._effectiveStt() : this.sttProvider;
+    if (eff === "server" && this._audioCtx && this._micStream) {
+      // direct server recording path
+      this._startServerListen();
+      this._srvRecording = true;   // record NOW
+      this._srvChunks = [];
+      this.setState("LISTENING");
+      this.onInterim?.("🎙️ recording — release to send");
+      return;
+    }
+    if (this._canBrowserSTT && this._canBrowserSTT()) {
+      this._startBrowserSTT();
+      this.setState("LISTENING");
+      this.onInterim?.("🎙️ recording — release to send");
+      return;
+    }
+    // fallback: normal listening
     await this.startListening();
   }
 
   pushToTalkEnd() {
-    if (this.mode === "push") {
-      // give STT a moment to flush finals, then stop
+    const eff = this._effectiveStt ? this._effectiveStt() : this.sttProvider;
+    if (this.mode === "push" || this.mode === "conversation") {
+      if (eff === "server") {
+        // flush what was recorded right now (no waiting for VAD silence)
+        if (this._srvChunks.length) this._flushServerSTT();
+        else { this.setState(this.mode === "conversation" ? "LISTENING" : "IDLE"); }
+        return;
+      }
       setTimeout(() => this.stopListening(), 250);
     }
   }
