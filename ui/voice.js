@@ -66,6 +66,7 @@ class PhantomVoice {
 
     this._speakQueue = [];
     this._speaking = false;
+    this._speakWatchdog = null;
     this._utterance = null;
 
     this._vadBuf = [];
@@ -257,7 +258,8 @@ class PhantomVoice {
         if (!this._srvRecording) { this._srvRecording = true; this._srvChunks = []; this._srvSilenceMs = 0; }
         this._srvSilenceMs = 0;
         this._srvLastTick = now;
-      } else if (this._srvRecording) {
+      } else if (this._srvRecording && !this._pttHolding) {
+        // auto-stop only when NOT holding (hold-to-talk flushes on release)
         this._srvSilenceMs += now - this._srvLastTick;
         this._srvLastTick = now;
         if (this._srvSilenceMs >= this.autoStopMs) { this._srvSilenceMs = 0; this._flushServerSTT(); }
@@ -471,7 +473,8 @@ class PhantomVoice {
       if (dur >= this.maxRecordMs) this._flushServerSTT();
     };
     source.connect(proc);
-    proc.connect(ctx.destination);
+    // NOTE: do NOT connect proc to ctx.destination — that loops the mic into
+    // the speakers (feedback). The analyser + recording need only the source.
     this._srvSource = source;
     this._srvProc = proc;
   }
@@ -526,7 +529,11 @@ class PhantomVoice {
       const data = await res.json();
       this.lastSttProvider = data.provider || "";
       if (data.text && data.text.trim()) {
+        this.onInterim?.("✓ heard: " + data.text.slice(0, 80) + " (" + (data.provider || "?") + ")");
+        setTimeout(() => this.onInterim?.(""), 2000);
         this.onFinal?.(data.text.trim(), data);
+      } else {
+        this.onError?.("No speech detected — hold the mic while speaking");
       }
     } catch (e) {
       this.onError?.("🎙️ speech recognition failed: " + e.message);
@@ -578,6 +585,14 @@ class PhantomVoice {
   _drainQueue() {
     if (this._speaking || !this._speakQueue.length) return;
     const item = this._speakQueue.shift();
+    // watchdog: never let a failed/stuck playback deadlock speech forever
+    clearTimeout(this._speakWatchdog);
+    this._speakWatchdog = setTimeout(() => {
+      if (this._speaking) {
+        this._speaking = false;
+        this._speakDone();
+      }
+    }, 25000);
     if (item.priority) this._speakQueue = this._speakQueue.filter((q) => !q.priority);
     this._speaking = true;
     this.setState("SPEAKING");
@@ -774,6 +789,7 @@ class PhantomVoice {
 
   _speakDone() {
     this._speaking = false;
+    clearTimeout(this._speakWatchdog);
     this._utterance = null;
     this.ttsSpectrumAvailable = false;
     this.onSpeakEnd?.();
@@ -823,12 +839,14 @@ class PhantomVoice {
     this.micEnabled = true;
     this.stopSpeaking();
     await this.startMic();
+    this._pttHolding = true;
     const eff = this._effectiveStt ? this._effectiveStt() : this.sttProvider;
     if (eff === "server" && this._audioCtx && this._micStream) {
       // direct server recording path
       this._startServerListen();
       this._srvRecording = true;   // record NOW
       this._srvChunks = [];
+      this._srvSilenceMs = 0;
       this.setState("LISTENING");
       this.onInterim?.("🎙️ recording — release to send");
       return;
@@ -844,12 +862,18 @@ class PhantomVoice {
   }
 
   pushToTalkEnd() {
+    this._pttHolding = false;
     const eff = this._effectiveStt ? this._effectiveStt() : this.sttProvider;
     if (this.mode === "push" || this.mode === "conversation") {
       if (eff === "server") {
         // flush what was recorded right now (no waiting for VAD silence)
-        if (this._srvChunks.length) this._flushServerSTT();
-        else { this.setState(this.mode === "conversation" ? "LISTENING" : "IDLE"); }
+        if (this._srvChunks.length) {
+          this.onInterim?.("📤 sending…");
+          this._flushServerSTT();
+        } else {
+          this.setState(this.mode === "conversation" ? "LISTENING" : "IDLE");
+          this.onInterim?.("no audio captured — hold while speaking");
+        }
         return;
       }
       setTimeout(() => this.stopListening(), 250);
