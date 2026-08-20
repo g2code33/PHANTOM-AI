@@ -1275,6 +1275,7 @@ async function loadSettings() {
         <button class="btn mini-btn" onclick="diagTab('system')">System</button>
         <button class="btn mini-btn" onclick="loadDiagnostics()">Refresh</button>
         <button class="btn mini-btn" onclick="voiceSelfTest()">🎤 Test voice</button>
+        <button class="btn mini-btn" onclick="systemHealthCheck()">🩺 System health</button>
         <button class="btn mini-btn" onclick="copyDiagLog()">Copy</button>
         <button class="btn mini-btn" onclick="exportDiagLog()">Export file</button>
         <button class="btn mini-btn" onclick="clearDiagLog()">Clear console</button>
@@ -1456,6 +1457,10 @@ async function loadDiagnostics() {
       lines.push(`disk R ${sys.disk?.read_bps ?? 0} B/s · W ${sys.disk?.write_bps ?? 0} B/s · net ↓${sys.net?.down_bps ?? 0} ↑${sys.net?.up_bps ?? 0}`);
       lines.push(`battery: ${sys.battery?.available ? sys.battery.percent + "%" : "unavailable"}`);
       lines.push(`processes: ${sys.process_count ?? "?"} · top cpu: ${sys.process?.name || "—"} ${sys.process?.cpu_percent || 0}%`);
+      const topName = String(sys.process?.name || "").toLowerCase();
+      if (topName.startsWith("k") && /compact|kswapd|kworker/.test(topName)) {
+        lines.push("⚠️ kernel thread pegging CPU (" + topName + ") — this is the OS, not Phantom. Usually memory pressure: close heavy apps, check swap, or disable THP defrag (echo never | sudo tee /sys/kernel/mm/transparent_hugepage/defrag).");
+      }
       lines.push(`pending asyncio tasks: ${d.pending_tasks ?? "?"} · ws subscribers: ${d.ws_subscribers ?? "?"}`);
     }
     logEl.textContent = lines.join("\n");
@@ -1467,6 +1472,30 @@ async function loadDiagnostics() {
     if (stEl) stEl.textContent = "backend unreachable";
   }
 }
+window.systemHealthCheck = async () => {
+  const out = $("diagLog");
+  const log = (t) => { out.textContent += "\n" + t; out.scrollTop = out.scrollHeight; };
+  out.textContent += "\n---- system health ----\n";
+  try {
+    const d = await api("/api/hud");
+    const cpu = d.cpu || {}, mem = d.memory || {}, proc = d.process || {};
+    log(`CPU ${cpu.total ?? "?"}% (${cpu.cores ?? "?"} cores) · load ${(cpu.load_avg || []).join(" / ")}`);
+    log(`MEM ${mem.percent ?? "?"}% · ${((mem.used_bytes || 0) / 1073741824).toFixed(1)} / ${((mem.total_bytes || 0) / 1073741824).toFixed(1)} GB`);
+    log(`top process: ${proc.name || "—"} ${proc.cpu_percent || 0}% (pid ${proc.pid || "?"})`);
+    const advice = [];
+    if ((cpu.total || 0) >= 85) advice.push("🔥 CPU very high — close heavy apps or reboot.");
+    const topName = String(proc.name || "").toLowerCase();
+    if (/compact|kswapd|kworker/.test(topName)) {
+      advice.push("⚠️ Kernel thread pegging CPU — memory pressure. Run: sudo sysctl vm.compact_memory=0  (or reboot)");
+    }
+    if ((mem.percent || 0) >= 85) advice.push("⚠️ RAM nearly full — close tabs/apps or add swap.");
+    if ((cpu.total || 0) < 60 && (mem.percent || 0) < 70 && !/compact|kswapd|kworker/.test(topName)) {
+      advice.push("✅ System looks healthy — slowness is likely the network/model, not the machine.");
+    }
+    log(advice.length ? "\n" + advice.join("\n") : "\n✅ No red flags.");
+  } catch (e) { log("✗ " + e.message); }
+};
+
 window.voiceSelfTest = async () => {
   const out = $("diagLog");
   const log = (t) => { out.textContent += "\n" + t; out.scrollTop = out.scrollHeight; };

@@ -243,11 +243,14 @@ class PhantomVoice {
 
   _vad(level) {
     const SPEECH = this.vadThreshold || 0.030, SILENCE = 0.012;  // slightly more sensitive for barge
-    // server STT: gate recording on speech, flush after auto-stop silence
-    if (this.sttProvider === "server" && this.state === "LISTENING" && this._srvFlushing) {
+    // server STT: gate recording on speech, flush after auto-stop silence.
+    // MUST use the EFFECTIVE provider — 'auto' resolves to server in Electron,
+    // and checking the raw sttProvider ('auto') here silently killed input.
+    const effStt = this._effectiveStt ? this._effectiveStt() : this.sttProvider;
+    if (effStt === "server" && this.state === "LISTENING" && this._srvFlushing) {
       return;  // wait for the in-flight transcription to finish
     }
-    if (this.sttProvider === "server" && this.state === "LISTENING" && this.micEnabled) {
+    if (effStt === "server" && this.state === "LISTENING" && this.micEnabled) {
       const now = Date.now();
       if (!this._srvLastTick) this._srvLastTick = now;
       if (level > SPEECH) {
