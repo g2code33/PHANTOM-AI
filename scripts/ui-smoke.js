@@ -79,6 +79,13 @@ try {
 
 // let module-scope init + DOMContentLoaded run
 setTimeout(() => {
+  // verify the critical chat helpers exist in the app source (the bug that
+  // broke chat: agentRun etc. were referenced but never defined)
+  for (const fn of ["agentRun", "setAgentRunning", "setAgentDone", "anyRunning", "startReplyWatcher"]) {
+    if (!new RegExp("function " + fn + "\\(").test(appJs)) {
+      problems.push("MISSING FUNCTION: " + fn);
+    }
+  }
   const problems = errors.filter((e) => !/favicon|404/.test(e));
   console.log("jsdom errors:", errors.length ? errors.slice(0, 10) : "none");
   const body = window.document.body;
