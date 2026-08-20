@@ -1413,6 +1413,33 @@ window.voiceSelfTest = async () => {
     const j = await res.json();
     log(`✓ STT heard: "${j.text}" (${j.provider || "?"})`);
   } catch (e) { log("✗ mic/STT: " + e.message); }
+
+  // ---- TTS OUTPUT round-trip ----
+  log("synthesizing speech (Deepgram Aura)…");
+  try {
+    const tres = await fetch("/api/voice/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "This is Phantom testing my voice output.", voice: "" }),
+    });
+    if (!tres.ok) {
+      let d = tres.statusText; try { d = (await tres.json()).detail || d; } catch (e) {}
+      log("✗ TTS: " + d);
+    } else {
+      const tprov = tres.headers.get("X-TTS-Provider") || "?";
+      const blob = await tres.blob();
+      log(`✓ TTS synth: provider=${tprov} · ${Math.round(blob.size / 1024)} KB · type=${blob.type}`);
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => { URL.revokeObjectURL(url); log("✓ playback finished"); };
+      try {
+        await audio.play();
+        log("✓ playback started — you should hear it");
+      } catch (e) {
+        log("✗ playback blocked: " + e.message + " — click once anywhere first (autoplay unlock)");
+      }
+    }
+  } catch (e) { log("✗ TTS round-trip: " + e.message); }
 };
 
 window.replRun = () => {

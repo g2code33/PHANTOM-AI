@@ -612,6 +612,16 @@ class PhantomVoice {
       this.setState(this.mode === "conversation" ? "LISTENING" : "IDLE");
       return;
     }
+    // Electron/Linux often has ZERO system voices — falling back here is
+    // silent. Report it honestly and point to server TTS.
+    let voices = [];
+    try { voices = synth.getVoices(); } catch (e) {}
+    if (!voices.length) {
+      this.onError?.("No system voices available — enable server TTS (Deepgram Aura) in Settings → Voice for speech.");
+      this._speaking = false;
+      this.setState(this.mode === "conversation" ? "LISTENING" : "IDLE");
+      return;
+    }
     const clean = PhantomVoice._cleanSpeech(text);
     if (!clean) { this._speakDone(); return; }
     synth.cancel();
@@ -661,11 +671,23 @@ class PhantomVoice {
         // autoplay may still be blocked on the first frame — resume + retry
         await this.unlockAudio();
         await new Promise((r) => setTimeout(r, 50));
-        await audio.play();
+        try { await audio.play(); }
+        catch (e2) {
+          URL.revokeObjectURL(url); this._serverAudio = null;
+          this.onError?.("🔊 Could not play audio — click/tap once anywhere to unlock sound, then try again.");
+          this._speaking = false;
+          this.setState(this.mode === "conversation" ? "LISTENING" : "IDLE");
+          return;
+        }
       }
     } catch (e) {
-      this._fallbackBrowserTTS(text);
-      this.onError?.("🔊 " + e.message);
+      // server TTS failed — browser fallback only helps if voices exist
+      let voices = [];
+      try { voices = (window.speechSynthesis && window.speechSynthesis.getVoices()) || []; } catch (e2) {}
+      if (voices.length) this._fallbackBrowserTTS(text);
+      else this.onError?.("🔊 Server TTS failed (" + e.message + ") and no system voices exist — check your Deepgram key in Settings.");
+      this._speaking = false;
+      this.setState(this.mode === "conversation" ? "LISTENING" : "IDLE");
     }
   }
 
