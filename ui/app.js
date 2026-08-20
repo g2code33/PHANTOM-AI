@@ -23,6 +23,9 @@ const state = {
   // same time on separate tasks, and each can command the other.
   runs: {},            // agent -> { runId, running }
   convs: {},           // agent -> current conversation id
+  wsUp: false,         // websocket connected (live events)
+  lastReplyFor: {},    // agent -> last assistant content handled
+  watchers: {},        // agent -> reply-watcher timer
   pendingConfirmations: {}, userName: localStorage.getItem("phantom.userName") || "",
   micLevel: 0, transcript: [],
 };
@@ -168,6 +171,7 @@ function connectWS() {
   }
   ws.onmessage = (ev) => { try { handleEvent(JSON.parse(ev.data)); } catch (e) {} };
   ws.onclose = () => {
+    state.wsUp = false;
     wsRetries += 1;
     if (wsRetries > WS_MAX_RETRIES) {
       setPresence("DISCONNECTED");
@@ -177,6 +181,7 @@ function connectWS() {
     scheduleWSRetry();
   };
   ws.onopen = () => {
+    state.wsUp = true;
     wsRetries = 0;
     stopPresenceFallback();
     try { ws.send(JSON.stringify({ type: "ping" })); } catch (e) {}
@@ -209,6 +214,77 @@ function pushChunkToSpeech(text) {
     const ready = parts.join("").trim();
     if (ready) voice.speak(ready);
   }
+}
+
+// ---- multi-task run helpers (Phantom + Coded run simultaneously) ----
+function agentRun(agent) { return state.runs[agent] || { runId: null, running: false }; }
+function anyRunning() { return Object.values(state.runs).some((r) => r && r.running); }
+function setAgentRunning(agent, runId) {
+  state.runs[agent] = { runId, running: true };
+  if (agent === state.agent) { state.runId = runId; state.running = true; }
+  renderRunIndicators();
+}
+// ---- WS-independent reply watcher (keeps chat working without WS) ----
+function stopReplyWatcher(agent) {
+  if (state.watchers[agent]) { clearTimeout(state.watchers[agent]); delete state.watchers[agent]; }
+}
+function startReplyWatcher(agent, convId, runId) {
+  stopReplyWatcher(agent);
+  const startedAt = Date.now();
+  const tick = async () => {
+    try {
+      const conv = await api(`/api/conversations/${convId}`);
+      const msgs = conv.messages || [];
+      const asst = msgs.filter((m) => m.role === "assistant" && m.content && m.content.trim());
+      const last = asst[asst.length - 1];
+      const content = last ? String(last.content).trim() : "";
+      if (content && content !== (state.lastReplyFor[agent] || "")) {
+        // new reply arrived — render (if this agent is focused) + speak
+        state.lastReplyFor[agent] = content;
+        stopReplyWatcher(agent);
+        setAgentDone(agent);
+        if (agent === state.agent) {
+          hideRunIndicator(); setContextLine(null);
+          addMessageEl("assistant", content);
+          loadConversations();
+        }
+        flushSpeech();
+        if (state.voiceOn && !state.killEngaged && voice.mode !== "private") {
+          voice.speak(content);
+        } else if (!anyRunning()) resumeListeningAfterReply();
+        return;
+      }
+      const run = await api(`/api/runs/${runId}`).catch(() => null);
+      if (run && run.status === "error") {
+        stopReplyWatcher(agent); setAgentDone(agent);
+        if (agent === state.agent) addMessageEl("error", run.error || "run failed");
+        else toast("✗ " + (AGENTS[agent]?.name || agent) + ": " + (run.error || "failed"), "err");
+        return;
+      }
+    } catch (e) { /* transient */ }
+    if (Date.now() - startedAt < 90000) {
+      state.watchers[agent] = setTimeout(tick, 1500);   // keep polling
+    } else {
+      stopReplyWatcher(agent); setAgentDone(agent);      // watchdog: never stuck
+      if (agent === state.agent) { hideRunIndicator(); setContextLine(null); }
+    }
+  };
+  state.watchers[agent] = setTimeout(tick, 1500);
+}
+
+function setAgentDone(agent) {
+  if (state.runs[agent]) state.runs[agent].running = false;
+  if (agent === state.agent) { state.running = false; state.runId = null; }
+  renderRunIndicators();
+}
+function renderRunIndicators() {
+  const busy = Object.entries(state.runs).filter(([, r]) => r && r.running).map(([a]) => a);
+  const el = document.getElementById("multiRunBar");
+  if (!el) return;
+  if (busy.length) {
+    el.classList.remove("hidden");
+    el.textContent = "⚙️ working: " + busy.map((a) => (a === "coded" ? "💻 Coded" : "👻 Phantom")).join(" + ");
+  } else el.classList.add("hidden");
 }
 
 function handleEvent(payload) {
@@ -245,6 +321,8 @@ function handleEvent(payload) {
       break;
     case "agent.run_completed":
       if (run_id === run.runId) {
+        state.lastReplyFor[agent] = (data.content || "").trim();
+        stopReplyWatcher(agent);
         setAgentDone(agent);
         if (isFocused) { hideRunIndicator(); setContextLine(null); finalizeAssistantMessage(data); loadConversations(); }
         flushSpeech();
@@ -493,6 +571,11 @@ async function sendMessage(text, opts = {}) {
     });
     state.convs[target] = res.conversation_id;
     if (target === state.agent) state.currentConv = res.conversation_id;
+    // optimistic run tracking + WS-independent completion watcher: even if
+    // the WebSocket is down (packaged-app issue), the reply still arrives
+    // via HTTP polling and gets shown + spoken.
+    setAgentRunning(target, res.run_id);
+    startReplyWatcher(target, res.conversation_id, res.run_id);
     activeStreamEl = null;
     sentenceBuf = "";
     loadConversations();
