@@ -2428,11 +2428,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     toast(`voice mode: ${next}`);
     $("voiceModeBtn").classList.toggle("active", next !== "private");
   };
-  $("pttBtn").onclick = async () => {
-    if (voice.state === "LISTENING") { voice.pushToTalkEnd(); }
-    else if (voice.state === "SPEAKING") { voice.bargeIn(); voice.pushToTalkStart(); }
-    else { await voice.pushToTalkStart(); }
+  // HOLD-TO-TALK: press & hold 🎙️ to record, release to send. A plain click
+  // still toggles (start/stop) for those who prefer tap-tap.
+  const pttBtn = $("pttBtn");
+  pttBtn.onpointerdown = (ev) => {
+    ev.preventDefault();
+    if (voice.state === "SPEAKING") { voice.bargeIn(); }
+    pttBtn._holding = true;
+    voice.pushToTalkStart();
   };
+  pttBtn.onpointerup = () => {
+    if (!pttBtn._holding) return;
+    pttBtn._holding = false;
+    voice.pushToTalkEnd();
+  };
+  pttBtn.onpointercancel = () => { pttBtn._holding = false; voice.pushToTalkEnd(); };
+  pttBtn.onclick = (ev) => { ev.preventDefault(); }; // pointer handlers do the work
 
   // composer
   $("sendBtn").onclick = () => { const v = $("input").value; if (v.trim()) { $("input").value = ""; sendMessage(v); } };
