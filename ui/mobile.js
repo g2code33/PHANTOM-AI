@@ -233,8 +233,32 @@ async function hardRefresh() {
   try { caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))); } catch (e) {}
   location.reload();
 }
+
+// FULL RESET refresh (Settings): unregister SW + clear ALL caches + clear
+// all Phantom storage so a new fix takes effect 100% clean. Only the account
+// token is kept so you stay signed in.
+async function fullResetRefresh() {
+  if (!confirm("Clear all app cache & storage and reload fresh? (You stay signed in)")) return;
+  toastHint("clearing everything…");
+  try {
+    const regs = await (navigator.serviceWorker ? navigator.serviceWorker.getRegistrations() : []);
+    await Promise.all(regs.map((r) => r.unregister()));
+  } catch (e) {}
+  try {
+    const keys = await caches.keys();
+    await Promise.all(keys.map((k) => caches.delete(k)));
+  } catch (e) {}
+  try {
+    const keep = ["phai.account.token", "phai.account.user"];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && !keep.includes(k)) localStorage.removeItem(k);
+    }
+  } catch (e) {}
+  location.reload();
+}
 $("mRefreshBtn").onclick = hardRefresh;
-$("mRefreshBtn2").onclick = hardRefresh;
+$("mRefreshBtn2").onclick = fullResetRefresh;
 
 $("mAccLogin").onclick = accountLogin;
 $("mAccRegister").onclick = accountRegister;
