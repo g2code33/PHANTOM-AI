@@ -340,12 +340,7 @@ function handleEvent(payload) {
         stopReplyWatcher(agent);
         setAgentDone(agent);
         if (isFocused) { hideRunIndicator(); setContextLine(null); finalizeAssistantMessage(data); loadConversations(); }
-        flushSpeech();
-        if (data.status === "ok" && state.voiceOn && data.content && voice.mode !== "private") {
-          voice.speak(data.content); // voice-first: both agents' replies are spoken
-        } else if (!anyRunning()) {
-          resumeListeningAfterReply();
-        }
+        if (!anyRunning()) resumeListeningAfterReply();
       }
       addActivity("agent", `${(AGENTS[data.agent]?.emoji || "")} ${data.status} · ${(data.latency_ms || 0).toFixed(0)}ms`, "tool-ok");
       break;
@@ -528,10 +523,12 @@ function finalizeAssistantMessage(data) {
   if (data.status === "cancelled") addMessageEl("system", "⏹ run stopped" + (data.error ? ` — ${data.error}` : ""));
   else if (data.status === "error") addMessageEl("error", data.error || "run failed");
   else if (!data.content) addMessageEl("assistant", "(no textual answer)");
-  // voice-first: always read the final answer aloud (chunks may have been muted)
-  if (data.content && state.voiceOn && !state.killEngaged) {
-    flushSpeech();
-    if (sentenceBuf.trim()) { voice.speak(sentenceBuf.trim()); sentenceBuf = ""; }
+  // voice-first: speak the full final answer ONCE (the delta-stream watcher
+  // already spoke the chunks; this covers the case it missed them). Clearing
+  // sentenceBuf prevents double-speaking.
+  sentenceBuf = "";
+  if (data.content && state.voiceOn && !state.killEngaged && voice.mode !== "private") {
+    voice.speak(data.content);
   }
 }
 

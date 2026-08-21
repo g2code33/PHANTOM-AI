@@ -34,6 +34,10 @@ class ModelRouter:
         cfg = await self.settings.get("model.router", agent_id, {}) or {}
         default = cfg.get("default") or DEFAULT_MODELS.get(agent_id) or DEFAULT_MODELS["phantom"]
         bucket = self._classify(task_text)
+        if bucket == "fast":
+            # fast/short asks get the snappy 8B model — replies return in a
+            # fraction of the 70B latency (the 'so slow to bring out' fix)
+            return cfg.get("fast") or "meta/llama-3.1-8b-instruct"
         return cfg.get(bucket) or default
 
     async def classify(self, task_text: str) -> str:
