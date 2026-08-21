@@ -87,16 +87,15 @@
 
     <div class="mCard">
       <div style="font-weight:700;margin-bottom:6px">👤 Account (sync to any phone)</div>
-      <p class="muted small">Create an account so your PC/cloud links, tokens and mode follow you — sign in on any phone and connect straight away.</p>
-      <input id="mAccUser" type="text" placeholder="username" autocomplete="username">
-      <input id="mAccPass" type="password" placeholder="password (min 6 chars)" autocomplete="current-password">
-      <div class="btnRow" style="margin-top:10px">
-        <button id="mAccLogin" class="btnApprove">Log in</button>
-        <button id="mAccRegister" class="mMini" style="flex:1">Create account</button>
-      </div>
+      <p class="muted small">Save your PC/cloud links, tokens and keys to your account — then log in on any phone and they come back automatically.</p>
+      <input id="mAccUser" type="text" placeholder="username" autocomplete="username" style="font-size:16px">
+      <input id="mAccPass" type="password" placeholder="password (min 6 chars)" autocomplete="current-password" style="font-size:16px">
+      <button id="mAccLogin" class="mPrimary" style="margin-top:12px">🔓 Log in</button>
+      <button id="mAccRegister" class="mPrimary" style="margin-top:8px;background:linear-gradient(135deg,var(--yellow),#ffb300);color:#1a1400">＋ Create account</button>
       <div id="mAccStatus" class="muted small" style="margin-top:8px"></div>
-      <button id="mAccSync" class="mMini hidden" style="width:100%;margin-top:8px">💾 Save my settings to account</button>
-      <button id="mAccOut" class="mMini hidden" style="width:100%;margin-top:6px;color:var(--red);border-color:var(--red)">Sign out</button>
+      <button id="mAccSync" class="mPrimary hidden" style="margin-top:10px">💾 SAVE my settings + keys to account</button>
+      <button id="mAccRetrieve" class="mPrimary hidden" style="margin-top:8px;background:linear-gradient(135deg,#7fd6a0,#3fae6f);color:#0a140c">⬇ PULL settings + keys to this phone</button>
+      <button id="mAccOut" class="mMini hidden" style="width:100%;margin-top:8px;color:var(--red);border-color:var(--red)">Sign out</button>
     </div>
 
     <div class="mCard">

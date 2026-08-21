@@ -64,15 +64,14 @@ function applyAccount(j) {
   localStorage.setItem("phai.account.user", j.username);
   if (j.config && j.config.keys) S.accKeys = j.config.keys;
   if (j.config && j.config.nvidia_key) {
-    // restore + activate the account's keys on this Worker
+    // restore + activate the account's keys via the ACCOUNT endpoint (no
+    // cloud token needed on a fresh device — the account token is enough)
     const act = { nvidia_key: j.config.nvidia_key };
     if (j.config.deepgram_key) act.deepgram_key = j.config.deepgram_key;
     if (j.config.groq_key) act.groq_key = j.config.groq_key;
-    fetch(S.cloudBase + "/api/config/keys", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(S.cloudToken ? { "X-Access-Token": S.cloudToken } : {}) },
-      body: JSON.stringify(act),
-    }).catch(() => {});
+    accountApi("/api/account/config", act, S.accToken)
+      .then(() => toastHint("✓ Keys restored for " + j.username))
+      .catch(() => {});
   }
   // apply the saved config so a new phone connects straight away
   const c = j.config || {};
@@ -109,7 +108,7 @@ function accountSignOut() {
 }
 function renderAccountUI() {
   const st = $("mAccStatus");
-  const sync = $("mAccSync"), out = $("mAccOut");
+  const sync = $("mAccSync"), retr = $("mAccRetrieve"), out = $("mAccOut");
   if (S.accToken && S.accUser) {
     const k = S.accKeys || {};
     const parts = [];
@@ -118,12 +117,40 @@ function renderAccountUI() {
     parts.push(k.groq ? "Groq ✓" : "Groq —");
     if (st) st.textContent = "✓ " + S.accUser + " · " + parts.join(" · ");
     if (sync) sync.classList.remove("hidden");
+    if (retr) retr.classList.remove("hidden");
     if (out) out.classList.remove("hidden");
   } else {
     if (st) st.textContent = "Not signed in.";
     if (sync) sync.classList.add("hidden");
+    if (retr) retr.classList.add("hidden");
     if (out) out.classList.add("hidden");
   }
+}
+
+// PULL: fetch the account config + keys and apply them on this device
+async function accountRetrieve() {
+  if (!S.accToken) { $("mAccStatus").textContent = "Sign in first."; return; }
+  $("mAccStatus").textContent = "Pulling…";
+  try {
+    const j = await accountApi("/api/account/config", {}, S.accToken);
+    const c = j.config || {};
+    if (c.pc_url) { S.base = c.pc_url; localStorage.setItem("phai.companion.url", c.pc_url); if ($("mUrl")) $("mUrl").value = c.pc_url; }
+    if (c.pc_token) { S.token = c.pc_token; localStorage.setItem("phai.companion.token", c.pc_token); }
+    if (c.cloud_url) { S.cloudBase = c.cloud_url; localStorage.setItem("phai.companion.cloud", c.cloud_url); if ($("mCloud")) $("mCloud").value = c.cloud_url; }
+    if (c.cloud_token) { S.cloudToken = c.cloud_token; localStorage.setItem("phai.companion.cloudtoken", c.cloud_token); }
+    if (c.mode) setMode(c.mode);
+    if (c.keys) S.accKeys = c.keys;
+    // re-activate the saved keys on this Worker via the account
+    if (c.nvidia_key) {
+      const act = { nvidia_key: c.nvidia_key };
+      if (c.deepgram_key) act.deepgram_key = c.deepgram_key;
+      if (c.groq_key) act.groq_key = c.groq_key;
+      try { await accountApi("/api/account/config", act, S.accToken); } catch (e) {}
+    }
+    renderAccountUI();
+    toastHint("✓ Keys + settings pulled");
+    detectAndConnect();
+  } catch (e) { $("mAccStatus").textContent = "✗ " + e.message; }
 }
 function effectiveToken() { return S.mode === "portable" ? S.cloudToken : S.token; }
 
@@ -212,6 +239,7 @@ $("mRefreshBtn2").onclick = hardRefresh;
 $("mAccLogin").onclick = accountLogin;
 $("mAccRegister").onclick = accountRegister;
 $("mAccSync").onclick = accountSync;
+$("mAccRetrieve").onclick = accountRetrieve;
 $("mAccOut").onclick = accountSignOut;
 
 $("mModeToggle").onclick = () => {
@@ -380,12 +408,12 @@ async function sendChat(text) {
       const j = await api("/api/chat", { body: { text: clean } });
       addChatMsg("assistant", j.reply || "(no reply)");
       try { speakReply(j.reply); } catch (e) {}
-    } catch (e) { addChatMsg("assistant", "⚠️ " + e.message); }
+    } catch (e) {
+      addChatMsg("assistant", "⚠️ " + (e.message || "cloud chat failed (HTTP 500)"));
+    }
     return;
   }
   // pc mode: start a run + poll the conversation for the reply.
-  // MULTI-TASK: each agent polls its own run — Phantom can be replying while
-  // you send Coded a separate task.
   addChatMsg("assistant", "");
   const list = $("chatList");
   if (list.lastElementChild) list.lastElementChild.classList.add("typing");
@@ -395,7 +423,17 @@ async function sendChat(text) {
     S.convByAgent[S.agent] = started.conversation_id;
     await pollReply(S.agent, started.conversation_id, started.run_id);
   } catch (e) {
-    replaceLastAssistant("⚠️ " + e.message);
+    // PC chat failed → try the cloud as a fallback so the phone ALWAYS answers
+    if (S.cloudBase) {
+      replaceLastAssistant("PC busy (" + (e.message || "error") + ") — trying cloud…");
+      try {
+        const j = await api("/api/chat", { body: { text: clean } });
+        replaceLastAssistant(j.reply || "(no reply)");
+        try { speakReply(j.reply); } catch (e2) {}
+      } catch (e2) { replaceLastAssistant("⚠️ " + (e2.message || "both failed")); }
+    } else {
+      replaceLastAssistant("⚠️ " + (e.message || "PC chat failed (HTTP 500)"));
+    }
   }
 }
 async function pollReply(agent, cid, runId) {
